@@ -36,6 +36,33 @@ fd.train_linear(feats, y, feats_test, y_test)     # 로지스틱 회귀
 mb.shuffled(seed=0)                               # 무작위 배선 대조군 (연결 수·차수는 그대로)
 ```
 
+### PyTorch 층처럼 역전파로 학습
+
+`trainable=`을 주면 배선은 고정하고 연결별 세기를 `nn.Parameter`로 학습한다. 스파이크는 대리 기울기
+(순전파는 진짜 스파이크, 역전파는 빠른 시그모이드 기울기)로, 입력 스파이크는 straight-through로 미분되어
+앞쪽 층까지 기울기가 흐른다. 부호(흥분/억제)는 바뀌지 않는다.
+
+```python
+import torch, torch.nn as nn
+import flydnet as fd
+
+mb = fd.Circuit.from_flywire()
+layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 2.0},
+                           input_mode="regular", trainable=True)      # 또는 trainable=["KC>MBON"]
+model = nn.Sequential(fd.RateEncoder(784, 344), layer, nn.Linear(layer.n_out, 10)).cuda()
+
+opt = torch.optim.Adam([
+    {"params": [layer.log_scale], "lr": 3e-2},                        # 커넥톰 연결 세기 (log 배율)
+    {"params": model[-1].parameters(), "lr": 3e-3},
+])
+loss = nn.functional.cross_entropy(model(x), y)
+opt.zero_grad(); loss.backward(); opt.step()
+
+layer.weights()          # 현재 연결별 세기 (mV, 부호 포함), 순서는 layer.w_idx (post, pre)
+```
+
+버섯체 회로에서 배치 64, 50 ms(100스텝) 순전파 + 역전파가 RTX 5070 기준 약 0.2초, GPU 메모리 약 0.5GB.
+
 데이터 경로는 기본 `D:\flybrain_local\Drosophila_brain_model`이며 환경변수 `FLYDNET_DATA`로 바꿀 수 있다.
 필요 파일: `Completeness_783.csv`, `Connectivity_783.parquet`, `flywire_annotations.tsv`
 ([flywire_annotations](https://github.com/flyconnectome/flywire_annotations)의 Supplemental_file1).
@@ -264,6 +291,26 @@ DoOR 냄새 4개 (A, B, C, D)마다 AB+, CD+, AC−, BD− 를 학습 (Young et 
   원형 여러 개 = 그 자체로 비선형 분류기라서. KC를 거치면 오히려 약간 낮다 (98.3%).
 - KC 층이 필요한 건 리드아웃이 선형일 때뿐이다 (로지스틱 61 → 81%). 역전파 MLP도 사구체에서 가장 좋다.
 
+## 실험 ⑧ 커넥톰 층을 역전파로 학습 — MNIST
+
+`python examples/train_backprop.py` (약 11분). 일반 PyTorch 학습 루프, 학습 2만 / 평가 1만, 3에폭,
+dt 0.5 ms, 50 ms 창, 선형 층 학습률 3e-3, 커넥톰 연결 세기 학습률 3e-2.
+
+| 설정 | 학습 파라미터 | 에폭별 test |
+|---|---|---|
+| 커넥톰 고정 + 선형 | 25,980 | 80.4 → 83.1 → **84.4** |
+| 연결 19만 개 전부 학습 (KC 판독) | 216,836 | 84.2 → 85.1 → **85.9** |
+| KC→MBON만 학습 (MBON 48개 판독) | 24,064 | 67.3 → 72.5 → **74.4** |
+| 무작위 배선, 전부 학습 (KC 판독) | 216,836 | 84.8 → 84.2 → **85.9** |
+
+해석
+- 커넥톰 층을 통과하는 역전파가 동작한다. 연결 세기가 실제로 바뀌고(배율 5~95% 범위 0.2~4.3배),
+  고정 층보다 1.5%p 좋아졌다.
+- MBON 48개 판독은 고정이면 24%(실험 ①)였지만 **KC→MBON 연결만 학습하면 74%**가 된다. 초파리에서
+  학습이 일어나는 바로 그 자리만 바꿔도 판독이 쓸모 있어진다.
+- 학습해도 실제 배선과 무작위 배선은 같다 (85.87% 대 85.91%).
+- 설정이 실험 ①과 달라(dt 0.5, 50 ms, Adam 3에폭) 고정 층 숫자도 다르다 (84.4% 대 89.6%).
+
 ## 지금까지의 결론
 
 | 질문 | 답 |
@@ -275,4 +322,4 @@ DoOR 냄새 4개 (A, B, C, D)마다 AB+, CD+, AC−, BD− 를 학습 (Young et 
 ## 다음 단계 아이디어
 - 두 종류씩 섞어 상호작용 찾기 (PN→KC + 나머지 등), 더 많은 seed로 PN→KC 효과 확정
 - 실제 냄새에서 KC 층이 사구체보다 못한 이유 찾기 (배율·시간창 재조정, 측정 안 된 사구체 처리)
-- 배선 고정 + 가중치 역전파 (대리 기울기)
+- 역전파 학습을 더 길게, dt를 줄여서 (지금은 3에폭, dt 0.5 ms)

@@ -218,3 +218,46 @@ def test_assoc_readout_uses_all_prototypes_in_one_batch():
     m = fd.AssocReadout(X.shape[1], 4, per_class=3, device="cpu").fit(X, y, batch=64)   # 한 묶음에 전부
     assert (m.count.view(4, 3) > 0).all()
     assert m.count.sum() == 40
+
+
+# ─────────────── 역전파 ───────────────
+@needs_data
+def test_trainable_layer_gradients_flow(mb):
+    layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=20, dt=0.5, gains={"PN>KC": 2.0},
+                               input_mode="regular", trainable=True)
+    assert layer.log_scale.numel() == layer.w_syn.numel()
+    x = torch.full((4, 344), 80.0, requires_grad=True)
+    layer(x).sum().backward()
+    g = layer.log_scale.grad
+    assert torch.isfinite(g).all() and (g != 0).any()
+    assert x.grad is not None and (x.grad != 0).any()       # 입력까지 기울기가 흐름
+
+
+@needs_data
+def test_trainable_subset_and_sign_kept(mb):
+    layer = fd.ConnectomeLayer(mb, "PN", "MBON", trainable=["KC>MBON"])
+    assert set(layer.edge_key[layer.train_pos.cpu().numpy()]) == {"KC>MBON"}
+    with torch.no_grad():
+        layer.log_scale.normal_(0, 2)
+    w0, w = layer.w_base, layer.weights()
+    assert torch.equal(torch.sign(w), torch.sign(w0))       # 부호(흥분/억제)는 그대로
+    with pytest.raises(ValueError):
+        fd.ConnectomeLayer(mb, "PN", "KC", trainable=["XX>YY"])
+
+
+@needs_data
+def test_untrained_trainable_layer_matches_fixed(mb):
+    kw = dict(t_ms=20, dt=0.5, gains={"PN>KC": 2.0}, input_mode="regular")
+    x = fd.RateEncoder(784, 344)(torch.rand(4, 784))
+    with torch.no_grad():
+        a = fd.ConnectomeLayer(mb, "PN", "KC", **kw)(x)
+        b = fd.ConnectomeLayer(mb, "PN", "KC", trainable=True, **kw)(x)
+    assert torch.allclose(a, b)
+
+
+def test_surrogate_spike():
+    x = torch.tensor([-1.0, -0.01, 0.01, 1.0], requires_grad=True)
+    y = fd.layers.SpikeFn.apply(x, 10.0)
+    assert y.tolist() == [0, 0, 1, 1]
+    y.sum().backward()
+    assert (x.grad > 0).all() and x.grad[1] > x.grad[0]      # 문턱 근처에서 기울기가 큼
