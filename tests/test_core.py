@@ -486,3 +486,44 @@ def test_visual_circuit_and_direction_wiring():
         sh = vc.shuffled(seed=0)
     rand = fd.direction_offsets(sh, xy)
     assert all(real[t][1] > 0.3 > rand[t][1] for t in real)       # 실제 배선에만 방향 구조
+
+
+def test_normalized_inputs_sum_to_one():
+    c = _tiny_circuit(n_edges=120).normalized()
+    tot = np.bincount(c.post, weights=np.abs(c.weight), minlength=c.N)
+    assert np.allclose(tot[tot > 0], 1.0)
+
+
+def test_graded_neurons_respond_and_train():
+    c = _tiny_circuit(n_edges=120).normalized()
+    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=30, dt=1.0, neuron="graded", params={"w_syn": 2.0},
+                               trainable=True, share="pair", bias={"OUT": 0.2}, train_neurons=True, device="cpu")
+    x = torch.rand(3, 5, requires_grad=True)
+    out = layer(x)
+    assert out.shape == (3, 12) and (out >= 0).all()
+    out.sum().backward()
+    assert torch.isfinite(layer.log_scale.grad).all() and layer.bias.grad.abs().sum() > 0
+    assert x.grad is not None and x.grad.abs().sum() > 0
+    with torch.no_grad():                                    # 입력 뉴런 활동 = 입력값
+        assert torch.allclose(layer(x, return_all=True)[:, layer.in_idx], x)
+
+
+def test_graded_checkpoint_matches():
+    c = _tiny_circuit(n_edges=120).normalized()
+    kw = dict(t_ms=30, dt=1.0, neuron="graded", params={"w_syn": 2.0}, trainable=True, bias=0.2, device="cpu")
+    a = fd.ConnectomeLayer(c, "IN", "OUT", **kw)
+    b = fd.ConnectomeLayer(c, "IN", "OUT", checkpoint_every=7, **kw)
+    x = torch.rand(2, 5)
+    a(x).sum().backward(); b(x).sum().backward()
+    assert torch.allclose(a(x), b(x)) and torch.allclose(a.log_scale.grad, b.log_scale.grad, atol=1e-6)
+
+
+@pytest.mark.parametrize("neuron", ["lif", "graded"])
+def test_record_returns_traces(neuron):
+    c = _tiny_circuit(n_edges=120)
+    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, neuron=neuron, input_mode="regular",
+                               device="cpu", gains={"IN>OUT": 30.0}, bias=0.2 if neuron == "graded" else None)
+    with torch.no_grad():
+        out, tr = layer(torch.full((2, 5), 0.8 if neuron == "graded" else 200.0), record=[5, 6, 0])
+    assert tr.shape == (2, 40, 3)
+    assert torch.allclose(out, layer(torch.full((2, 5), 0.8 if neuron == "graded" else 200.0)))

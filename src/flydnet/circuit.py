@@ -143,6 +143,14 @@ class Circuit:
         return Circuit(self.root_ids, self.groups, self.pre, post, self.weight,
                        name=f"{self.name} [shuffled{what}]", meta=self.meta, pos=self.pos)
 
+    def normalized(self) -> "Circuit":
+        """받는 뉴런마다 입력 시냅스 수 합(|weight|)이 1이 되도록 나눈 회로.
+        입력 비율(누가 얼마나 주는지)은 그대로, 입력이 많은 뉴런과 적은 뉴런의 총입력 크기만 맞춤"""
+        tot = np.bincount(self.post, weights=np.abs(self.weight), minlength=self.N)
+        w = (self.weight / tot[self.post]).astype(np.float32)
+        return Circuit(self.root_ids, self.groups, self.pre, self.post, w, name=f"{self.name} [정규화]",
+                       meta=self.meta, pos=self.pos)
+
     def with_sign(self, pre_groups, sign: int) -> "Circuit":
         """pre_groups 뉴런이 보내는 연결을 모두 흥분(+1) 또는 억제(-1)로 바꾼 회로.
         예: 광수용체의 히스타민은 받는 뉴런을 억제하지만 신경전달물질 예측에는 흥분으로 잡힘"""

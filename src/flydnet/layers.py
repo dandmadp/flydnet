@@ -101,13 +101,20 @@ class ConnectomeLayer(nn.Module):
     count_from_ms: 이 시각부터의 스파이크만 셈 (처음의 과도 반응 제외)
 
     입력: rates (B, n_in) = 일정한 발화율, (B, T, n_in) = 시간에 따라 바뀌는 발화율 (T 프레임을 시간에 고르게)
+
+    neuron:     "lif" = 스파이킹 뉴런 (기본) /
+                "graded" = 스파이크 없이 연속값을 전달하는 뉴런 (라미나·메둘라처럼 막전위로 신호를 보내는 회로).
+                  τ dV/dt = bias − V + Σ w·r_pre,  r = clamp(V, 0, r_max)   (V는 휴지 전위 기준, 단위 없음)
+                  w = ±시냅스 수 × params["w_syn"] × 배율. 입력 뉴런은 r = 입력값 (rates를 활동값으로 씀),
+                  출력은 count_from_ms 이후 평균 r. 시냅스 지연·불응기 없음, input_mode·v_init 무시
     """
 
     def __init__(self, circuit: Circuit, inputs="PN", outputs=("KC",), t_ms: float = 100.0,
                  params: dict | None = None, gains: dict | None = None, device: str | None = None,
                  input_mode: str = "poisson", trainable=False, dt: float | None = None, slope: float = 10.0,
                  checkpoint_every: int | None = None, share: str = "edge", bias=None, t_mbr=None,
-                 train_neurons: bool = False, v_init: str = "rest", count_from_ms: float = 0.0):
+                 train_neurons: bool = False, v_init: str = "rest", count_from_ms: float = 0.0,
+                 neuron: str = "lif"):
         super().__init__()
         listify = lambda x: x if isinstance(x, str) else list(x)
         self._init_args = dict(inputs=listify(inputs), outputs=listify(outputs),
@@ -116,7 +123,11 @@ class ConnectomeLayer(nn.Module):
                                dt=dt, slope=slope, checkpoint_every=checkpoint_every, share=share,
                                bias=dict(bias) if isinstance(bias, dict) else bias,
                                t_mbr=dict(t_mbr) if isinstance(t_mbr, dict) else t_mbr,
-                               train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms)
+                               train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms,
+                               neuron=neuron)
+        if neuron not in ("lif", "graded"):
+            raise ValueError(neuron)
+        self.neuron = neuron
         self.circuit = circuit
         self.p = dict(DEFAULT_PARAMS, **(params or {}))
         if dt is not None:
@@ -251,7 +262,11 @@ class ConnectomeLayer(nn.Module):
             return self.W_T @ spk if not spk.requires_grad else                 SparsePropagate.apply(self.w_base, spk, self.crow, self.col, self.crow_t, self.col_t, self.perm_t)
         return SparsePropagate.apply(values, spk, self.crow, self.col, self.crow_t, self.col_t, self.perm_t)
 
-    def forward(self, rates: torch.Tensor, seed: int | None = None, return_all: bool = False):
+    def forward(self, rates: torch.Tensor, seed: int | None = None, return_all: bool = False, record=None):
+        """record: 뉴런 번호 목록(회로 번호)이면 그 뉴런들의 스텝별 스파이크도 돌려줌 → (rate, (B, steps, k))
+        분석용 (체크포인팅과 같이 쓰지 않음)"""
+        if self.neuron == "graded":
+            return self._forward_graded(rates, return_all, record)
         p, N, dev = self.p, self.circuit.N, self.dev
         rates = rates.to(dev)
         B = rates.shape[0]
@@ -299,6 +314,8 @@ class ConnectomeLayer(nn.Module):
                 fired = spk.detach() > 0
                 if s >= s_cnt:
                     counts = counts + spk
+                if rec is not None:
+                    rec.append(spk.detach()[rec_idx])
                 V = torch.where(fired, p["v_rst"], V)            # 리셋은 기울기 끊음 (표준)
                 G = torch.where(fired, 0.0, G)
                 refr = torch.where(fired, rfc_vec, refr - 1)
@@ -311,17 +328,82 @@ class ConnectomeLayer(nn.Module):
         else:
             V0 = torch.full((N, B), p["v_0"], device=dev)
         state = (V0, zeros(), zeros(), zeros(), self.phase0.expand(-1, B).clone(), *[zeros() for _ in range(R)])
+        rec = rec_idx = None
         ce = self.checkpoint_every
         needs_grad = self.trainable or rates.requires_grad or (self.neuron_params and self.bias.requires_grad)
         if ce and torch.is_grad_enabled() and needs_grad:
+            if record is not None:
+                raise ValueError("record는 체크포인팅과 같이 쓸 수 없음 (torch.no_grad()에서 쓰기)")
             for s0 in range(0, steps, ce):                      # 구간마다 중간 상태를 버리고 역전파 때 다시 계산
                 state = torch.utils.checkpoint.checkpoint(
                     run, s0, min(s0 + ce, steps), g.get_state() if g is not None else None, *state,
                     use_reentrant=False)
         else:
+            rec = [] if record is not None else None
+            if rec is not None:
+                rec_idx = torch.as_tensor(np.asarray(record), dtype=torch.long, device=dev)
             state = run(0, steps, None, *state)
         rate = state[3] / ((self.t_ms - s_cnt * dt) / 1000.0)    # (N, B) Hz
-        return rate.T if return_all else rate[self.out_idx].T
+        out = rate.T if return_all else rate[self.out_idx].T
+        if record is not None:
+            return out, torch.stack(rec).permute(2, 0, 1)
+        return out
+
+    def _forward_graded(self, x: torch.Tensor, return_all: bool, record):
+        """연속값 뉴런 (neuron="graded"). 오일러 적분, 입력 뉴런은 활동값을 그대로 고정"""
+        p, N, dev = self.p, self.circuit.N, self.dev
+        x = x.to(dev)
+        B = x.shape[0]
+        dt = p["dt"]; steps = int(round(self.t_ms / dt))
+        r_max = p.get("r_max", 10.0)
+        if x.dim() == 2:
+            x_all = x.T[None]                                    # (1, n_in, B)
+        elif x.dim() == 3:
+            x_all = x.permute(1, 2, 0)                           # (T, n_in, B)
+        else:
+            raise ValueError("입력은 (B, n_in) 또는 (B, T, n_in)")
+        T = x_all.shape[0]
+        s_cnt = int(round(self.count_from_ms / dt))
+        if self.neuron_params:
+            b = self.bias[self.group_idx][:, None]
+            a = (dt / self.log_t_mbr.exp()[self.group_idx][:, None]).clamp(max=1.0)
+        else:
+            b, a = 0.0, dt / p["t_mbr"]
+        values = self.weights() if self.trainable else None
+        is_in = torch.zeros(N, 1, dtype=torch.bool, device=dev); is_in[self.in_idx] = True
+
+        def run(s0, s1, V, r, acc):
+            for s in range(s0, s1):
+                I = self._propagate(r, values)
+                V = V + (b - V + I) * a
+                r = V.clamp(0.0, r_max)
+                r = r.index_copy(0, self.in_idx, x_all[s * T // steps])   # 입력 뉴런은 입력값 그대로
+                if s >= s_cnt:
+                    acc = acc + r
+                if rec is not None:
+                    rec.append(r.detach()[rec_idx])
+            return V, r, acc
+
+        zeros = torch.zeros((N, B), device=dev)
+        state = (zeros, zeros, zeros)
+        rec = rec_idx = None
+        ce = self.checkpoint_every
+        needs_grad = self.trainable or x.requires_grad or (self.neuron_params and self.bias.requires_grad)
+        if ce and torch.is_grad_enabled() and needs_grad:
+            if record is not None:
+                raise ValueError("record는 체크포인팅과 같이 쓸 수 없음 (torch.no_grad()에서 쓰기)")
+            for s0 in range(0, steps, ce):
+                state = torch.utils.checkpoint.checkpoint(run, s0, min(s0 + ce, steps), *state, use_reentrant=False)
+        else:
+            if record is not None:
+                rec = []
+                rec_idx = torch.as_tensor(np.asarray(record), dtype=torch.long, device=dev)
+            state = run(0, steps, *state)
+        mean = state[2] / (steps - s_cnt)                        # (N, B) 평균 활동
+        out = mean.T if return_all else mean[self.out_idx].T
+        if record is not None:
+            return out, torch.stack(rec).permute(2, 0, 1)
+        return out
 
     # ─────────────── 저장 / 불러오기 ───────────────
     FORMAT = "flydnet.ConnectomeLayer/1"
@@ -345,6 +427,8 @@ class ConnectomeLayer(nn.Module):
 
     def extra_repr(self):
         tr = f", 학습 연결 {len(self.train_pos):,}개" if self.trainable else ""
+        if self.neuron == "graded":
+            tr = ", 연속값 뉴런" + tr
         if self.trainable and self.share == "pair":
             tr += f" (종류 {len(self.log_scale):,}개가 배율 공유)"
         if self.neuron_params:
