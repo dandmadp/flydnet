@@ -187,3 +187,21 @@ def test_door_odors(mb):
     assert (d["X"][~d["measured"]] == 0).all()           # 측정 안 된 칸은 0
     assert (d["measured"].sum(1) >= 20).all()
     assert "arom" not in set(d["classes"]) and "terpenes" not in set(d["classes"])
+
+
+def test_assoc_readout_k1_matches_dopamine_assoc():
+    X, y = _toy()
+    a = fd.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X, y)
+    b = fd.AssocReadout(X.shape[1], 4, per_class=1, device="cpu").fit(X, y)
+    assert torch.allclose(a.W, b.W, atol=1e-5)
+
+
+def test_assoc_readout_never_changes_other_classes():
+    X, y = _toy()
+    m = fd.AssocReadout(X.shape[1], 4, per_class=3, device="cpu")
+    m.fit(X[y < 2], y[y < 2])
+    before = m.W[:2 * 3].clone()
+    m.fit(X[y >= 2], y[y >= 2])                         # 나중 클래스 학습
+    assert torch.equal(m.W[:2 * 3], before)             # 앞 클래스 출력은 그대로
+    assert (m.count.view(4, 3) > 0).all()               # 모든 원형이 채워짐
+    assert m.accuracy(X, y) > 0.9

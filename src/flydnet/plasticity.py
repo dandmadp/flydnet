@@ -107,3 +107,55 @@ class DopamineReadout:
 
     def accuracy(self, X, y, classes=None) -> float:
         return (self.predict(X, classes).cpu() == y.cpu()).float().mean().item()
+
+
+class AssocReadout:
+    """보상 연합 학습 리드아웃, 클래스마다 출력(원형) 여러 개 — 연속 학습용
+
+    클래스 c마다 출력 뉴런 per_class개 (MBON 여러 개가 같은 도파민 구역을 공유하는 것처럼).
+    샘플 (a, y)가 오면 클래스 y의 출력 중 가장 잘 맞는 하나에만 보상 도파민 →
+        w ← w + (a − w) / n        (그 출력이 받은 샘플들의 평균 패턴이 됨)
+    비어 있는 출력이 있으면 그것부터 채움 (클래스당 온라인 k-평균과 같음).
+    점수 = 코사인 (출력별 시냅스 벡터 크기를 같게), 클래스 점수 = 그 클래스 출력 중 최대.
+
+    다른 클래스의 시냅스는 절대 바뀌지 않음 → 클래스를 차례로 배워도 앞의 것을 잊지 않음.
+    per_class=1이면 DopamineReadout(mode="assoc")와 같음.
+    """
+
+    def __init__(self, n_in: int, n_classes: int, per_class: int = 1, binary: bool = False,
+                 device: str | None = None):
+        self.n_classes, self.k, self.binary = n_classes, per_class, binary
+        self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.W = torch.zeros(n_classes * per_class, n_in, device=self.dev)
+        self.count = torch.zeros(n_classes * per_class, device=self.dev)
+
+    activity = DopamineReadout.activity
+
+    def _proto_scores(self, a: torch.Tensor) -> torch.Tensor:
+        """(B, C*k) 코사인 점수, 빈 출력은 −inf"""
+        s = a @ (self.W / self.W.norm(dim=1, keepdim=True).clamp_min(1e-8)).T
+        return s.masked_fill(self.count == 0, float("-inf"))
+
+    def scores(self, X: torch.Tensor) -> torch.Tensor:
+        """(B, C) 클래스 점수"""
+        return self._proto_scores(self.activity(X)).view(len(X), self.n_classes, self.k).amax(2)
+
+    predict = DopamineReadout.predict
+    accuracy = DopamineReadout.accuracy
+
+    @torch.no_grad()
+    def step(self, X: torch.Tensor, y: torch.Tensor, classes=None):
+        a = self.activity(X)
+        y = y.to(self.dev)
+        own = self._proto_scores(a).view(len(a), self.n_classes, self.k)[torch.arange(len(a)), y]   # (B, k)
+        empty = (self.count.view(self.n_classes, self.k) == 0)[y]                                    # (B, k)
+        first_empty = empty & (empty.cumsum(1) == 1)            # 클래스의 첫 빈 출력부터 채움
+        own = torch.where(first_empty, torch.full_like(own, float("inf")), own)
+        idx = y * self.k + own.argmax(1)                         # 보상 도파민을 받을 출력
+        n = torch.zeros_like(self.count).index_add_(0, idx, torch.ones(len(a), device=self.dev))
+        s = torch.zeros_like(self.W).index_add_(0, idx, a)
+        self.count += n
+        hit = n > 0
+        self.W[hit] += (s[hit] - n[hit, None] * self.W[hit]) / self.count[hit, None]
+
+    fit = DopamineReadout.fit
