@@ -329,3 +329,22 @@ def test_readout_save_load(cls, kw, tmp_path):
     assert torch.equal(m.predict(X), n.predict(X))
     with pytest.raises(ValueError):
         (fd.DopamineReadout if cls is fd.AssocReadout else fd.AssocReadout).load(tmp_path / "r.pt")
+
+
+# ─────────────── 그래디언트 체크포인팅 ───────────────
+@needs_data
+@pytest.mark.parametrize("mode", ["regular", "poisson"])
+def test_checkpointing_gives_same_output_and_grads(mb, mode):
+    def run(ce):
+        layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=15, dt=0.5, gains={"PN>KC": 2.0}, input_mode=mode,
+                                   trainable=True, checkpoint_every=ce)
+        with torch.no_grad():
+            layer.log_scale.copy_(torch.linspace(-0.3, 0.3, layer.log_scale.numel()))
+        x = torch.full((4, 344), 90.0, requires_grad=True)
+        out = layer(x, seed=7)
+        out.pow(2).mean().backward()
+        return out.detach().cpu(), layer.log_scale.grad.cpu(), x.grad.cpu()
+    a, b = run(None), run(4)
+    assert torch.equal(a[0], b[0])                            # 순전파는 완전히 같음 (포아송 난수 포함)
+    for ga, gb in zip(a[1:], b[1:]):                          # 기울기는 GPU 합산 순서 오차 안에서 같음
+        assert torch.allclose(ga, gb, rtol=1e-4, atol=1e-5)

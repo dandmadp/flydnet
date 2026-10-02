@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# 이름 → (주석 열, 값). 버섯체 기본 회로: 투사 뉴런 → Kenyon 세포 → MBON, APL이 전체를 억제
+# 이름 → (주석 열, 값 또는 값 목록). 주석 열: super_class, cell_class, cell_sub_class, cell_type
+# 버섯체 기본 회로: 투사 뉴런 → Kenyon 세포 → MBON, APL이 전체를 억제
 MUSHROOM_BODY = {
     "PN":   ("cell_class", "ALPN"),
     "KC":   ("cell_class", "Kenyon_Cell"),
@@ -72,14 +73,15 @@ class Circuit:
         d = require("flywire", data_dir)
         all_ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
         ann = pd.read_csv(d / annotations, sep="\t", low_memory=False,
-                          usecols=["root_id", "cell_class", "cell_sub_class", "cell_type", "side"])
+                          usecols=["root_id", "super_class", "cell_class", "cell_sub_class", "cell_type", "side"])
         ann = ann[ann.root_id.isin(all_ids)]
         if side:
             ann = ann[ann.side == side]
 
         picked, gidx = [], {}
         for name, (col, val) in groups.items():
-            ids = ann.loc[ann[col] == val, "root_id"].values
+            vals = [val] if isinstance(val, str) else list(val)
+            ids = ann.loc[ann[col].isin(vals), "root_id"].values
             gidx[name] = np.arange(len(picked), len(picked) + len(ids))
             picked.extend(ids)
         ids = np.array(picked, dtype=np.int64)
@@ -95,7 +97,7 @@ class Circuit:
         pre, post = local[df.Presynaptic_Index.values], local[df.Postsynaptic_Index.values]
         keep = (pre >= 0) & (post >= 0)
         w = (df.Connectivity.values * df.Excitatory.values)[keep]
-        meta = ann.set_index("root_id").loc[ids, ["cell_class", "cell_sub_class", "cell_type"]].reset_index()
+        meta = ann.set_index("root_id").loc[ids, ["super_class", "cell_class", "cell_sub_class", "cell_type"]].reset_index()
         return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})",
                    meta=meta)
 

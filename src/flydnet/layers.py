@@ -51,21 +51,25 @@ class ConnectomeLayer(nn.Module):
                 연결별 세기 = 원래 세기 × exp(log_scale). 부호(흥분/억제)는 바뀌지 않음 (Dale의 법칙)
     dt:         시간 간격 ms (기본 0.1). 학습할 때는 0.5 정도로 키우면 스텝 수·메모리가 1/5
     slope:      대리 기울기의 날카로움 (막전위를 문턱−휴지 간격으로 나눈 단위 기준)
+    checkpoint_every: 역전파 메모리 절약 (그래디언트 체크포인팅). n이면 n스텝 구간마다 중간 상태를 버리고
+                역전파 때 다시 계산 → 메모리는 대략 (전체 스텝/n + n)에 비례, 계산은 약 1.3~2배.
+                학습할 때(기울기 필요)만 적용, 추론에는 영향 없음
     """
 
     def __init__(self, circuit: Circuit, inputs: str = "PN", outputs=("KC",), t_ms: float = 100.0,
                  params: dict | None = None, gains: dict | None = None, device: str | None = None,
-                 input_mode: str = "poisson", trainable=False, dt: float | None = None, slope: float = 10.0):
+                 input_mode: str = "poisson", trainable=False, dt: float | None = None, slope: float = 10.0,
+                 checkpoint_every: int | None = None):
         super().__init__()
         self._init_args = dict(inputs=inputs, outputs=outputs if isinstance(outputs, str) else list(outputs),
                                t_ms=t_ms, params=dict(params or {}), input_mode=input_mode,
                                trainable=trainable if isinstance(trainable, bool) else list(trainable),
-                               dt=dt, slope=slope)
+                               dt=dt, slope=slope, checkpoint_every=checkpoint_every)
         self.circuit = circuit
         self.p = dict(DEFAULT_PARAMS, **(params or {}))
         if dt is not None:
             self.p["dt"] = dt
-        self.t_ms, self.slope = t_ms, slope
+        self.t_ms, self.slope, self.checkpoint_every = t_ms, slope, checkpoint_every
         self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
         outputs = [outputs] if isinstance(outputs, str) else list(outputs)
         self.out_names = outputs
@@ -155,37 +159,46 @@ class ConnectomeLayer(nn.Module):
         a = dt / p["t_mbr"]; gd = float(np.exp(-dt / p["tau"]))
         poi_w = p["w_syn"] * p["f_poi"]
         p_spk = (rates * dt / 1000.0).T                         # (n_in, B) 스텝당 입력 스파이크 확률
-
-        V = torch.full((N, B), p["v_0"], device=dev)
-        G = torch.zeros((N, B), device=dev)
-        refr = torch.zeros((N, B), device=dev)
         rfc_vec = torch.full((N, 1), float(rfc), device=dev); rfc_vec[self.in_idx] = 0
-        buf = [None] * R                                         # 지연 중인 시냅스 입력 (원형 버퍼)
-        counts = torch.zeros((N, B), device=dev)
-        phase = self.phase0.expand(-1, B).clone()
         scale = p["v_th"] - p["v_rst"]
 
-        for s in range(steps):
-            k = s % R
-            if buf[k] is not None:
-                G = G + buf[k]; buf[k] = None
-            act = refr <= 0
-            V = torch.where(act, V + (p["v_0"] - V + G) * a, V)
-            G = torch.where(act, G * gd, G)
-            if self.input_mode == "poisson":
-                inp = (torch.rand(p_spk.shape, device=dev, generator=g) < p_spk).float()
-            else:
-                phase = phase + p_spk.detach(); inp = (phase >= 1).float(); phase = phase - inp
-            inp = inp + (p_spk - p_spk.detach())                 # 값은 스파이크 그대로, 기울기는 확률로
-            V = V.index_add(0, self.in_idx, inp * poi_w)
-            spk = SpikeFn.apply((V - p["v_th"]) / scale, self.slope)
-            fired = spk.detach() > 0
-            counts = counts + spk
-            V = torch.where(fired, p["v_rst"], V)                # 리셋은 기울기 끊음 (표준)
-            G = torch.where(fired, 0.0, G)
-            refr = torch.where(fired, rfc_vec, refr - 1)
-            buf[(s + dly) % R] = self._propagate(spk)            # dly 스텝 뒤 G에 도착
-        rate = counts / (self.t_ms / 1000.0)                     # (N, B) Hz
+        def run(s0, s1, gen_state, V, G, refr, counts, phase, *buf):
+            """s0 ~ s1 스텝 진행. 체크포인팅 때 역전파에서 다시 불리므로 같은 입력 → 같은 결과여야 함"""
+            if g is not None and gen_state is not None:
+                g.set_state(gen_state)                          # 다시 계산할 때도 같은 난수
+            buf = list(buf)                                      # 지연 중인 시냅스 입력 (원형 버퍼)
+            for s in range(s0, s1):
+                G = G + buf[s % R]
+                act = refr <= 0
+                V = torch.where(act, V + (p["v_0"] - V + G) * a, V)
+                G = torch.where(act, G * gd, G)
+                if self.input_mode == "poisson":
+                    inp = (torch.rand(p_spk.shape, device=dev, generator=g) < p_spk).float()
+                else:
+                    phase = phase + p_spk.detach(); inp = (phase >= 1).float(); phase = phase - inp
+                inp = inp + (p_spk - p_spk.detach())             # 값은 스파이크 그대로, 기울기는 확률로
+                V = V.index_add(0, self.in_idx, inp * poi_w)
+                spk = SpikeFn.apply((V - p["v_th"]) / scale, self.slope)
+                fired = spk.detach() > 0
+                counts = counts + spk
+                V = torch.where(fired, p["v_rst"], V)            # 리셋은 기울기 끊음 (표준)
+                G = torch.where(fired, 0.0, G)
+                refr = torch.where(fired, rfc_vec, refr - 1)
+                buf[(s + dly) % R] = self._propagate(spk)        # dly 스텝 뒤 G에 도착 (이 칸은 방금 전 스텝에 읽음)
+            return (V, G, refr, counts, phase, *buf)
+
+        zeros = lambda: torch.zeros((N, B), device=dev)
+        state = (torch.full((N, B), p["v_0"], device=dev), zeros(), zeros(), zeros(),
+                 self.phase0.expand(-1, B).clone(), *[zeros() for _ in range(R)])
+        ce = self.checkpoint_every
+        if ce and torch.is_grad_enabled() and (self.trainable or rates.requires_grad):
+            for s0 in range(0, steps, ce):                      # 구간마다 중간 상태를 버리고 역전파 때 다시 계산
+                state = torch.utils.checkpoint.checkpoint(
+                    run, s0, min(s0 + ce, steps), g.get_state() if g is not None else None, *state,
+                    use_reentrant=False)
+        else:
+            state = run(0, steps, None, *state)
+        rate = state[3] / (self.t_ms / 1000.0)                   # (N, B) Hz
         return rate.T if return_all else rate[self.out_idx].T
 
     # ─────────────── 저장 / 불러오기 ───────────────
