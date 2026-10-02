@@ -88,26 +88,49 @@ class ConnectomeLayer(nn.Module):
     checkpoint_every: 역전파 메모리 절약 (그래디언트 체크포인팅). n이면 n스텝 구간마다 중간 상태를 버리고
                 역전파 때 다시 계산 → 메모리는 대략 (전체 스텝/n + n)에 비례, 계산은 약 1.3~2배.
                 학습할 때(기울기 필요)만 적용, 추론에는 영향 없음
+    share:      "edge" = 연결마다 따로 학습 / "pair" = 같은 연결 종류(예: "Mi1>T4a")는 배율 하나를 공유
+                (커넥톰이 정한 시냅스 수 비율은 그대로, 종류별 세기만 학습 → 매개변수가 훨씬 적음)
+
+    뉴런 매개변수 (그룹 = 세포 유형마다 하나, 셋 중 하나라도 주면 켜짐):
+    bias:       휴지 전위에 더할 값 mV (숫자 또는 {그룹: mV}). 문턱(v_th − v_0 = 7 mV)보다 크면 입력 없이도
+                꾸준히 발화 → 억제·감소 신호도 전달 가능 (시각계처럼 평소에도 활동하는 회로)
+    t_mbr:      막 시간 상수 ms (숫자 또는 {그룹: ms}). 세포 유형마다 반응 속도가 다르게
+    train_neurons: True면 그룹별 bias와 막 시간 상수도 학습
+    v_init:     "rest" = 모든 뉴런이 휴지 전위에서 시작 / "random" = 리셋~문턱 사이 고정된 무작위 값
+                (꾸준히 발화하는 뉴런들이 처음에 한꺼번에 발화하지 않도록)
+    count_from_ms: 이 시각부터의 스파이크만 셈 (처음의 과도 반응 제외)
+
+    입력: rates (B, n_in) = 일정한 발화율, (B, T, n_in) = 시간에 따라 바뀌는 발화율 (T 프레임을 시간에 고르게)
     """
 
-    def __init__(self, circuit: Circuit, inputs: str = "PN", outputs=("KC",), t_ms: float = 100.0,
+    def __init__(self, circuit: Circuit, inputs="PN", outputs=("KC",), t_ms: float = 100.0,
                  params: dict | None = None, gains: dict | None = None, device: str | None = None,
                  input_mode: str = "poisson", trainable=False, dt: float | None = None, slope: float = 10.0,
-                 checkpoint_every: int | None = None):
+                 checkpoint_every: int | None = None, share: str = "edge", bias=None, t_mbr=None,
+                 train_neurons: bool = False, v_init: str = "rest", count_from_ms: float = 0.0):
         super().__init__()
-        self._init_args = dict(inputs=inputs, outputs=outputs if isinstance(outputs, str) else list(outputs),
+        listify = lambda x: x if isinstance(x, str) else list(x)
+        self._init_args = dict(inputs=listify(inputs), outputs=listify(outputs),
                                t_ms=t_ms, params=dict(params or {}), input_mode=input_mode,
                                trainable=trainable if isinstance(trainable, bool) else list(trainable),
-                               dt=dt, slope=slope, checkpoint_every=checkpoint_every)
+                               dt=dt, slope=slope, checkpoint_every=checkpoint_every, share=share,
+                               bias=dict(bias) if isinstance(bias, dict) else bias,
+                               t_mbr=dict(t_mbr) if isinstance(t_mbr, dict) else t_mbr,
+                               train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms)
         self.circuit = circuit
         self.p = dict(DEFAULT_PARAMS, **(params or {}))
         if dt is not None:
             self.p["dt"] = dt
         self.t_ms, self.slope, self.checkpoint_every = t_ms, slope, checkpoint_every
+        self.count_from_ms = count_from_ms
+        if not 0 <= count_from_ms < t_ms:
+            raise ValueError("count_from_ms는 0 이상 t_ms 미만")
         self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
         outputs = [outputs] if isinstance(outputs, str) else list(outputs)
-        self.out_names = outputs
-        self.register_buffer("in_idx", torch.tensor(circuit.groups[inputs], device=self.dev))
+        inputs = [inputs] if isinstance(inputs, str) else list(inputs)
+        self.out_names, self.in_names = outputs, inputs
+        self.register_buffer("in_idx", torch.tensor(np.concatenate([circuit.groups[i] for i in inputs]),
+                                                    device=self.dev))
         self.register_buffer("out_idx", torch.tensor(np.concatenate([circuit.groups[o] for o in outputs]),
                                                      device=self.dev))
         self.n_in, self.n_out = len(self.in_idx), len(self.out_idx)
@@ -147,8 +170,39 @@ class ConnectomeLayer(nn.Module):
             pos = np.nonzero(np.isin(self.edge_key, list(trainable)))[0]
         else:
             pos = np.array([], dtype=np.int64)
+        if share not in ("edge", "pair"):
+            raise ValueError(share)
+        self.share = share
+        if share == "pair":                                       # 학습 연결 → 연결 종류 번호
+            self.train_pairs, which = np.unique(self.edge_key[pos], return_inverse=True)
+        else:
+            which = np.arange(len(pos))
         self.register_buffer("train_pos", torch.tensor(pos, dtype=torch.long, device=self.dev))
-        self.log_scale = nn.Parameter(torch.zeros(len(pos), device=self.dev)) if len(pos) else None
+        self.register_buffer("train_which", torch.tensor(which, dtype=torch.long, device=self.dev), persistent=False)
+        n_scale = int(which.max()) + 1 if len(pos) else 0
+        self.log_scale = nn.Parameter(torch.zeros(n_scale, device=self.dev)) if len(pos) else None
+
+        # 뉴런 매개변수 (그룹마다)
+        self.neuron_params = bias is not None or t_mbr is not None or train_neurons
+        if v_init not in ("rest", "random"):
+            raise ValueError(v_init)
+        self.v_init = v_init
+        self.register_buffer("v_frac", torch.rand(N, 1, generator=torch.Generator().manual_seed(1)).to(self.dev),
+                             persistent=False)
+        if self.neuron_params:
+            self.group_names = list(circuit.groups)
+            gi = np.full(N, len(self.group_names), np.int64)      # 어느 그룹에도 없는 뉴런 → 마지막 칸
+            for k, name in enumerate(self.group_names):
+                gi[circuit.groups[name]] = k
+            self.register_buffer("group_idx", torch.tensor(gi, device=self.dev), persistent=False)
+            per = lambda v, default: [float(v.get(n, default) if isinstance(v, dict) else
+                                            (default if v is None else v)) for n in self.group_names + ["_"]]
+            b0 = torch.tensor(per(bias, 0.0), device=self.dev)
+            t0 = torch.tensor(per(t_mbr, self.p["t_mbr"]), device=self.dev).log()
+            if train_neurons:
+                self.bias, self.log_t_mbr = nn.Parameter(b0), nn.Parameter(t0)
+            else:
+                self.register_buffer("bias", b0); self.register_buffer("log_t_mbr", t0)
         self._build()
 
     @property
@@ -175,8 +229,22 @@ class ConnectomeLayer(nn.Module):
         """현재 연결별 세기 (mV/스파이크, 부호 포함). 순서는 self.w_idx (post, pre)"""
         if not self.trainable:
             return self.w_base
-        scale = torch.ones_like(self.w_base).index_copy(0, self.train_pos, torch.exp(self.log_scale))
+        scale = torch.ones_like(self.w_base).index_copy(0, self.train_pos, torch.exp(self.log_scale)[self.train_which])
         return self.w_base * scale
+
+    def scale_of(self) -> dict:
+        """share="pair"일 때 연결 종류별 학습된 배율 {"Mi1>T4a": 1.3, ...}"""
+        if self.share != "pair" or not self.trainable:
+            raise ValueError("share='pair'로 학습하는 층에서만")
+        return dict(zip(self.train_pairs, torch.exp(self.log_scale).tolist()))
+
+    def neuron_table(self):
+        """그룹별 bias(mV)와 막 시간 상수(ms)"""
+        import pandas as pd
+        if not self.neuron_params:
+            raise ValueError("뉴런 매개변수(bias/t_mbr/train_neurons)를 켠 층에서만")
+        return pd.DataFrame({"bias_mV": self.bias.detach().cpu()[:-1].numpy(),
+                             "t_mbr_ms": self.log_t_mbr.detach().exp().cpu()[:-1].numpy()}, index=self.group_names)
 
     def _propagate(self, spk: torch.Tensor, values: torch.Tensor | None) -> torch.Tensor:
         if values is None:                                       # 고정 층 (기울기 필요 없으면 빠른 길)
@@ -191,9 +259,21 @@ class ConnectomeLayer(nn.Module):
         dt = p["dt"]; steps = int(round(self.t_ms / dt))
         dly = max(int(round(p["t_dly"] / dt)), 1); R = dly + 1
         rfc = int(round(p["t_rfc"] / dt))
-        a = dt / p["t_mbr"]; gd = float(np.exp(-dt / p["tau"]))
+        gd = float(np.exp(-dt / p["tau"]))
+        if self.neuron_params:                                   # 그룹별 휴지 전위·반응 속도 (N, 1)
+            v_eq = p["v_0"] + self.bias[self.group_idx][:, None]
+            a = (dt / self.log_t_mbr.exp()[self.group_idx][:, None]).clamp(max=1.0)
+        else:
+            v_eq, a = p["v_0"], dt / p["t_mbr"]
         poi_w = p["w_syn"] * p["f_poi"]
-        p_spk = (rates * dt / 1000.0).T                         # (n_in, B) 스텝당 입력 스파이크 확률
+        if rates.dim() == 2:
+            p_all = (rates * dt / 1000.0).T[None]               # (1, n_in, B) 스텝당 입력 스파이크 확률
+        elif rates.dim() == 3:
+            p_all = (rates * dt / 1000.0).permute(1, 2, 0)      # (T, n_in, B)
+        else:
+            raise ValueError("rates는 (B, n_in) 또는 (B, T, n_in)")
+        T = p_all.shape[0]
+        s_cnt = int(round(self.count_from_ms / dt))
         rfc_vec = torch.full((N, 1), float(rfc), device=dev); rfc_vec[self.in_idx] = 0
         scale = p["v_th"] - p["v_rst"]
         values = self.weights() if self.trainable else None      # 연결 세기는 순전파당 한 번만 계산
@@ -204,9 +284,10 @@ class ConnectomeLayer(nn.Module):
                 g.set_state(gen_state)                          # 다시 계산할 때도 같은 난수
             buf = list(buf)                                      # 지연 중인 시냅스 입력 (원형 버퍼)
             for s in range(s0, s1):
+                p_spk = p_all[s * T // steps]
                 G = G + buf[s % R]
                 act = refr <= 0
-                V = torch.where(act, V + (p["v_0"] - V + G) * a, V)
+                V = torch.where(act, V + (v_eq - V + G) * a, V)
                 G = torch.where(act, G * gd, G)
                 if self.input_mode == "poisson":
                     inp = (torch.rand(p_spk.shape, device=dev, generator=g) < p_spk).float()
@@ -216,7 +297,8 @@ class ConnectomeLayer(nn.Module):
                 V = V.index_add(0, self.in_idx, inp * poi_w)
                 spk = SpikeFn.apply((V - p["v_th"]) / scale, self.slope)
                 fired = spk.detach() > 0
-                counts = counts + spk
+                if s >= s_cnt:
+                    counts = counts + spk
                 V = torch.where(fired, p["v_rst"], V)            # 리셋은 기울기 끊음 (표준)
                 G = torch.where(fired, 0.0, G)
                 refr = torch.where(fired, rfc_vec, refr - 1)
@@ -224,17 +306,21 @@ class ConnectomeLayer(nn.Module):
             return (V, G, refr, counts, phase, *buf)
 
         zeros = lambda: torch.zeros((N, B), device=dev)
-        state = (torch.full((N, B), p["v_0"], device=dev), zeros(), zeros(), zeros(),
-                 self.phase0.expand(-1, B).clone(), *[zeros() for _ in range(R)])
+        if self.v_init == "random":
+            V0 = (p["v_rst"] + self.v_frac * (p["v_th"] - p["v_rst"])).expand(-1, B).clone()
+        else:
+            V0 = torch.full((N, B), p["v_0"], device=dev)
+        state = (V0, zeros(), zeros(), zeros(), self.phase0.expand(-1, B).clone(), *[zeros() for _ in range(R)])
         ce = self.checkpoint_every
-        if ce and torch.is_grad_enabled() and (self.trainable or rates.requires_grad):
+        needs_grad = self.trainable or rates.requires_grad or (self.neuron_params and self.bias.requires_grad)
+        if ce and torch.is_grad_enabled() and needs_grad:
             for s0 in range(0, steps, ce):                      # 구간마다 중간 상태를 버리고 역전파 때 다시 계산
                 state = torch.utils.checkpoint.checkpoint(
                     run, s0, min(s0 + ce, steps), g.get_state() if g is not None else None, *state,
                     use_reentrant=False)
         else:
             state = run(0, steps, None, *state)
-        rate = state[3] / (self.t_ms / 1000.0)                   # (N, B) Hz
+        rate = state[3] / ((self.t_ms - s_cnt * dt) / 1000.0)    # (N, B) Hz
         return rate.T if return_all else rate[self.out_idx].T
 
     # ─────────────── 저장 / 불러오기 ───────────────
@@ -259,5 +345,9 @@ class ConnectomeLayer(nn.Module):
 
     def extra_repr(self):
         tr = f", 학습 연결 {len(self.train_pos):,}개" if self.trainable else ""
-        return (f"{self.circuit.name}: in {self.n_in} → out {self.n_out} ({'+'.join(self.out_names)}), "
-                f"{self.t_ms} ms, dt {self.p['dt']} ms, 입력 {self.input_mode}{tr}")
+        if self.trainable and self.share == "pair":
+            tr += f" (종류 {len(self.log_scale):,}개가 배율 공유)"
+        if self.neuron_params:
+            tr += f", 뉴런 매개변수 그룹 {len(self.group_names)}개{' 학습' if self.bias.requires_grad else ''}"
+        return (f"{self.circuit.name}: in {self.n_in} ({'+'.join(self.in_names)}) → out {self.n_out} "
+                f"({'+'.join(self.out_names)}), {self.t_ms} ms, dt {self.p['dt']} ms, 입력 {self.input_mode}{tr}")

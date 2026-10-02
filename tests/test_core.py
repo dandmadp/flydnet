@@ -383,3 +383,106 @@ def test_tiny_circuit_layer_trains_without_flywire_data():
     out = layer(x)
     out.sum().backward()
     assert out.shape == (2, 12) and torch.isfinite(layer.log_scale.grad).all()
+
+
+# ─────────────── 뉴런 매개변수, 연결 종류 공유, 시간 변화 입력 (시각계용) ───────────────
+def test_with_sign_flips_only_selected_sender():
+    c = _tiny_circuit()
+    s = c.with_sign("IN", -1)
+    m = np.isin(c.pre, c.groups["IN"])
+    assert (s.weight[m] < 0).all() and np.array_equal(s.weight[~m], c.weight[~m])
+    assert np.array_equal(np.abs(s.weight), np.abs(c.weight))
+
+
+def test_pair_sharing_has_one_scale_per_edge_type():
+    c = _tiny_circuit(n_edges=120)
+    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
+                               share="pair", device="cpu", gains={"IN>OUT": 30.0})
+    assert len(layer.log_scale) == len(set(layer.edge_key))
+    layer(torch.full((2, 5), 200.0)).sum().backward()
+    assert torch.isfinite(layer.log_scale.grad).all()
+    with torch.no_grad():
+        layer.log_scale[:] = torch.arange(len(layer.log_scale)).float() * 0.1
+    w = layer.weights() / layer.w_base
+    for k, v in layer.scale_of().items():
+        assert torch.allclose(w[torch.tensor(layer.edge_key == k)], torch.tensor(v))
+
+
+def test_bias_makes_neurons_fire_without_input_and_trains():
+    c = _tiny_circuit()
+    x = torch.zeros(2, 5)
+    quiet = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=50, dt=0.5, device="cpu")
+    assert quiet(x).sum() == 0
+    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=50, dt=0.5, device="cpu", bias={"OUT": 12.0},
+                               t_mbr={"OUT": 10.0}, train_neurons=True, v_init="random")
+    out = layer(x)
+    assert (out > 0).all()
+    out.sum().backward()
+    assert layer.bias.grad.abs().sum() > 0 and layer.log_t_mbr.grad.abs().sum() > 0
+    tab = layer.neuron_table()
+    assert tab.loc["OUT", "bias_mV"] == 12.0 and abs(tab.loc["OUT", "t_mbr_ms"] - 10.0) < 1e-4
+    assert tab.loc["IN", "bias_mV"] == 0.0 and abs(tab.loc["IN", "t_mbr_ms"] - 20.0) < 1e-4
+
+
+def test_neutral_neuron_params_match_plain_layer():
+    c = _tiny_circuit(n_edges=120)
+    kw = dict(t_ms=30, dt=0.5, input_mode="regular", device="cpu", gains={"IN>OUT": 30.0})
+    x = torch.full((2, 5), 150.0)
+    a = fd.ConnectomeLayer(c, "IN", "OUT", **kw)(x)
+    b = fd.ConnectomeLayer(c, "IN", "OUT", bias=0.0, **kw)(x)
+    assert torch.allclose(a, b)
+
+
+def test_time_varying_input_constant_matches_static():
+    c = _tiny_circuit(n_edges=120)
+    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=30, dt=0.5, input_mode="regular", device="cpu",
+                               gains={"IN>OUT": 30.0})
+    x = torch.rand(3, 5) * 200
+    assert torch.equal(layer(x), layer(x[:, None].expand(-1, 7, -1)))
+    off_late = x[:, None].repeat(1, 2, 1); off_late[:, 1] = 0          # 후반부 입력 끔 → 반응 줄어듦
+    assert layer(off_late).sum() < layer(x).sum()
+
+
+def test_count_from_ms_counts_only_late_window():
+    c = _tiny_circuit(n_edges=120)
+    kw = dict(t_ms=40, dt=0.5, input_mode="regular", device="cpu", gains={"IN>OUT": 30.0})
+    x = torch.full((1, 5), 200.0)
+    full = fd.ConnectomeLayer(c, "IN", "IN", **kw)(x)
+    late = fd.ConnectomeLayer(c, "IN", "IN", count_from_ms=20, **kw)(x)
+    assert torch.allclose(late, full, rtol=0.2)                         # 일정 입력이면 발화율(Hz)은 비슷
+    with pytest.raises(ValueError):
+        fd.ConnectomeLayer(c, "IN", "OUT", count_from_ms=40, **kw)
+
+
+def test_new_options_save_load_roundtrip(tmp_path):
+    c = _tiny_circuit(n_edges=120)
+    layer = fd.ConnectomeLayer(c, ["IN"], "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
+                               share="pair", bias={"OUT": 3.0}, train_neurons=True, v_init="random",
+                               count_from_ms=5, device="cpu", gains={"IN>OUT": 30.0})
+    with torch.no_grad():
+        layer.log_scale.add_(0.3); layer.bias.add_(1.0)
+    layer.save(tmp_path / "l.pt")
+    back = fd.ConnectomeLayer.load(tmp_path / "l.pt", device="cpu")
+    x = torch.full((2, 5), 150.0)
+    assert torch.equal(layer(x), back(x))
+
+
+def test_drifting_grating():
+    xy = np.random.default_rng(0).normal(size=(30, 2)).astype(np.float32) * 5
+    lum = fd.drifting_grating(xy, [0, 90], t_ms=100, frames=20, onset_ms=20, contrast=0.5)
+    assert lum.shape == (2, 20, 30)
+    assert (lum[:, :4] == 0).all() and lum.abs().max() <= 0.5 + 1e-6 and lum[:, 4:].abs().max() > 0.3
+
+
+@needs_data
+def test_visual_circuit_and_direction_wiring():
+    vc = fd.visual_circuit()
+    assert {"T4a", "Mi1", "R1-6", "HSE"} <= set(vc.groups) and vc.pos is not None
+    assert (vc.weight[np.isin(vc.pre, vc.groups["R1-6"])] < 0).all()
+    xy = fd.column_map(vc)
+    assert np.isfinite(xy[vc.groups["Mi1"]]).all() and np.isnan(xy[vc.groups["HSE"]]).all()
+    real = fd.direction_offsets(vc, xy)
+    with pytest.warns(UserWarning):
+        sh = vc.shuffled(seed=0)
+    rand = fd.direction_offsets(sh, xy)
+    assert all(real[t][1] > 0.3 > rand[t][1] for t in real)       # 실제 배선에만 방향 구조
