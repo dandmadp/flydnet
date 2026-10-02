@@ -11,6 +11,6 @@ from .encoders import RateEncoder, GlomerularEncoder
 from .layers import ConnectomeLayer, DEFAULT_PARAMS
 from .readout import extract, train_linear
 from .plasticity import DopamineReadout
-from .datasets import synthetic_odors
+from .datasets import synthetic_odors, door_odors
 
 __version__ = "0.1.0"

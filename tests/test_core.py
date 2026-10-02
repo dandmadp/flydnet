@@ -2,6 +2,8 @@
 
     pytest -q
 """
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -170,3 +172,18 @@ def test_shuffled_has_no_duplicate_or_self_edges(mb):
     key = pd.Series(sh.pre * sh.N + sh.post)
     assert not key.duplicated().any()
     assert not (sh.pre == sh.post).any()
+
+
+DOOR = Path(__file__).resolve().parents[1] / "data" / "door"
+
+
+@needs_data
+@pytest.mark.skipif(not (DOOR / "door_response_matrix.csv").exists(), reason="DoOR 데이터 없음")
+def test_door_odors(mb):
+    enc = fd.GlomerularEncoder(mb)
+    d = fd.door_odors(enc.glomeruli, DOOR, min_measured=20)
+    assert d["X"].shape == (len(d["names"]), 56)
+    assert (d["X"] >= 0).all() and (d["X"] <= 1).all()
+    assert (d["X"][~d["measured"]] == 0).all()           # 측정 안 된 칸은 0
+    assert (d["measured"].sum(1) >= 20).all()
+    assert "arom" not in set(d["classes"]) and "terpenes" not in set(d["classes"])

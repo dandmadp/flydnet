@@ -27,3 +27,48 @@ def synthetic_odors(n_classes: int, n_glomeruli: int, n_train: int, n_test: int,
     Xtr, ytr = sample(n_train)
     Xte, yte = sample(n_test)
     return Xtr, ytr, Xte, yte
+
+
+# 같은 계열인데 이름이 다른 DoOR 화학 계열
+_CLASS_ALIASES = {"arom": "aromatics", "terpenes": "terpene", "sulfid": "sulfide"}
+
+
+def door_odors(glomeruli, data_dir, min_measured: int = 20):
+    """DoOR 2.0 실제 냄새 반응 → 사구체 벡터 (Münch & Galizia 2016, CC BY-SA 4.0)
+
+    data_dir에 door_response_matrix.csv, door_mappings.csv, odor.csv 필요
+    (https://github.com/ropensci/DoOR.data 의 data/ 폴더)
+
+    glomeruli: 사구체 이름 순서 (예: GlomerularEncoder.glomeruli)
+    반환 dict:
+      X        (n_odors, n_glomeruli) 반응 − 자발 발화(SFR), 0 아래는 0. 측정 안 된 칸도 0
+      measured (n_odors, n_glomeruli) 측정 여부
+      names, classes (화학 계열), inchikey
+    min_measured: 이만큼 이상의 사구체가 측정된 냄새만
+    """
+    import numpy as np
+    import pandas as pd
+    from pathlib import Path
+
+    d = Path(data_dir)
+    R = pd.read_csv(d / "door_response_matrix.csv", sep=";")
+    M = pd.read_csv(d / "door_mappings.csv", sep=";")
+    O = pd.read_csv(d / "odor.csv", sep=";").drop_duplicates("InChIKey").set_index("InChIKey")
+    sfr = R.loc["SFR"]
+    R = R.drop(index="SFR")
+
+    col = {g: j for j, g in enumerate(glomeruli)}
+    X = np.zeros((len(R), len(glomeruli)), np.float32)
+    meas = np.zeros_like(X, dtype=bool)
+    for rec, glo in M[["receptor", "code"]].dropna().itertuples(index=False):
+        if rec in R.columns and glo in col:
+            v = R[rec].values
+            ok = ~np.isnan(v)
+            X[ok, col[glo]] = np.maximum(v[ok] - sfr[rec], 0)
+            meas[ok, col[glo]] = True
+
+    keep = meas.sum(1) >= min_measured
+    info = O.reindex(R.index[keep])
+    classes = info["Class"].fillna("other").replace(_CLASS_ALIASES).values
+    return dict(X=torch.tensor(X[keep]), measured=torch.tensor(meas[keep]), names=info["Name"].fillna("").values,
+                classes=classes, inchikey=R.index[keep].values)
