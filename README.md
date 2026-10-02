@@ -1,0 +1,114 @@
+# flydnet
+
+초파리 커넥톰(FlyWire v783)의 실제 배선을 신경망 층으로 쓰는 PyTorch 라이브러리.
+텐서를 입력 뉴런의 발화율(설탕 뉴런 150Hz 자극처럼)로 바꿔 넣고, 스파이킹 LIF 모델로 전파한 뒤
+출력 뉴런의 발화율을 특징으로 읽는다.
+
+```
+텐서 ─RateEncoder─▶ PN 발화율 ─ConnectomeLayer(실제 배선, LIF)─▶ KC/MBON 발화율 ─리드아웃─▶ 예측
+```
+
+## 설치
+
+전용 가상환경 `D:\flydnet\.venv` (Python 3.11, torch 2.14.1+cu132)에 편집 모드로 설치되어 있다.
+
+```bash
+# 새로 만들 때
+python -m venv .venv
+.venv\Scripts\pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu132
+.venv\Scripts\pip install -e ".[examples,dev]"   # 편집 모드: 코드를 고치면 바로 반영
+
+.venv\Scripts\python -m pytest -q                # 테스트
+```
+`examples/`의 스크립트는 설치하지 않아도 `src/`를 직접 불러와서 실행된다.
+
+## 사용
+
+```python
+import flydnet as fd
+mb = fd.Circuit.from_flywire()                    # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
+enc = fd.RateEncoder(784, len(mb.groups["PN"]))   # 픽셀 → PN 발화율 (고정 무작위 희소 투영)
+layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=100, gains={"PN>KC": 2.0}, input_mode="regular")
+feats = fd.extract(layer, enc, images)            # (n, 2597) KC 발화율
+fd.train_linear(feats, y, feats_test, y_test)     # 로지스틱 회귀
+mb.shuffled(seed=0)                               # 무작위 배선 대조군 (연결 수·차수는 그대로)
+```
+
+데이터 경로는 기본 `D:\flybrain_local\Drosophila_brain_model`이며 환경변수 `FLYDNET_DATA`로 바꿀 수 있다.
+필요 파일: `Completeness_783.csv`, `Connectivity_783.parquet`, `flywire_annotations.tsv`
+([flywire_annotations](https://github.com/flyconnectome/flywire_annotations)의 Supplemental_file1).
+
+## 구성
+
+| 모듈 | 내용 |
+|---|---|
+| `circuit.py` | `Circuit`: 주석으로 뉴런 그룹을 골라 그 사이 연결만 남긴 회로, `shuffled()` 대조군, `summary()` |
+| `encoders.py` | `RateEncoder`: 텐서 → 입력 뉴런 발화율 |
+| `layers.py` | `ConnectomeLayer`: 배치 LIF 시뮬레이션 (희소행렬 곱, GPU). `input_mode="regular"`/`"poisson"` |
+| `readout.py` | `extract()`: 데이터 → 발화율 특징, `train_linear()`: 리드아웃 학습 |
+
+## 실험 ① 버섯체 저장소(reservoir) — MNIST
+
+`python examples/mnist_reservoir.py` (train 60k / test 10k, RTX 5070에서 회로 하나당 약 2.5분)
+
+설정: 100 ms, PN→KC 배율 2.0 (KC 약 7% 활성 = 실제 초파리 수준), 규칙적 입력 스파이크
+
+| 특징 | 차원 | test |
+|---|---|---|
+| 픽셀 (기준선) | 784 | **92.72%** |
+| PN 발화율 (인코더 출력) | 344 | 92.41% |
+| KC — 실제 배선 | 2597 | 89.56% |
+| KC — 무작위 배선 ×3 | 2597 | 89.05 / 89.20 / 89.06% |
+| MBON — 실제 배선 | 48 | 24.39% |
+| MBON — 무작위 배선 ×3 | 48 | 26.97 / 35.10 / 32.02% |
+
+해석
+- KC 층은 픽셀보다 약 3%p 낮다. 고정된 스파이킹 층을 거치면서 정보가 줄어든다.
+- 실제 배선이 무작위 배선보다 KC에서 0.4~0.5%p 높다. 무작위 대조군 3개 모두보다 높지만 차이가 작아
+  (테스트 1만 개의 표준오차 약 0.3%p) 확정적이지 않다.
+- MBON 48개는 거의 쓸모없고 실제 배선이 오히려 낮다. MBON은 원래 학습된 KC→MBON 시냅스로
+  읽어야 하는 출력이라, 학습 없는 배선만으로는 의미 있는 판독이 안 되는 것으로 보인다 → 실험 ②의 동기.
+
+개발 중 발견한 점
+- 포아송(무작위) 입력, 100 ms에서는 같은 이미지를 다시 넣어도 켜지는 KC 집합이 26%만 겹쳐
+  리드아웃이 잡음을 외웠다 (test 54%). 규칙적 입력으로 바꿔 같은 입력 → 같은 반응이 되게 했다.
+
+## 실험 ② 도파민 학습 리드아웃 (역전파 없음) — MNIST
+
+`python examples/mnist_dopamine.py` (실험 ①의 KC 특징 캐시 사용, 1분 이내)
+
+숫자마다 MBON 같은 출력 뉴런 하나. KC→출력 시냅스를 `KC 활동 × 도파민` 국소 규칙으로 학습 (`fd.DopamineReadout`).
+- `bidir`: 틀렸을 때 정답 출력 강화 + 이긴 오답 출력 약화 (양방향 도파민 가소성)
+- `assoc`: 정답 출력만 그 클래스 평균 패턴으로 강화 + 출력별 시냅스 총량 정규화. 학습 순서와 무관
+- `ltd`, `ltd_err`, `ltp`: 단방향 규칙. 전체 학습에서 37~73%로 약해 실험에서 제외
+
+**A. 전체 학습** (test, bidir은 3회 평균)
+
+| 특징 | 역전파(로지스틱) | 도파민 bidir | 도파민 assoc |
+|---|---|---|---|
+| 픽셀 | 92.72% | 88.99 ± 0.63% | 82.16% |
+| KC 실제 배선 | 89.46% | 84.77 ± 0.50% | 74.09% |
+| KC 무작위 배선 | 89.06% | 84.39 ± 2.64% | 74.61% |
+
+**B. 연속 학습** (0/1 → 2/3 → 4/5 → 6/7 → 8/9 순서로 한 번씩, 지금까지 본 숫자 전체 정확도)
+
+| 특징 | 방법 | 단계별 | 마지막 후 첫 과제(0/1) |
+|---|---|---|---|
+| KC 실제 배선 | 역전파 | 99.8 → 70.3 → 58.8 → 44.9 → **40.5** | 5.8% |
+| KC 실제 배선 | 도파민 bidir | 99.8 → 47.4 → 30.4 → 24.8 → **19.1** | 0.0% |
+| KC 실제 배선 | 도파민 assoc | 99.3 → 90.2 → 82.8 → 79.6 → **74.1** | 89.4% |
+| 픽셀 | 도파민 assoc | 99.8 → 92.9 → 87.8 → 86.8 → **82.2** | 93.0% |
+
+해석
+- 오류를 고치는 규칙(역전파, bidir)은 전체 학습에서 강하지만 연속 학습에서 앞 과제를 거의 다 잊는다.
+  bidir은 새 숫자를 배울 때 틀린 답이 대부분 옛 숫자라 옛 출력을 계속 약화시켜 역전파보다 더 잊는다.
+- assoc는 다른 출력을 건드리지 않아 망각이 원리상 없다 → 연속 학습 최종 74% (역전파 40%).
+  대신 전체 학습 성능은 낮다 (74% vs 89%).
+- **실제 배선 효과는 여기서도 없다**: KC 실제 ≈ 무작위, 그리고 assoc는 KC보다 픽셀에서 더 좋다 (82% vs 74%).
+  이점은 버섯체 배선이 아니라 학습 규칙(순서 무관 연합 학습)에서 나온다.
+
+## 다음 단계 아이디어
+- KC 층이 정보를 잃는 원인 줄이기: 입력 인코더(현재 무작위 투영)를 실제 냄새 수용체 → 사구체 구조에 맞추기,
+  APL 억제를 비스파이킹(연속값)으로 바꾸기
+- 버섯체 배선이 유리할 만한 과제(냄새처럼 조합적인 입력) 찾기
+- 실험 ③: 배선 고정 + 가중치 역전파 (대리 기울기)

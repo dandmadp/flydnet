@@ -1,0 +1,123 @@
+"""flydnet 핵심 동작 테스트. FlyWire 데이터가 없으면 회로 관련 테스트는 건너뜀
+
+    pytest -q
+"""
+import numpy as np
+import pandas as pd
+import pytest
+import torch
+
+import flydnet as fd
+
+HAS_DATA = all((fd.DEFAULT_DATA / f).exists() for f in
+               ("Completeness_783.csv", "Connectivity_783.parquet", "flywire_annotations.tsv"))
+needs_data = pytest.mark.skipif(not HAS_DATA, reason=f"FlyWire 데이터 없음: {fd.DEFAULT_DATA}")
+
+
+@pytest.fixture(scope="module")
+def mb():
+    return fd.Circuit.from_flywire()
+
+
+# ─────────────── Circuit ───────────────
+@needs_data
+def test_mushroom_body_sizes(mb):
+    assert {k: len(v) for k, v in mb.groups.items()} == {"PN": 344, "KC": 2597, "APL": 1, "MBON": 48}
+    assert mb.pre.min() >= 0 and mb.post.max() < mb.N
+    assert (mb.weight != 0).all()
+
+
+@needs_data
+def test_kc_are_excitatory_apl_inhibitory(mb):
+    g = mb.group_of()
+    assert (mb.weight[g[mb.pre] == "KC"] > 0).all()
+    assert (mb.weight[g[mb.pre] == "APL"] < 0).all()
+
+
+@needs_data
+def test_shuffled_keeps_degrees_per_group_pair(mb):
+    sh = mb.shuffled(seed=0)
+    g = mb.group_of()
+
+    def degrees(c):
+        key = g[c.pre] + ">" + g[c.post]
+        out = pd.Series(1, index=pd.MultiIndex.from_arrays([key, c.pre])).groupby(level=[0, 1]).size()
+        inn = pd.Series(1, index=pd.MultiIndex.from_arrays([key, c.post])).groupby(level=[0, 1]).size()
+        return out.sort_index(), inn.sort_index()
+
+    (o1, i1), (o2, i2) = degrees(mb), degrees(sh)
+    pd.testing.assert_series_equal(o1, o2)
+    pd.testing.assert_series_equal(i1, i2)
+    assert (mb.post != sh.post).mean() > 0.5          # 실제로 섞였는지
+
+
+# ─────────────── RateEncoder ───────────────
+def test_encoder_shape_and_range():
+    enc = fd.RateEncoder(784, 344, max_rate=100)
+    r = enc(torch.rand(8, 28, 28))
+    assert r.shape == (8, 344)
+    assert r.min() >= 0 and torch.allclose(r.amax(1), torch.full((8,), 100.0))
+
+
+def test_encoder_identity_requires_same_size():
+    with pytest.raises(ValueError):
+        fd.RateEncoder(10, 20, projection=None)
+
+
+# ─────────────── ConnectomeLayer ───────────────
+@needs_data
+def test_layer_shape_and_zero_input(mb):
+    layer = fd.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=20)
+    r = layer(torch.zeros(4, 344))
+    assert r.shape == (4, 2597 + 48)
+    assert (r == 0).all()
+
+
+@needs_data
+def test_layer_regular_is_deterministic(mb):
+    layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=30, gains={"PN>KC": 2.0}, input_mode="regular")
+    x = fd.RateEncoder(784, 344)(torch.rand(4, 784))
+    assert torch.equal(layer(x, seed=1), layer(x, seed=2))
+    assert layer(x).sum() > 0
+
+
+@needs_data
+def test_layer_poisson_seed_reproducible(mb):
+    layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=30, gains={"PN>KC": 2.0})
+    x = torch.full((2, 344), 100.0)
+    assert torch.equal(layer(x, seed=5), layer(x, seed=5))
+
+
+# ─────────────── DopamineReadout ───────────────
+def _toy(n=400, k=50, c=4, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    protos = (torch.rand(c, k, generator=g) < 0.2).float()
+    y = torch.randint(0, c, (n,), generator=g)
+    X = (protos[y] + 0.3 * torch.rand(n, k, generator=g)) * 50
+    return X, y
+
+
+@pytest.mark.parametrize("mode", ["bidir", "assoc"])
+def test_readout_learns_toy_problem(mode):
+    X, y = _toy()
+    m = fd.DopamineReadout(X.shape[1], 4, mode, lr=0.1, device="cpu").fit(X, y, epochs=3)
+    assert m.accuracy(X, y) > 0.9
+
+
+def test_bidir_weights_stay_nonnegative():
+    X, y = _toy()
+    m = fd.DopamineReadout(X.shape[1], 4, "bidir", lr=1.0, device="cpu").fit(X, y, epochs=3)
+    assert (m.W >= 0).all()
+
+
+def test_assoc_is_order_independent():
+    X, y = _toy()
+    a = fd.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X, y, seed=0)
+    order = torch.argsort(y)                           # 클래스별로 몰아서 (연속 학습과 같은 순서)
+    b = fd.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X[order], y[order], seed=1)
+    assert torch.allclose(a.W, b.W, atol=1e-5)
+
+
+def test_invalid_mode():
+    with pytest.raises(ValueError):
+        fd.DopamineReadout(10, 2, "nope")
