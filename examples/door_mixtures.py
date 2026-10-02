@@ -43,21 +43,12 @@ X0 = fd.door_odors(enc.glomeruli, args.data)["X"]
 ok = np.nonzero(((X0 > 0.05).sum(1) >= 3).numpy())[0]             # 사구체 3개 이상 켜는 냄새만
 mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
-sat = lambda x: x / (x + args.sat)
 print(f"{mb}")
 print(f"후보 냄새 {len(ok)}개, 냄새 4개 묶음 {args.sets}개 × seed {args.seeds}개, 무작위 배선 {args.shuffles}개\n")
 
 
 def make(sets, n, g):
-    """묶음마다 AB, CD (보상), AC, BD (무보상) 각 n개 → (x, y, 묶음 번호)"""
-    xs, ys, ps = [], [], []
-    for p, (a, b, c, d) in enumerate(sets):
-        for comp, label in (((a, b), 1), ((c, d), 1), ((a, c), 0), ((b, d), 0)):
-            base = sum(X0[k] * torch.exp(args.noise * torch.randn(n, X0.shape[1], generator=g)) for k in comp)
-            xs.append(sat(base + (args.add_noise * torch.randn(n, X0.shape[1], generator=g)).abs()))
-            ys += [label] * n
-            ps += [p] * n
-    return torch.cat(xs), torch.tensor(ys), torch.tensor(ps)
+    return fd.biconditional_mixtures(X0, sets, n, args.noise, args.add_noise, args.sat, g)
 
 
 res = {k: [] for k in ["glomeruli"] + list(layers)}

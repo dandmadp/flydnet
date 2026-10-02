@@ -14,11 +14,12 @@ def extract(layer, encoder, X: torch.Tensor, batch: int = 256, seed: int = 0, lo
 
 
 def train_linear(Xtr, ytr, Xte, yte, n_classes=None, epochs=30, lr=1e-2, wd=1e-4, batch=512,
-                 device=None, scale: str = "global") -> dict:
+                 device=None, scale: str = "global", seed: int = 0) -> dict:
     """정규화 + 로지스틱 회귀(소프트맥스). 정확도 반환
 
     scale: "global"  = 특징별 평균 빼고 전체 표준편차 하나로 나눔 (드물게 켜지는 특징이 폭주하지 않음)
            "feature" = 특징별 표준화 (드문 특징은 학습 때 sd≈0 → 테스트에서 값이 폭주할 수 있음)
+    seed:  가중치 초기화와 샘플 순서 (같은 seed → 같은 결과)
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     n_classes = n_classes or int(ytr.max()) + 1
@@ -26,10 +27,12 @@ def train_linear(Xtr, ytr, Xte, yte, n_classes=None, epochs=30, lr=1e-2, wd=1e-4
     sd = Xtr.std(0).clamp_min(1e-6) if scale == "feature" else (Xtr - mu).std().clamp_min(1e-6)
     f = lambda X: ((X - mu) / sd).float().to(device)
     Xtr_, Xte_, ytr_, yte_ = f(Xtr), f(Xte), ytr.to(device), yte.to(device)
-    model = nn.Linear(Xtr.shape[1], n_classes).to(device)
+    with torch.random.fork_rng(devices=[]):                 # 전역 난수 상태는 건드리지 않음
+        torch.manual_seed(seed)
+        model = nn.Linear(Xtr.shape[1], n_classes).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, epochs)
-    g = torch.Generator(device="cpu").manual_seed(0)
+    g = torch.Generator(device="cpu").manual_seed(seed)
     for _ in range(epochs):
         perm = torch.randperm(len(Xtr_), generator=g).to(device)
         for i in range(0, len(perm), batch):

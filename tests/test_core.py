@@ -205,3 +205,16 @@ def test_assoc_readout_never_changes_other_classes():
     assert torch.equal(m.W[:2 * 3], before)             # 앞 클래스 출력은 그대로
     assert (m.count.view(4, 3) > 0).all()               # 모든 원형이 채워짐
     assert m.accuracy(X, y) > 0.9
+
+
+def test_train_linear_is_reproducible():
+    X, y = _toy(n=100)
+    r = [fd.train_linear(X[:60], y[:60], X[60:], y[60:], epochs=5, device="cpu")["model"].weight for _ in range(2)]
+    assert torch.equal(r[0], r[1])
+
+
+def test_assoc_readout_uses_all_prototypes_in_one_batch():
+    X, y = _toy(n=40)
+    m = fd.AssocReadout(X.shape[1], 4, per_class=3, device="cpu").fit(X, y, batch=64)   # 한 묶음에 전부
+    assert (m.count.view(4, 3) > 0).all()
+    assert m.count.sum() == 40

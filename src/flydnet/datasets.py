@@ -72,3 +72,22 @@ def door_odors(glomeruli, data_dir, min_measured: int = 20):
     classes = info["Class"].fillna("other").replace(_CLASS_ALIASES).values
     return dict(X=torch.tensor(X[keep]), measured=torch.tensor(meas[keep]), names=info["Name"].fillna("").values,
                 classes=classes, inchikey=R.index[keep].values)
+
+
+def biconditional_mixtures(X0, sets, n: int, noise: float = 0.5, add_noise: float = 0.05, sat: float = 0.3,
+                           generator=None):
+    """조건부 구별 과제 샘플: 냄새 4개 (a, b, c, d) 묶음마다 AB, CD → 1 (보상), AC, BD → 0 (무보상)
+
+    혼합물 = 포화(Σ 성분 × exp(N(0, noise)) + |N(0, add_noise)|), 포화(x) = x / (x + sat)
+    반환: (x, y, 묶음 번호), 묶음·혼합물마다 n개
+    """
+    xs, ys, ps = [], [], []
+    G = X0.shape[1]
+    for p, (a, b, c, d) in enumerate(sets):
+        for comp, label in (((a, b), 1), ((c, d), 1), ((a, c), 0), ((b, d), 0)):
+            base = sum(X0[k] * torch.exp(noise * torch.randn(n, G, generator=generator)) for k in comp)
+            x = base + (add_noise * torch.randn(n, G, generator=generator)).abs()
+            xs.append(x / (x + sat))
+            ys += [label] * n
+            ps += [p] * n
+    return torch.cat(xs), torch.tensor(ys), torch.tensor(ps)

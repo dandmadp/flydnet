@@ -147,11 +147,25 @@ class AssocReadout:
     def step(self, X: torch.Tensor, y: torch.Tensor, classes=None):
         a = self.activity(X)
         y = y.to(self.dev)
-        own = self._proto_scores(a).view(len(a), self.n_classes, self.k)[torch.arange(len(a)), y]   # (B, k)
-        empty = (self.count.view(self.n_classes, self.k) == 0)[y]                                    # (B, k)
-        first_empty = empty & (empty.cumsum(1) == 1)            # 클래스의 첫 빈 출력부터 채움
-        own = torch.where(first_empty, torch.full_like(own, float("inf")), own)
-        idx = y * self.k + own.argmax(1)                         # 보상 도파민을 받을 출력
+        C, k = self.n_classes, self.k
+        # 1) 빈 출력 채우기: 묶음 안에서 클래스별 i번째 샘플 → 그 클래스의 i번째 빈 출력
+        onehot = torch.nn.functional.one_hot(y, C)
+        rank = (onehot.cumsum(0) * onehot).sum(1) - 1                      # 클래스 안 순번
+        empty = self.count.view(C, k) == 0
+        n_empty = empty.sum(1)
+        seed = rank < n_empty[y]
+        if seed.any():
+            order = torch.argsort((~empty).float(), dim=1, stable=True)     # 빈 출력 번호가 앞으로
+            idx = y[seed] * k + order[y[seed], rank[seed]]
+            self.W[idx] = a[seed]
+            self.count[idx] = 1
+        rest = ~seed
+        if not rest.any():
+            return
+        # 2) 나머지: 그 클래스 출력 중 가장 잘 맞는 하나에 보상 도파민 → 누적 평균
+        a, y = a[rest], y[rest]
+        own = self._proto_scores(a).view(len(a), C, k)[torch.arange(len(a)), y]
+        idx = y * k + own.argmax(1)
         n = torch.zeros_like(self.count).index_add_(0, idx, torch.ones(len(a), device=self.dev))
         s = torch.zeros_like(self.W).index_add_(0, idx, a)
         self.count += n
