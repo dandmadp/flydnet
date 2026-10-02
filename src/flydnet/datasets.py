@@ -33,11 +33,11 @@ def synthetic_odors(n_classes: int, n_glomeruli: int, n_train: int, n_test: int,
 _CLASS_ALIASES = {"arom": "aromatics", "terpenes": "terpene", "sulfid": "sulfide"}
 
 
-def door_odors(glomeruli, data_dir, min_measured: int = 20):
+def door_odors(glomeruli, data_dir=None, min_measured: int = 20):
     """DoOR 2.0 실제 냄새 반응 → 사구체 벡터 (Münch & Galizia 2016, CC BY-SA 4.0)
 
-    data_dir에 door_response_matrix.csv, door_mappings.csv, odor.csv 필요
-    (https://github.com/ropensci/DoOR.data 의 data/ 폴더)
+    data_dir에 door_response_matrix.csv, door_mappings.csv, odor.csv 필요. None이면 flydnet.data_dir("door")
+    (없으면 flydnet.download("door"), 출처 https://github.com/ropensci/DoOR.data 의 data/ 폴더)
 
     glomeruli: 사구체 이름 순서 (예: GlomerularEncoder.glomeruli)
     반환 dict:
@@ -48,9 +48,9 @@ def door_odors(glomeruli, data_dir, min_measured: int = 20):
     """
     import numpy as np
     import pandas as pd
-    from pathlib import Path
+    from .data import require
 
-    d = Path(data_dir)
+    d = require("door", data_dir)
     R = pd.read_csv(d / "door_response_matrix.csv", sep=";")
     M = pd.read_csv(d / "door_mappings.csv", sep=";")
     O = pd.read_csv(d / "odor.csv", sep=";").drop_duplicates("InChIKey").set_index("InChIKey")

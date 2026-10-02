@@ -1,13 +1,10 @@
 """FlyWire 커넥톰에서 뉴런 묶음(회로)을 잘라내 신경망 층의 '배선'으로 쓰는 Circuit"""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-DEFAULT_DATA = Path(os.environ.get("FLYDNET_DATA", r"D:\flybrain_local\Drosophila_brain_model"))
 
 # 이름 → (주석 열, 값). 버섯체 기본 회로: 투사 뉴런 → Kenyon 세포 → MBON, APL이 전체를 억제
 MUSHROOM_BODY = {
@@ -66,11 +63,13 @@ class Circuit:
 
     @classmethod
     def from_flywire(cls, groups: dict = MUSHROOM_BODY, side: str | None = "right",
-                     data_dir: str | Path = DEFAULT_DATA, annotations: str = "flywire_annotations.tsv",
+                     data_dir: str | Path | None = None, annotations: str = "flywire_annotations.tsv",
                      connectivity: str = "Connectivity_783.parquet",
                      completeness: str = "Completeness_783.csv") -> "Circuit":
-        """주석으로 고른 뉴런들 사이의 연결만 남긴 회로 (induced subgraph)"""
-        d = Path(data_dir)
+        """주석으로 고른 뉴런들 사이의 연결만 남긴 회로 (induced subgraph)
+        data_dir: None이면 flydnet.data_dir("flywire") (환경변수 → ~/.flydnet/config.json → ~/.flydnet/data)"""
+        from .data import require
+        d = require("flywire", data_dir)
         all_ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
         ann = pd.read_csv(d / annotations, sep="\t", low_memory=False,
                           usecols=["root_id", "cell_class", "cell_sub_class", "cell_type", "side"])

@@ -10,7 +10,9 @@
     layer = fd.ConnectomeLayer(mb, "PN", "KC", dt=0.5, t_ms=50, input_mode="regular", trainable=True)
     model = torch.nn.Sequential(enc, layer, torch.nn.Linear(layer.n_out, 10))
 """
-from .circuit import Circuit, MUSHROOM_BODY, DEFAULT_DATA
+from . import data
+from .data import data_dir, set_data_dir, download, data_status
+from .circuit import Circuit, MUSHROOM_BODY
 from .encoders import RateEncoder, GlomerularEncoder
 from .layers import ConnectomeLayer, SpikeFn, DEFAULT_PARAMS
 from .readout import extract, train_linear

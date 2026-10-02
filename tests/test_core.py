@@ -11,9 +11,8 @@ import torch
 
 import flydnet as fd
 
-HAS_DATA = all((fd.DEFAULT_DATA / f).exists() for f in
-               ("Completeness_783.csv", "Connectivity_783.parquet", "flywire_annotations.tsv"))
-needs_data = pytest.mark.skipif(not HAS_DATA, reason=f"FlyWire 데이터 없음: {fd.DEFAULT_DATA}")
+HAS_DATA = not fd.data.missing("flywire")
+needs_data = pytest.mark.skipif(not HAS_DATA, reason=f"FlyWire 데이터 없음: {fd.data_dir('flywire')}")
 
 
 @pytest.fixture(scope="module")
@@ -174,14 +173,11 @@ def test_shuffled_has_no_duplicate_or_self_edges(mb):
     assert not (sh.pre == sh.post).any()
 
 
-DOOR = Path(__file__).resolve().parents[1] / "data" / "door"
-
-
 @needs_data
-@pytest.mark.skipif(not (DOOR / "door_response_matrix.csv").exists(), reason="DoOR 데이터 없음")
+@pytest.mark.skipif(bool(fd.data.missing("door")), reason="DoOR 데이터 없음")
 def test_door_odors(mb):
     enc = fd.GlomerularEncoder(mb)
-    d = fd.door_odors(enc.glomeruli, DOOR, min_measured=20)
+    d = fd.door_odors(enc.glomeruli, min_measured=20)
     assert d["X"].shape == (len(d["names"]), 56)
     assert (d["X"] >= 0).all() and (d["X"] <= 1).all()
     assert (d["X"][~d["measured"]] == 0).all()           # 측정 안 된 칸은 0
@@ -261,3 +257,30 @@ def test_surrogate_spike():
     assert y.tolist() == [0, 0, 1, 1]
     y.sum().backward()
     assert (x.grad > 0).all() and x.grad[1] > x.grad[0]      # 문턱 근처에서 기울기가 큼
+
+
+# ─────────────── 데이터 경로 ───────────────
+def test_data_dir_precedence(tmp_path, monkeypatch):
+    monkeypatch.setattr(fd.data, "CONFIG", tmp_path / "config.json")
+    monkeypatch.setattr(fd.data, "DEFAULT_ROOT", tmp_path / "default")
+    for env in ("FLYDNET_FLYWIRE", "FLYDNET_DATA", "FLYDNET_DOOR"):
+        monkeypatch.delenv(env, raising=False)
+    assert fd.data_dir("flywire") == tmp_path / "default" / "flywire"          # 4. 기본값
+    fd.set_data_dir(flywire=tmp_path / "cfg")
+    assert fd.data_dir("flywire") == (tmp_path / "cfg").resolve()             # 3. 설정 파일
+    assert fd.data_dir("door") == tmp_path / "default" / "door"              #    다른 묶음은 그대로
+    monkeypatch.setenv("FLYDNET_DATA", str(tmp_path / "legacy"))
+    assert fd.data_dir("flywire") == tmp_path / "legacy"                      # 2. 예전 환경변수
+    monkeypatch.setenv("FLYDNET_FLYWIRE", str(tmp_path / "env"))
+    assert fd.data_dir("flywire") == tmp_path / "env"                         #    새 환경변수가 우선
+    assert fd.data_dir("flywire", tmp_path / "arg") == tmp_path / "arg"       # 1. 직접 준 경로
+    with pytest.raises(ValueError):
+        fd.data_dir("nope")
+
+
+def test_require_explains_missing_files(tmp_path):
+    with pytest.raises(FileNotFoundError, match="download"):
+        fd.data.require("door", tmp_path)
+    for name in fd.data.SOURCES["door"]:
+        (tmp_path / name).write_text("x")
+    assert fd.data.require("door", tmp_path) == tmp_path

@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 �
 import flydnet as fd
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--data", default=str(Path(__file__).resolve().parents[1] / "data" / "door"))
+ap.add_argument("--data", default=None, help="DoOR 폴더 (기본: flydnet.data_dir(\"door\"))")
 ap.add_argument("--min-measured", type=int, default=20)
 ap.add_argument("--seeds", type=int, default=3)
 ap.add_argument("--shuffles", type=int, default=5)
