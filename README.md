@@ -63,9 +63,39 @@ layer.weights()          # 현재 연결별 세기 (mV, 부호 포함), 순서�
 
 버섯체 회로에서 배치 64, 50 ms(100스텝) 순전파 + 역전파가 RTX 5070 기준 약 0.2초, GPU 메모리 약 0.5GB.
 
-데이터 경로는 기본 `D:\flybrain_local\Drosophila_brain_model`이며 환경변수 `FLYDNET_DATA`로 바꿀 수 있다.
-필요 파일: `Completeness_783.csv`, `Connectivity_783.parquet`, `flywire_annotations.tsv`
-([flywire_annotations](https://github.com/flyconnectome/flywire_annotations)의 Supplemental_file1).
+### 데이터
+
+```python
+fd.download()                         # 없는 파일만 받음: FlyWire 약 135 MB + DoOR 0.5 MB  (python -m flydnet.data)
+fd.set_data_dir(flywire=r"D:\my\fw")  # 이미 받아 둔 폴더를 쓰려면 (~/.flydnet/config.json에 저장)
+fd.data_status()                      # 어디서 무엇을 찾았는지
+```
+위치를 찾는 순서: 함수에 준 경로 → 환경변수 `FLYDNET_FLYWIRE` / `FLYDNET_DOOR` (`FLYDNET_DATA`도 인정)
+→ `~/.flydnet/config.json` → `~/.flydnet/data/<flywire|door>`. 받은 파일은 크기로 온전한지 확인한다.
+출처: FlyWire v783 연결 파일(Shiu et al. 2024, MIT), 세포 주석(Schlegel et al. 2024), DoOR 2.0(CC BY-SA 4.0).
+
+### 저장 / 불러오기
+
+```python
+layer.save("mb.pt")                           # 배선 + 설정 + 학습한 연결 세기, 파일 하나 (버섯체 약 10 MB)
+layer = fd.ConnectomeLayer.load("mb.pt")      # FlyWire 데이터 없이도 다시 만들어짐
+torch.save(model.state_dict(), "m.pt")        # 표준 PyTorch 방식도 그대로
+readout.save("r.pt"); fd.AssocReadout.load("r.pt")
+```
+모두 `torch.load(weights_only=True)`로 읽힌다 (텐서·기본 자료형만 저장).
+
+### 메모리 절약: 그래디언트 체크포인팅
+
+```python
+layer = fd.ConnectomeLayer(..., trainable=True, checkpoint_every=20)   # 20스텝 구간마다 다시 계산
+```
+역전파 때 구간의 중간 상태를 다시 계산해 시간 방향 메모리를 줄인다. 출력은 완전히 같고, 기울기는 GPU 합산
+순서 오차(상대 1e-7) 안에서 같다. 버섯체, 100 ms(200스텝): 배치 64에서 0.74 → 0.18 GB, 배치 256에서
+1.97 → 0.51 GB, 계산은 1.3~2배.
+
+**한계**: 큰 회로에서는 시간 방향이 아니라 연결 기울기가 문제다. `torch.sparse.mm`의 역전파가 연결 기울기를
+뉴런 수 × 뉴런 수 크기로 만들어서, 감각 → 중심 뇌(4.9만 뉴런)는 체크포인팅을 해도 10.4 GB, 전체 뇌(13.9만)는
+한 번에 77 GB를 요구해 12 GB GPU에서 학습할 수 없다.
 
 ## 구성
 
