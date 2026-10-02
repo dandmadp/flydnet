@@ -348,3 +348,38 @@ def test_checkpointing_gives_same_output_and_grads(mb, mode):
     assert torch.equal(a[0], b[0])                            # 순전파는 완전히 같음 (포아송 난수 포함)
     for ga, gb in zip(a[1:], b[1:]):                          # 기울기는 GPU 합산 순서 오차 안에서 같음
         assert torch.allclose(ga, gb, rtol=1e-4, atol=1e-5)
+
+
+# ─────────────── 연결 단위 역전파 (데이터 없이 작은 가짜 회로) ───────────────
+def _tiny_circuit(n_in=5, n_out=12, n_edges=60, seed=0):
+    rng = np.random.default_rng(seed)
+    N = n_in + n_out
+    key = rng.choice(N * N, n_edges, replace=False)
+    pre, post = key // N, key % N
+    keep = pre != post
+    w = rng.integers(1, 6, keep.sum()) * rng.choice([-1, 1], keep.sum())
+    return fd.Circuit(np.arange(N), {"IN": np.arange(n_in), "OUT": np.arange(n_in, N)},
+                      pre[keep], post[keep], w.astype(np.float32))
+
+
+def test_sparse_propagate_matches_dense_reference():
+    from flydnet.layers import SparsePropagate
+    c = _tiny_circuit()
+    layer = fd.ConnectomeLayer(c, "IN", "OUT", trainable=True, device="cpu")
+    N = c.N
+    v = (layer.w_base * torch.linspace(0.5, 2, layer.w_base.numel())).double().requires_grad_(True)
+    s = torch.rand(N, 3, dtype=torch.double, requires_grad=True)
+    args = (layer.crow, layer.col, layer.crow_t, layer.col_t, layer.perm_t)
+    assert torch.autograd.gradcheck(lambda v, s: SparsePropagate.apply(v, s, *args), (v, s))
+    dense = torch.zeros(N, N, dtype=torch.double).index_put((layer.w_idx[0], layer.w_idx[1]), v)
+    assert torch.allclose(SparsePropagate.apply(v, s, *args), dense @ s)
+
+
+def test_tiny_circuit_layer_trains_without_flywire_data():
+    c = _tiny_circuit(n_edges=120)
+    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
+                               device="cpu", gains={"IN>OUT": 30.0})
+    x = torch.full((2, 5), 200.0)
+    out = layer(x)
+    out.sum().backward()
+    assert out.shape == (2, 12) and torch.isfinite(layer.log_scale.grad).all()

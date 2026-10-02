@@ -93,9 +93,30 @@ layer = fd.ConnectomeLayer(..., trainable=True, checkpoint_every=20)   # 20스�
 순서 오차(상대 1e-7) 안에서 같다. 버섯체, 100 ms(200스텝): 배치 64에서 0.74 → 0.18 GB, 배치 256에서
 1.97 → 0.51 GB, 계산은 1.3~2배.
 
-**한계**: 큰 회로에서는 시간 방향이 아니라 연결 기울기가 문제다. `torch.sparse.mm`의 역전파가 연결 기울기를
-뉴런 수 × 뉴런 수 크기로 만들어서, 감각 → 중심 뇌(4.9만 뉴런)는 체크포인팅을 해도 10.4 GB, 전체 뇌(13.9만)는
-한 번에 77 GB를 요구해 12 GB GPU에서 학습할 수 없다.
+### 큰 회로 학습: 연결 단위 역전파
+
+`torch.sparse.mm`의 역전파는 연결 기울기를 뉴런 수 × 뉴런 수 크기로 만든다 (전체 뇌면 77 GB).
+`SparsePropagate`는 필요한 연결 칸만 계산한다 (`torch.sparse.sampled_addmm`, 메모리 = 연결 수).
+연결 세기도 순전파당 한 번만 계산한다. `torch.sparse.mm`과 같은 기울기를 내는 것을 `gradcheck`로 확인했다.
+
+```python
+others = ["optic", "central", "visual_projection", "ascending", "descending",
+          "sensory_ascending", "visual_centrifugal", "motor", "endocrine"]
+brain = fd.Circuit.from_flywire({"SENS": ("super_class", "sensory"), "REST": ("super_class", others)}, side=None)
+layer = fd.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="regular",
+                           trainable=True, checkpoint_every=10)
+```
+
+학습 1스텝 (순전파 + 역전파 + Adam, 50 ms = 100스텝, RTX 5070):
+
+| 회로 | 연결 | 배치 | GPU 메모리 | 시간 |
+|---|---|---|---|---|
+| 감각 → 중심 뇌, 4.9만 뉴런 | 486만 | 8 | 0.88 GB (이전 13.9 GB) | 0.8초 (이전 18초) |
+| 전체 뇌, 13.9만 뉴런 | 1,509만 | 8 | 2.16 GB (이전 77 GB 요구) | 2.2초 |
+| 전체 뇌 | 1,509만 | 32 | 3.65 GB | 2.6초 |
+
+큰 회로를 시험할 때는 `torch.cuda.set_per_process_memory_fraction(0.75)`처럼 상한을 걸어 두면, GPU 메모리가
+넘칠 때 Windows 가상 메모리(C 드라이브)로 흘러가지 않고 바로 오류가 난다.
 
 ## 구성
 

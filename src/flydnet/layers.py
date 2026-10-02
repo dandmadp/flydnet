@@ -39,6 +39,40 @@ class SpikeFn(torch.autograd.Function):
         return grad / (1 + ctx.slope * x.abs()) ** 2, None
 
 
+class SparsePropagate(torch.autograd.Function):
+    """시냅스 전파 out = W @ spk (W는 연결 목록 values로 만든 CSR 희소행렬)
+
+    torch.sparse.mm의 역전파는 연결 기울기를 뉴런 수 × 뉴런 수 크기로 만들어서 큰 회로에서 메모리가 터짐
+    (전체 뇌 13.9만 뉴런 → 77 GB). 여기서는 필요한 연결 칸만 계산:
+      d values[e] = Σ_b grad[post_e, b] · spk[pre_e, b]   (sampled_addmm, 메모리 = 연결 수)
+      d spk       = Wᵀ @ grad                              (미리 정렬해 둔 전치 CSR)
+    """
+
+    @staticmethod
+    def forward(ctx, values, spk, crow, col, crow_t, col_t, perm_t):
+        N = len(crow) - 1
+        ctx.save_for_backward(values, spk, crow, col, crow_t, col_t, perm_t)
+        return _csr(crow, col, values, N) @ spk
+
+    @staticmethod
+    def backward(ctx, grad):
+        values, spk, crow, col, crow_t, col_t, perm_t = ctx.saved_tensors
+        N = len(crow) - 1
+        d_values = d_spk = None
+        if ctx.needs_input_grad[0]:
+            pattern = _csr(crow, col, torch.zeros_like(values), N)
+            d_values = torch.sparse.sampled_addmm(pattern, grad, spk.T, beta=0.0, alpha=1.0).values()
+        if ctx.needs_input_grad[1]:
+            d_spk = _csr(crow_t, col_t, values[perm_t], N) @ grad
+        return d_values, d_spk, None, None, None, None, None
+
+
+def _csr(crow, col, values, N):
+    with warnings.catch_warnings():                              # "CSR은 베타" 경고 숨김
+        warnings.simplefilter("ignore", UserWarning)
+        return torch.sparse_csr_tensor(crow, col, values, (N, N), check_invariants=False)
+
+
 class ConnectomeLayer(nn.Module):
     """입력 그룹 뉴런에 발화율(B, n_in) Hz를 넣고, 출력 그룹 뉴런의 발화율(B, n_out) Hz를 돌려줌
 
@@ -94,6 +128,14 @@ class ConnectomeLayer(nn.Module):
         self.edge_key = g[pre] + ">" + g[post]                  # 연결 종류 (예: "KC>MBON")
         self.register_buffer("w_idx", torch.tensor(np.stack([post, pre]), device=self.dev))
         self.register_buffer("w_syn", torch.tensor(w, dtype=torch.float32, device=self.dev))   # ±시냅스 수
+        # CSR 구조 (행 = 받는 뉴런)와 전치 CSR (행 = 보내는 뉴런). w_idx에서 다시 만들 수 있어 저장하지 않음
+        N = circuit.N
+        crow = np.zeros(N + 1, np.int64); crow[1:] = np.cumsum(np.bincount(post, minlength=N))
+        perm_t = np.lexsort((post, pre))                         # (pre, post) 순 정렬
+        crow_t = np.zeros(N + 1, np.int64); crow_t[1:] = np.cumsum(np.bincount(pre, minlength=N))
+        for name, arr in (("crow", crow), ("col", pre), ("crow_t", crow_t), ("col_t", post[perm_t]),
+                          ("perm_t", perm_t)):
+            self.register_buffer(name, torch.tensor(arr, dtype=torch.long, device=self.dev), persistent=False)
 
         # 학습할 연결
         if trainable is True:
@@ -123,11 +165,7 @@ class ConnectomeLayer(nn.Module):
         """고정 부분 (원래 세기 × 배율 × mV/시냅스). 고정 층이면 빠른 CSR 행렬도 만듦"""
         self.w_base = self.w_syn * self._gain_vec() * self.p["w_syn"]
         if not self.trainable:
-            W = torch.sparse_coo_tensor(self.w_idx, self.w_base, (self.circuit.N,) * 2, is_coalesced=True,
-                                        check_invariants=True)
-            with warnings.catch_warnings():                      # "CSR은 베타" 경고 숨김
-                warnings.simplefilter("ignore", UserWarning)
-                self.W_T = W.to_sparse_csr()
+            self.W_T = _csr(self.crow, self.col, self.w_base, self.circuit.N)
 
     def set_gain(self, key: str, value: float):
         self.gains[key] = value
@@ -140,13 +178,10 @@ class ConnectomeLayer(nn.Module):
         scale = torch.ones_like(self.w_base).index_copy(0, self.train_pos, torch.exp(self.log_scale))
         return self.w_base * scale
 
-    def _propagate(self, spk: torch.Tensor) -> torch.Tensor:
-        if not self.trainable:
-            return self.W_T @ spk
-        # 인덱스는 __init__에서 정렬·중복 제거됨 → 매 스텝 검사 생략
-        W = torch.sparse_coo_tensor(self.w_idx, self.weights(), (self.circuit.N,) * 2, is_coalesced=True,
-                                    check_invariants=False)
-        return torch.sparse.mm(W, spk)
+    def _propagate(self, spk: torch.Tensor, values: torch.Tensor | None) -> torch.Tensor:
+        if values is None:                                       # 고정 층 (기울기 필요 없으면 빠른 길)
+            return self.W_T @ spk if not spk.requires_grad else                 SparsePropagate.apply(self.w_base, spk, self.crow, self.col, self.crow_t, self.col_t, self.perm_t)
+        return SparsePropagate.apply(values, spk, self.crow, self.col, self.crow_t, self.col_t, self.perm_t)
 
     def forward(self, rates: torch.Tensor, seed: int | None = None, return_all: bool = False):
         p, N, dev = self.p, self.circuit.N, self.dev
@@ -161,6 +196,7 @@ class ConnectomeLayer(nn.Module):
         p_spk = (rates * dt / 1000.0).T                         # (n_in, B) 스텝당 입력 스파이크 확률
         rfc_vec = torch.full((N, 1), float(rfc), device=dev); rfc_vec[self.in_idx] = 0
         scale = p["v_th"] - p["v_rst"]
+        values = self.weights() if self.trainable else None      # 연결 세기는 순전파당 한 번만 계산
 
         def run(s0, s1, gen_state, V, G, refr, counts, phase, *buf):
             """s0 ~ s1 스텝 진행. 체크포인팅 때 역전파에서 다시 불리므로 같은 입력 → 같은 결과여야 함"""
@@ -184,7 +220,7 @@ class ConnectomeLayer(nn.Module):
                 V = torch.where(fired, p["v_rst"], V)            # 리셋은 기울기 끊음 (표준)
                 G = torch.where(fired, 0.0, G)
                 refr = torch.where(fired, rfc_vec, refr - 1)
-                buf[(s + dly) % R] = self._propagate(spk)        # dly 스텝 뒤 G에 도착 (이 칸은 방금 전 스텝에 읽음)
+                buf[(s + dly) % R] = self._propagate(spk, values)  # dly 스텝 뒤 G에 도착 (이 칸은 방금 전 스텝에 읽음)
             return (V, G, refr, counts, phase, *buf)
 
         zeros = lambda: torch.zeros((N, B), device=dev)
