@@ -143,6 +143,20 @@ class Circuit:
         return Circuit(self.root_ids, self.groups, self.pre, post, self.weight,
                        name=f"{self.name} [shuffled{what}]", meta=self.meta, pos=self.pos)
 
+    def subset(self, groups) -> "Circuit":
+        """지정한 그룹들의 뉴런만 남긴 회로 (그 사이 연결만)"""
+        groups = [g for g in groups if g in self.groups]
+        keep = np.concatenate([self.groups[g] for g in groups])
+        new = np.full(self.N, -1, np.int64); new[keep] = np.arange(len(keep))
+        m = (new[self.pre] >= 0) & (new[self.post] >= 0)
+        gidx, o = {}, 0
+        for g in groups:
+            gidx[g] = np.arange(o, o + len(self.groups[g])); o += len(self.groups[g])
+        return Circuit(self.root_ids[keep], gidx, new[self.pre[m]], new[self.post[m]], self.weight[m],
+                       name=f"{self.name} [그룹 {len(groups)}개]",
+                       meta=self.meta.iloc[keep] if self.meta is not None else None,
+                       pos=self.pos[keep] if self.pos is not None else None)
+
     def normalized(self) -> "Circuit":
         """받는 뉴런마다 입력 시냅스 수 합(|weight|)이 1이 되도록 나눈 회로.
         입력 비율(누가 얼마나 주는지)은 그대로, 입력이 많은 뉴런과 적은 뉴런의 총입력 크기만 맞춤"""

@@ -19,6 +19,6 @@ from .readout import extract, train_linear
 from .plasticity import DopamineReadout, AssocReadout
 from .datasets import synthetic_odors, door_odors, biconditional_mixtures
 from .visual import (visual_circuit, column_map, drifting_grating, direction_offsets,
-                     VISUAL_SYSTEM, PHOTORECEPTORS, COLUMNAR, LPTC)
+                     VISUAL_SYSTEM, PHOTORECEPTORS, COLUMNAR, LPTC, MOTION_PATHWAY)
 
 __version__ = "0.1.0"

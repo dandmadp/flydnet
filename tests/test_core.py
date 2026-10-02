@@ -527,3 +527,11 @@ def test_record_returns_traces(neuron):
         out, tr = layer(torch.full((2, 5), 0.8 if neuron == "graded" else 200.0), record=[5, 6, 0])
     assert tr.shape == (2, 40, 3)
     assert torch.allclose(out, layer(torch.full((2, 5), 0.8 if neuron == "graded" else 200.0)))
+
+
+def test_subset_keeps_only_selected_groups():
+    c = _tiny_circuit(n_edges=120)
+    s = c.subset(["OUT"])
+    assert s.N == 12 and list(s.groups) == ["OUT"]
+    m = np.isin(c.pre, c.groups["OUT"]) & np.isin(c.post, c.groups["OUT"])
+    assert s.n_edges == m.sum() and np.array_equal(np.sort(s.weight), np.sort(c.weight[m]))

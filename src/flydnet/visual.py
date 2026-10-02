@@ -27,6 +27,10 @@ VISUAL_SYSTEM = {
 COLUMNAR = PHOTORECEPTORS + ["L1", "L2", "L3", "L4", "L5", "Mi1", "Tm3", "Mi4", "Mi9", "Tm1", "Tm2", "Tm4", "Tm9",
                              "Tm20", "Tm21", "Mi15", "C2", "C3", "T1", "T2", "T2a", "T3"] + \
            [f"T{k}{d}" for k in "45" for d in "abcd"]
+# 운동 감지 경로만: 광수용체 → 라미나 → T4/T5 입력 메둘라 뉴런 → T4/T5 (Circuit.subset으로 회로를 좁혀 빠르게)
+MOTION_PATHWAY = PHOTORECEPTORS + ["L1", "L2", "L3", "L4", "L5", "Lawf1", "Lawf2", "Lai", "C2", "C3", "T1", "CT1",
+                                   "Mi1", "Tm3", "Mi4", "Mi9", "Tm1", "Tm2", "Tm4", "Tm9"] + \
+                 [f"T{k}{d}" for k in "45" for d in "abcd"]
 # 큰 운동 감지 뉴런 (소엽판 접선 세포): 수평 HS, 수직 VS, H1/H2
 LPTC = ["HSE", "HSN", "HSS", "H1", "H2"] + [f"VS{i}" for i in range(1, 9)] + ["VSm", "VST1", "VST2"]
 
