@@ -121,3 +121,30 @@ def test_assoc_is_order_independent():
 def test_invalid_mode():
     with pytest.raises(ValueError):
         fd.DopamineReadout(10, 2, "nope")
+
+
+# ─────────────── GlomerularEncoder / synthetic_odors ───────────────
+@needs_data
+def test_glomerular_encoder(mb):
+    enc = fd.GlomerularEncoder(mb)
+    assert enc.n_glomeruli == 56
+    assert enc.P.sum() == 139                          # 단일 사구체형 PN 139개, 각자 사구체 하나
+    assert (enc.P.sum(1) <= 1).all()
+    odor = torch.zeros(1, 56); odor[0, enc.glomeruli.index("DM1")] = 1.0
+    r = enc(odor)[0]
+    on = mb.meta.iloc[mb.groups["PN"]].cell_type.str.startswith("DM1_").values
+    assert (r[torch.tensor(on)] == 100).all() and (r[torch.tensor(~on)] == 0).all()
+
+
+@needs_data
+def test_shuffled_keeps_meta(mb):
+    pd.testing.assert_frame_equal(mb.shuffled(0).meta, mb.meta)
+
+
+def test_synthetic_odors_shapes_and_determinism():
+    a = fd.synthetic_odors(5, 56, 3, 4, protos_per_class=2, seed=1)
+    b = fd.synthetic_odors(5, 56, 3, 4, protos_per_class=2, seed=1)
+    Xtr, ytr, Xte, yte = a
+    assert Xtr.shape == (15, 56) and Xte.shape == (20, 56)
+    assert (Xtr >= 0).all() and torch.equal(ytr.bincount(), torch.full((5,), 3))
+    assert all(torch.equal(x, y) for x, y in zip(a, b))

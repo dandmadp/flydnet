@@ -4,6 +4,8 @@ flybrain_local/fly_sim.py와 같은 뉴런 모델(Shiu et al. 2024)이지만
 - trial 차원 대신 배치 차원: 샘플마다 다른 입력 발화율
 - 시냅스 전파를 희소행렬 곱 한 번으로 처리
 """
+import warnings
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -58,8 +60,11 @@ class ConnectomeLayer(nn.Module):
             for k, s in self.gains.items():
                 w = np.where(key == k, w * s, w)
         # W_T[post, pre]: 스파이크 벡터(N, B)에 곱하면 뉴런별 시냅스 입력
-        W = torch.sparse_coo_tensor(np.stack([c.post, c.pre]), w.astype(np.float32), (c.N, c.N)).coalesce()
-        self.W_T = W.to_sparse_csr().to(self.dev)
+        W = torch.sparse_coo_tensor(np.stack([c.post, c.pre]), w.astype(np.float32), (c.N, c.N),
+                                    check_invariants=True).coalesce()
+        with warnings.catch_warnings():                          # "CSR은 베타" 경고 숨김
+            warnings.simplefilter("ignore", UserWarning)
+            self.W_T = W.to_sparse_csr().to(self.dev)
 
     def set_gain(self, key: str, value: float):
         self.gains[key] = value

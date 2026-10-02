@@ -22,15 +22,18 @@ class Circuit:
     """뉴런 N개와 부호 있는 시냅스 목록 (pre → post, weight = ±시냅스 수)
 
     groups: 이름 → 이 회로 안에서의 뉴런 번호 배열 (예: groups["KC"])
+    meta:   뉴런별 주석 (cell_type, cell_sub_class 등), 행 순서 = 회로 번호
     """
 
-    def __init__(self, root_ids, groups: dict[str, np.ndarray], pre, post, weight, name="circuit"):
+    def __init__(self, root_ids, groups: dict[str, np.ndarray], pre, post, weight, name="circuit",
+                 meta: pd.DataFrame | None = None):
         self.root_ids = np.asarray(root_ids, dtype=np.int64)
         self.groups = {k: np.asarray(v, dtype=np.int64) for k, v in groups.items()}
         self.pre = np.asarray(pre, dtype=np.int64)
         self.post = np.asarray(post, dtype=np.int64)
         self.weight = np.asarray(weight, dtype=np.float32)
         self.name = name
+        self.meta = meta.reset_index(drop=True) if meta is not None else None
 
     @property
     def N(self) -> int:
@@ -56,7 +59,7 @@ class Circuit:
         d = Path(data_dir)
         all_ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
         ann = pd.read_csv(d / annotations, sep="\t", low_memory=False,
-                          usecols=["root_id", "cell_class", "cell_type", "side"])
+                          usecols=["root_id", "cell_class", "cell_sub_class", "cell_type", "side"])
         ann = ann[ann.root_id.isin(all_ids)]
         if side:
             ann = ann[ann.side == side]
@@ -79,7 +82,9 @@ class Circuit:
         pre, post = local[df.Presynaptic_Index.values], local[df.Postsynaptic_Index.values]
         keep = (pre >= 0) & (post >= 0)
         w = (df.Connectivity.values * df.Excitatory.values)[keep]
-        return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})")
+        meta = ann.set_index("root_id").loc[ids, ["cell_class", "cell_sub_class", "cell_type"]].reset_index()
+        return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})",
+                   meta=meta)
 
     def shuffled(self, seed: int = 0) -> "Circuit":
         """무작위 배선 대조군: (보내는 그룹, 받는 그룹) 쌍마다 받는 뉴런을 섞음.
@@ -91,7 +96,8 @@ class Circuit:
         for _, idx in key.groupby(key).groups.items():
             idx = np.asarray(idx)
             post[idx] = post[idx][rng.permutation(len(idx))]
-        return Circuit(self.root_ids, self.groups, self.pre, post, self.weight, name=self.name + " [shuffled]")
+        return Circuit(self.root_ids, self.groups, self.pre, post, self.weight, name=self.name + " [shuffled]",
+                       meta=self.meta)
 
     def summary(self) -> pd.DataFrame:
         """그룹 간 연결 요약 (시냅스 수, 흥분/억제)"""

@@ -7,9 +7,10 @@
     feats = layer(enc(images))                           # (B, n_KC) 발화율 → 리드아웃 학습
 """
 from .circuit import Circuit, MUSHROOM_BODY, DEFAULT_DATA
-from .encoders import RateEncoder
+from .encoders import RateEncoder, GlomerularEncoder
 from .layers import ConnectomeLayer, DEFAULT_PARAMS
 from .readout import extract, train_linear
 from .plasticity import DopamineReadout
+from .datasets import synthetic_odors
 
 __version__ = "0.1.0"
