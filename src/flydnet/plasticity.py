@@ -17,8 +17,34 @@ homeostasis=True: 출력 뉴런마다 시냅스 총량을 일정하게 맞춰 �
 import torch
 
 
-class DopamineReadout:
+class _Saveable:
+    """리드아웃 저장/불러오기 (설정 + 시냅스 텐서, torch.load(weights_only=True)로 읽힘)"""
+    _TENSORS: tuple = ()
+
+    def _config(self) -> dict:
+        raise NotImplementedError
+
+    def state_dict(self) -> dict:
+        return dict(format=type(self).__name__, config=self._config(),
+                    tensors={k: getattr(self, k).detach().cpu() for k in self._TENSORS})
+
+    def save(self, path):
+        torch.save(self.state_dict(), path)
+
+    @classmethod
+    def load(cls, path_or_state, device: str | None = None):
+        d = path_or_state if isinstance(path_or_state, dict) else             torch.load(path_or_state, map_location="cpu", weights_only=True)
+        if d.get("format") != cls.__name__:
+            raise ValueError(f"{cls.__name__} 파일이 아님 (format={d.get('format')})")
+        obj = cls(**d["config"], device=device)
+        for k, v in d["tensors"].items():
+            setattr(obj, k, v.to(obj.dev))
+        return obj
+
+
+class DopamineReadout(_Saveable):
     MODES = ("bidir", "assoc", "ltd", "ltd_err", "ltp")
+    _TENSORS = ("W", "n_seen")
 
     def __init__(self, n_in: int, n_classes: int, mode: str = "bidir", lr: float = 0.01,
                  binary: bool = False, homeostasis: bool = False, device: str | None = None):
@@ -41,6 +67,10 @@ class DopamineReadout:
         init = {"ltp": 0.0, "assoc": 0.0, "bidir": 0.5}.get(mode, 1.0)
         self.W = torch.full((n_classes, n_in), init, device=self.dev)
         self.n_seen = torch.zeros(n_classes, device=self.dev)      # assoc: 출력별 받은 도파민 횟수
+
+    def _config(self):
+        return dict(n_in=self.W.shape[1], n_classes=self.n_classes, mode=self.mode, lr=self.lr,
+                    binary=self.binary, homeostasis=self.homeostasis)
 
     def activity(self, X: torch.Tensor) -> torch.Tensor:
         X = X.to(self.dev).float()
@@ -109,7 +139,7 @@ class DopamineReadout:
         return (self.predict(X, classes).cpu() == y.cpu()).float().mean().item()
 
 
-class AssocReadout:
+class AssocReadout(_Saveable):
     """보상 연합 학습 리드아웃, 클래스마다 출력(원형) 여러 개 — 연속 학습용
 
     클래스 c마다 출력 뉴런 per_class개 (MBON 여러 개가 같은 도파민 구역을 공유하는 것처럼).
@@ -128,6 +158,11 @@ class AssocReadout:
         self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.W = torch.zeros(n_classes * per_class, n_in, device=self.dev)
         self.count = torch.zeros(n_classes * per_class, device=self.dev)
+
+    _TENSORS = ("W", "count")
+
+    def _config(self):
+        return dict(n_in=self.W.shape[1], n_classes=self.n_classes, per_class=self.k, binary=self.binary)
 
     activity = DopamineReadout.activity
 

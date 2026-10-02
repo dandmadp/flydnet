@@ -284,3 +284,48 @@ def test_require_explains_missing_files(tmp_path):
     for name in fd.data.SOURCES["door"]:
         (tmp_path / name).write_text("x")
     assert fd.data.require("door", tmp_path) == tmp_path
+
+
+# ─────────────── 저장 / 불러오기 ───────────────
+@needs_data
+def test_layer_save_load_roundtrip(mb, tmp_path):
+    layer = fd.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=20, dt=0.5, gains={"PN>KC": 2.0},
+                               input_mode="regular", trainable=["KC>MBON"])
+    with torch.no_grad():
+        layer.log_scale.normal_(0, 0.5)                     # '학습된' 상태 흉내
+    layer.set_gain("PN>KC", 2.5)                            # 만든 뒤 바꾼 배율도 저장되는지
+    layer.save(tmp_path / "layer.pt")
+    new = fd.ConnectomeLayer.load(tmp_path / "layer.pt")
+    x = fd.RateEncoder(784, 344)(torch.rand(3, 784))
+    with torch.no_grad():
+        assert torch.equal(layer(x), new(x))
+    assert torch.equal(new.weights(), layer.weights())
+    assert new.gains == {"PN>KC": 2.5} and new.circuit.N == mb.N
+    pd.testing.assert_frame_equal(new.circuit.meta.astype(str), mb.meta.astype(str))
+    cpu = fd.ConnectomeLayer.load(tmp_path / "layer.pt", device="cpu")
+    assert cpu.log_scale.device.type == "cpu"
+
+
+@needs_data
+def test_model_state_dict_roundtrip(mb, tmp_path):
+    make = lambda: torch.nn.Sequential(fd.ConnectomeLayer(mb, "PN", "KC", t_ms=10, dt=0.5, trainable=True),
+                                       torch.nn.Linear(2597, 3))
+    a = make()
+    with torch.no_grad():
+        a[0].log_scale.uniform_(-1, 1)
+    torch.save(a.state_dict(), tmp_path / "m.pt")
+    b = make()
+    b.load_state_dict(torch.load(tmp_path / "m.pt", weights_only=True))
+    assert torch.equal(a[0].weights(), b[0].weights())
+
+
+@pytest.mark.parametrize("cls,kw", [(fd.AssocReadout, dict(per_class=3)),
+                                    (fd.DopamineReadout, dict(mode="bidir", lr=0.1))])
+def test_readout_save_load(cls, kw, tmp_path):
+    X, y = _toy()
+    m = cls(X.shape[1], 4, device="cpu", **kw).fit(X, y)
+    m.save(tmp_path / "r.pt")
+    n = cls.load(tmp_path / "r.pt", device="cpu")
+    assert torch.equal(m.predict(X), n.predict(X))
+    with pytest.raises(ValueError):
+        (fd.DopamineReadout if cls is fd.AssocReadout else fd.AssocReadout).load(tmp_path / "r.pt")

@@ -57,6 +57,10 @@ class ConnectomeLayer(nn.Module):
                  params: dict | None = None, gains: dict | None = None, device: str | None = None,
                  input_mode: str = "poisson", trainable=False, dt: float | None = None, slope: float = 10.0):
         super().__init__()
+        self._init_args = dict(inputs=inputs, outputs=outputs if isinstance(outputs, str) else list(outputs),
+                               t_ms=t_ms, params=dict(params or {}), input_mode=input_mode,
+                               trainable=trainable if isinstance(trainable, bool) else list(trainable),
+                               dt=dt, slope=slope)
         self.circuit = circuit
         self.p = dict(DEFAULT_PARAMS, **(params or {}))
         if dt is not None:
@@ -183,6 +187,26 @@ class ConnectomeLayer(nn.Module):
             buf[(s + dly) % R] = self._propagate(spk)            # dly 스텝 뒤 G에 도착
         rate = counts / (self.t_ms / 1000.0)                     # (N, B) Hz
         return rate.T if return_all else rate[self.out_idx].T
+
+    # ─────────────── 저장 / 불러오기 ───────────────
+    FORMAT = "flydnet.ConnectomeLayer/1"
+
+    def save(self, path):
+        """회로 배선 + 설정 + 학습한 연결 세기를 파일 하나에. FlyWire 데이터 없이도 load()로 다시 만들 수 있음"""
+        from . import __version__
+        torch.save(dict(format=self.FORMAT, version=__version__, circuit=self.circuit.to_dict(),
+                        config=dict(self._init_args, gains=dict(self.gains)),
+                        state_dict={k: v.detach().cpu() for k, v in self.state_dict().items()}), path)
+
+    @classmethod
+    def load(cls, path, device: str | None = None) -> "ConnectomeLayer":
+        d = torch.load(path, map_location="cpu", weights_only=True)
+        if d.get("format") != cls.FORMAT:
+            raise ValueError(f"flydnet ConnectomeLayer 파일이 아님 (format={d.get('format')})")
+        layer = cls(Circuit.from_dict(d["circuit"]), device=device, **d["config"])
+        layer.load_state_dict(d["state_dict"])
+        layer._build()
+        return layer
 
     def extra_repr(self):
         tr = f", 학습 연결 {len(self.train_pos):,}개" if self.trainable else ""

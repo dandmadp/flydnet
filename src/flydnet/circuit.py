@@ -132,3 +132,19 @@ class Circuit:
     def __repr__(self):
         gs = ", ".join(f"{k} {len(v)}" for k, v in self.groups.items())
         return f"<Circuit '{self.name}' | {self.N:,} neurons ({gs}) | {self.n_edges:,} edges>"
+
+    # 저장: 텐서·문자열·리스트만 써서 torch.load(weights_only=True)로 안전하게 읽힘
+    def to_dict(self) -> dict:
+        import torch
+        meta = None
+        if self.meta is not None:
+            meta = {c: [None if pd.isna(v) else str(v) for v in self.meta[c]] for c in self.meta.columns}
+        return dict(root_ids=torch.from_numpy(self.root_ids), pre=torch.from_numpy(self.pre),
+                    post=torch.from_numpy(self.post), weight=torch.from_numpy(self.weight),
+                    groups={k: torch.from_numpy(v) for k, v in self.groups.items()}, name=self.name, meta=meta)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Circuit":
+        meta = pd.DataFrame(d["meta"]) if d.get("meta") is not None else None
+        return cls(d["root_ids"].numpy(), {k: v.numpy() for k, v in d["groups"].items()}, d["pre"].numpy(),
+                   d["post"].numpy(), d["weight"].numpy(), name=d["name"], meta=meta)
