@@ -148,3 +148,25 @@ def test_synthetic_odors_shapes_and_determinism():
     assert Xtr.shape == (15, 56) and Xte.shape == (20, 56)
     assert (Xtr >= 0).all() and torch.equal(ytr.bincount(), torch.full((5,), 3))
     assert all(torch.equal(x, y) for x, y in zip(a, b))
+
+
+@needs_data
+def test_shuffled_only_selected_pairs(mb):
+    g = mb.group_of()
+    key = g[mb.pre] + ">" + g[mb.post]
+    sh = mb.shuffled(seed=0, pairs=["PN>KC"])
+    changed = mb.post != sh.post
+    assert changed[key == "PN>KC"].mean() > 0.5
+    assert not changed[key != "PN>KC"].any()
+    ex = mb.shuffled(seed=0, exclude=["PN>KC"])
+    assert not (mb.post != ex.post)[key == "PN>KC"].any()
+    with pytest.raises(ValueError):
+        mb.shuffled(pairs=["XX>YY"])
+
+
+@needs_data
+def test_shuffled_has_no_duplicate_or_self_edges(mb):
+    sh = mb.shuffled(seed=0)
+    key = pd.Series(sh.pre * sh.N + sh.post)
+    assert not key.duplicated().any()
+    assert not (sh.pre == sh.post).any()

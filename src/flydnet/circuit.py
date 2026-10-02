@@ -18,6 +18,20 @@ MUSHROOM_BODY = {
 }
 
 
+def _repair(pre: np.ndarray, post: np.ndarray, N: int, rng, max_iter: int = 1000) -> np.ndarray:
+    """섞은 뒤 생긴 중복 연결(같은 pre→post 두 번)과 자기 연결(pre == post)을 없앰.
+    문제 연결의 post를 무작위 다른 연결과 맞바꿈 → 뉴런별 연결 수는 그대로 유지.
+    (중복을 그냥 두면 합쳐져서 무작위 회로의 뉴런이 실제보다 적은 입력을 받게 됨)"""
+    post = post.copy()
+    for _ in range(max_iter):
+        bad = pd.Series(pre * N + post).duplicated().values | (pre == post)
+        if not bad.any():
+            return post
+        for i, j in zip(np.nonzero(bad)[0], rng.integers(0, len(post), bad.sum())):
+            post[i], post[j] = post[j], post[i]          # 하나씩 (한꺼번에 하면 같은 j가 겹칠 때 값이 사라짐)
+    raise RuntimeError(f"중복 연결을 {max_iter}번 안에 없애지 못함 ({bad.sum()}개 남음)")
+
+
 class Circuit:
     """뉴런 N개와 부호 있는 시냅스 목록 (pre → post, weight = ±시냅스 수)
 
@@ -86,18 +100,28 @@ class Circuit:
         return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})",
                    meta=meta)
 
-    def shuffled(self, seed: int = 0) -> "Circuit":
+    def shuffled(self, seed: int = 0, pairs=None, exclude=None) -> "Circuit":
         """무작위 배선 대조군: (보내는 그룹, 받는 그룹) 쌍마다 받는 뉴런을 섞음.
-        그룹 간 연결 수·시냅스 수·뉴런별 입출력 개수는 그대로, '누가 누구에게'만 무작위."""
+        그룹 간 연결 수·시냅스 수·뉴런별 입출력 개수는 그대로, '누가 누구에게'만 무작위.
+
+        pairs:   섞을 쌍만 지정 (예: ["PN>KC"]). None이면 전부
+        exclude: 섞지 않을 쌍 (예: ["PN>KC", "KC>KC"])
+        """
         rng = np.random.default_rng(seed)
         g = self.group_of()
         post = self.post.copy()
         key = pd.Series(g[self.pre] + ">" + g[self.post])
-        for _, idx in key.groupby(key).groups.items():
+        if pairs is not None and (unknown := set(pairs) - set(key.unique())):
+            raise ValueError(f"회로에 없는 연결 쌍: {sorted(unknown)}")
+        for k, idx in key.groupby(key).groups.items():
+            if (pairs is not None and k not in pairs) or (exclude is not None and k in exclude):
+                continue
             idx = np.asarray(idx)
-            post[idx] = post[idx][rng.permutation(len(idx))]
-        return Circuit(self.root_ids, self.groups, self.pre, post, self.weight, name=self.name + " [shuffled]",
-                       meta=self.meta)
+            post[idx] = _repair(self.pre[idx], post[idx][rng.permutation(len(idx))], self.N, rng)
+        what = "" if pairs is None and exclude is None else \
+            f" {'+'.join(pairs) if pairs is not None else 'all'}{' -' + '-'.join(exclude) if exclude else ''}"
+        return Circuit(self.root_ids, self.groups, self.pre, post, self.weight,
+                       name=f"{self.name} [shuffled{what}]", meta=self.meta)
 
     def summary(self) -> pd.DataFrame:
         """그룹 간 연결 요약 (시냅스 수, 흥분/억제)"""
