@@ -1,37 +1,30 @@
 # flydnet
 
-**Use the real *Drosophila* connectome (FlyWire v783) as neural-network layers — with flydnet's own autograd
-engine (`flydnet.ganglion`) on NumPy (CPU) and CuPy (GPU). PyTorch is optional.** Pick any set of neurons by
-annotation (mushroom body, visual system, whole brain) and wire a layer exactly as the fly's synapse map;
-train synapse strengths with backprop or with dopamine-like associative learning. Docs are in Korean.
+**Use the real *Drosophila* connectome (FlyWire v783) as neural-network layers, and ask whether the wiring
+actually matters.** Pick any set of neurons by annotation (mushroom body, visual system, whole brain), wire a layer
+exactly as the fly's synapse map, and train it with backprop or dopamine-like associative learning. `fd.compare`
+trains the same model on the real connectome and on nested null models over paired seeds, runs exact sign-flip
+tests, warns about pitfalls, and reads the nested controls to say *which* structure matters.
+Own autograd engine on NumPy (CPU) / CuPy (GPU); PyTorch optional. Docs in Korean.
 
-**What makes it different: `fd.compare` asks "does this wiring actually matter?"** — it trains the same model on
-the real connectome and on nested null models (degree-preserving shuffle, degree-randomized, spatially-local
-shuffle, shuffled weights) over paired seeds, runs exact sign-flip tests, warns about the pitfalls that fake or hide
-wiring effects (too few seeds, ceiling, non-reproducible runs), and reads the nested controls to say *which*
-structure matters.
+> **Alpha (0.2).** API가 바뀔 수 있다. 연구용 도구이며, 정확도 향상을 기대할 도구는 아니다 (아래 "결과 요약").
 
-> **Alpha (0.2).** API가 바뀔 수 있다. 연구용 도구로 쓰고, 정확도 향상을 기대하지는 말 것 — 아래 "지금까지의 결론" 참고.
+초파리 커넥톰의 실제 배선을 신경망 층으로 쓰고, **"이 배선이 정말 중요한가"**를 통계로 묻는 라이브러리.
 
-초파리 커넥톰(FlyWire v783)의 실제 배선을 신경망 층으로 쓰는 라이브러리. **0.2부터 기준 엔진은 flydnet 자체 엔진
-`flydnet.ganglion`**(신경절)이다: 자동 미분을 직접 구현했고, CPU에서는 NumPy, GPU에서는 CuPy로 돈다. torch는
-선택 설치이며, 시간에 따른 스파이크 시뮬레이션(`ConnectomeLayer`)도 자체 엔진으로 돈다. 0.1의 torch판 기능은
-torch가 있으면 `flydnet.torch`로 그대로 쓸 수 있다.
+## 설치
 
-- **대조 실험** (`fd.compare`): "이 배선이 정말 중요한가?"를 통계로 — 실제 배선 대 겹겹이 놓인 대조군, 짝지은 seed,
-  정확한 순열 검정, 함정 경고, 그리고 **어떤 구조가 중요한지** 해석 (아래 "대조 실험" 참고). 다른 ML 라이브러리에 없는 기능
-- **회로 고르기**: 주석(세포 유형·계열)으로 뉴런을 골라 그 사이 연결만 남김 — 버섯체, 시각계, 전체 뇌(13.9만 뉴런)
-- **자체 엔진** (`flydnet.ganglion`): 신호·역행성 신호(자동 미분)·조직·가소성 규칙. 이름은 같은 일을 하는 생물 구조에서 땀
-- **커넥톰 배선 층** (`Neuropil`): 실제 시냅스만으로 연결된 희소 층, 부호 유지 학습. 전체 뇌(연결 1,509만)도 한 층으로
-- **도파민 연합 학습** (`MushroomBodyOutput`): 역전파 없이 한 번 보고 학습, 연속 학습에 강함 — 사전학습 특징에 붙이면
-  CIFAR-100 클래스 증가 10과제에서 57.7% (재생 버퍼 역전파 51.6%, 상한선 65.6%)
-- **대조군**: 연결 수·차수를 유지한 무작위 배선, 시야 위치를 유지한 국소 무작위 배선
-- **시간 시뮬레이션** (`ConnectomeLayer`): 스파이킹 LIF(Shiu et al. 2024 매개변수)·연속값 뉴런, 시간 역전파, 체크포인팅.
-  전체 뇌(13.9만 뉴런)도 일반 GPU에서 학습
-- **torch 연동** (선택): `flydnet.torch` — 0.1의 torch판 기능, `nn.Sequential`에 넣는 구조물
-- **데이터 도우미**: `python -m flydnet download`로 FlyWire·DoOR 데이터를 받음 (패키지에는 데이터 없음, 버전 고정·SHA-256 확인)
+```bash
+pip install flydnet                  # CPU (NumPy·SciPy). torch 없음
+pip install "flydnet[gpu-cuda12]"    # + GPU (CuPy, CUDA 12.x 드라이버). CUDA 13.x면 [gpu-cuda13]
+pip install "flydnet[torch]"         # + torch 연동 (flydnet.torch)
 
-빠른 시작 (설치와 데이터 받기 후, torch 필요 없음):
+python -m flydnet download           # FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130 MB, 버전 고정·SHA-256 확인)
+python -m flydnet                    # 데이터 상태
+```
+CUDA 버전은 `nvidia-smi` 오른쪽 위에 나온다. 데이터 위치는 `~/.flydnet/data` (`fd.set_data_dir(...)`로 바꿈).
+`FLYDNET_DEVICE=cpu`로 CPU를 강제할 수 있다.
+
+## 빠른 시작
 
 ```python
 import numpy as np, flydnet as fd
@@ -39,26 +32,22 @@ import numpy as np, flydnet as fd
 mb = fd.Circuit.from_flywire()                       # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
 model = fd.Pathway(
     fd.Projection(784, 344),                         # 축삭 투사: 픽셀 → PN (모두 연결)
-    fd.Neuropil(mb, "PN", "KC"),                     # 실제 PN→KC 배선 (연결 13,485개만)
+    fd.Neuropil(mb, "PN", "KC"),                     # 실제 PN→KC 배선 (연결 13,485개만, 부호 유지 학습)
     fd.LateralInhibition(frac=0.05),                 # APL 억제: KC 5%만
     fd.Projection(2597, 10),
-)                                                    # GPU(CuPy)가 있으면 GPU, 없으면 CPU
+)
 rule = fd.AdaptivePlasticity(model.synapses(), rate=1e-3)
 loss = fd.surprise(model(x), y)                      # 놀람 = 교차 엔트로피
 rule.clear(); loss.retrograde(); rule.step()         # 역행성 신호(자동 미분) → 가소성
 ```
-MNIST에서 2에폭 96.2% (GPU 약 6초, CPU 약 9초, `examples/ganglion_mnist.py`).
+MNIST 2에폭 96.2% (GPU 약 6초, `examples/ganglion_mnist.py`).
 
-연구 기록 전체(실험 11개, 방법, 한계)는 소스 저장소의 `REPORT.md`에 있다.
+## 대조 실험: fd.compare
 
-## 대조 실험: fd.compare — "이 배선이 정말 중요한가?"
-
-일반 ML 라이브러리는 "정확도를 어떻게 높이나"를 묻는다. flydnet은 **"이 기능에 실제 배선이 필요한가, 무엇이 필요한가"**를
-묻는다. 같은 학습 절차를 실제 배선과 대조군 배선에 seed마다 짝지어 돌리고 비교한다.
+같은 학습 절차를 실제 배선과 대조군 배선에 seed마다 짝지어 돌리고 비교한다.
 
 ```python
-def run(circuit, seed):                       # 회로 하나로 모델을 만들고 학습해서 점수 하나 (seed를 학습 난수에)
-    kc = fd.ConnectomeLayer(circuit, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 3.0}, input_mode="regular")
+def run(circuit, seed):                    # 회로 하나로 모델을 만들고 학습해서 점수 하나 (seed를 학습 난수에)
     ...
     return accuracy
 
@@ -66,7 +55,7 @@ report = fd.compare(run, mb, controls=["shuffled", "randomized", "shuffled_weigh
 print(report)
 ```
 ```
-조건                               평균              95% CI      실제 − 대조      d       p    실제 우세
+조건                               평균              95% CI      실제 - 대조      d       p    실제 우세
 real (실제 배선)                 0.7806     [0.759, 0.8021]
 shuffled                     0.7833    [0.7685, 0.7982]    -0.002778  -0.16   0.750      1/6
 randomized                   0.6517     [0.6353, 0.668]      +0.1289   5.35   0.031      6/6
@@ -75,590 +64,76 @@ shuffled_weights             0.7736     [0.755, 0.7922]    +0.006944   0.73   0.
 해석 (대조군 포함 관계):
   → 실제 배선이 randomized는 이기고 shuffled와는 차이가 없음 → 중요한 구조: 뉴런별 연결 수 분포 (차수·허브)
 ```
-(`examples/compare_odor.py --model lif`, 스파이킹 버섯체, 합성 냄새 30클래스, 약 20초)
+(스파이킹 버섯체, 합성 냄새 30클래스, `examples/compare_odor.py --model lif`, 약 20초)
 
-| 대조군 | 유지하는 것 | 묻는 것 |
+| 대조군 | 유지하는 구조 | 묻는 것 |
 |---|---|---|
-| `"randomized"` | 그룹 쌍별 연결 수 | 연결 수 분포(허브·차수)까지 중요한가 |
+| `"randomized"` | 그룹 쌍별 연결 수 | 연결 수 분포(허브·차수)가 중요한가 |
 | `"shuffled"` | + 뉴런별 연결 수 | 누가 누구와 연결되는가 |
-| `fd.controls.Local(xy, r, merge=)` | + 시야 위치 대응 | 큰 공간 구조 말고 세부 배선까지 중요한가 |
-| `"shuffled_weights"` | 배선 전부, 세기만 섞음 | 시냅스 세기 분포 |
-| 함수 `f(circuit, seed)` | 직접 정의 | — |
+| `fd.controls.Local(xy, r)` | + 시야 위치 대응 | 큰 공간 구조 말고 세부 배선까지 |
+| `"shuffled_weights"` | 배선 그대로, 세기만 섞음 | 시냅스 세기 분포 |
 
-- **짝지은 비교**: seed i의 실제 회로와 seed i로 만든 대조군을 같은 학습 seed로 → 학습 잡음이 상쇄된다.
-- **검정**: 짝 차이의 부호 뒤집기 순열 검정 (분포 가정 없음, seed ≤ 14면 정확한 p). 효과 크기 d, 차이의 95% CI, 실제가 이긴 seed 수.
-- **해석**: randomized ⊂ shuffled ⊂ local ⊂ 실제 배선. 아래 단계는 이기고 바로 위 단계와 같으면 그 사이 구조가 원인.
-- **함정 경고** (이 프로젝트의 실험에서 실제로 빠졌던 것들):
-  - seed가 적어 p가 0.05 아래로 내려갈 수 없음 (seed 5개 이하면 최소 p = 2/2ⁿ > 0.05)
-  - 모두 상한 근처 → 차이가 가려짐 (전체 시야 운동 실험이 100% 대 100%)
-  - 모두 찍기 수준 → 아무것도 학습되지 않음
-  - 같은 seed를 다시 돌리면 점수가 다름 → 재현되지 않음 (GPU 연산 순서 + 불안정한 학습)
-  - 실제 배선이 전체 무작위만 이김 → 위치 대응 같은 큰 구조 때문일 수 있음 (국소 운동 실험의 첫 결론이 틀렸던 이유)
-  - 효과가 큰데 유의하지 않음 → seed를 늘리면 확인될 수 있음
+- 같은 seed끼리 짝지어 학습 잡음을 상쇄하고, 부호 뒤집기 순열 검정(분포 가정 없음, seed ≤ 14면 정확한 p)을 쓴다.
+- 대조군 포함 관계(randomized ⊂ shuffled ⊂ local ⊂ 실제)로 **어떤 구조가 중요한지** 해석한다.
+- 함정을 경고한다: seed가 적어 p가 0.05 아래로 내려갈 수 없음, 상한 근처라 차이가 가려짐, 찍기 수준,
+  같은 seed인데 결과가 다름, 큰 구조 때문에만 이김, 효과는 큰데 비유의.
 
-## 설치
+## 구성 요소
 
-```bash
-pip install flydnet                  # CPU (NumPy·SciPy). torch 없음
-pip install "flydnet[gpu-cuda12]"    # + GPU: CUDA 12.x 드라이버 (CuPy)
-pip install "flydnet[gpu-cuda13]"    # + GPU: CUDA 13.x 드라이버
-pip install "flydnet[torch]"         # + torch 연동 (flydnet.torch, AssocReadout 등). GPU torch는 pytorch.org 명령으로 먼저 설치
+| 무엇 | 이름 |
+|---|---|
+| 회로 고르기·대조군 | `Circuit.from_flywire(groups, side)`, `.shuffled()`, `.randomized()`, `.shuffled_weights()`, `.subset()` |
+| 커넥톰 배선 층 (시간 없음) | `Neuropil` (학습: `"edge"` / `"pair"` / `"free"` / 고정), `LateralInhibition`, `AxonHillock` |
+| 시간 시뮬레이션 | `ConnectomeLayer` — 스파이킹 LIF(Shiu et al. 2024 매개변수)·연속값 뉴런, 시간 역전파, 체크포인팅 |
+| 역전파 없는 학습 | `MushroomBodyOutput`, `AssocReadout`, `DopamineReadout` (도파민 국소 규칙) |
+| 인코더·리드아웃 | `RateEncoder`, `GlomerularEncoder`, `KCExpansion`, `extract`, `train_linear` |
+| 데이터 | `synthetic_odors`, `door_odors` (DoOR 2.0), `biconditional_mixtures` |
+| 시각계 | `visual_circuit`, `column_map`, `drifting_grating`, `direction_offsets`, `MOTION_PATHWAY` |
+| 대조 실험 | `compare`, `controls.Shuffled / Randomized / ShuffledWeights / Local / Custom` |
+| torch 연동 | `flydnet.torch.*` — 0.1의 torch판 전부 (같은 이름), `torch.nn`용 구조물 |
 
-python -m flydnet download           # 데이터 받기: FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130MB)
-python -m flydnet                    # 데이터 상태 확인
-python -m flydnet verify             # 받은 데이터가 기대한 버전인지 (크기 + SHA-256)
-```
-CUDA 버전은 `nvidia-smi` 오른쪽 위에 나온다. 데이터는 `~/.flydnet/data`에 받는다
-(위치는 `fd.set_data_dir(...)` 또는 환경변수 `FLYDNET_FLYWIRE`로 바꿀 수 있음).
+전체 뇌(13.9만 뉴런, 연결 1,509만)도 일반 GPU에서 학습된다 (`ConnectomeLayer` 학습 1스텝, RTX 5070:
+배치 8에 0.58초, 배치 32에 1.3초).
 
-### 개발용 (소스에서)
+### 자체 엔진 이름 (torch 대응)
 
-전용 가상환경 `D:\flydnet\.venv` (Python 3.11, torch 2.14.1+cu132, CuPy 14 CUDA 13)에 편집 모드로 설치되어 있다.
-
-```bash
-# 새로 만들 때
-python -m venv .venv
-.venv\Scripts\pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu132
-.venv\Scripts\pip install --no-cache-dir -e ".[examples,dev,gpu-cuda13]"   # 편집 모드: 코드를 고치면 바로 반영
-
-.venv\Scripts\python -m pytest -q                # 테스트 (torch 연동 테스트는 torch가 없으면 건너뜀)
-```
-`examples/`의 스크립트는 설치하지 않아도 `src/`를 직접 불러와서 실행된다.
-
-### 새 버전 배포
-
-```bash
-.venv\Scripts\python scripts\release.py bump patch    # 버전 올리기 (0.2.0 → 0.2.1), CHANGELOG.md에 항목 틀 추가
-# CHANGELOG.md에 바뀐 점을 적고 커밋
-.venv\Scripts\python scripts\release.py check          # 검사 + 빌드만 (커밋·CHANGELOG·PyPI 중복·테스트·wheel 설치·태그)
-.venv\Scripts\python scripts\release.py check --upload # 검사 통과하면 PyPI에 업로드
-```
-같은 버전 번호는 PyPI에서 지워도 다시 쓸 수 없어서, `check`는 이미 올린 번호면 빌드 전에 멈춘다.
-업로드 때마다 토큰을 붙여 넣지 않으려면, PyPI에서 **flydnet 프로젝트 전용 토큰**을 만들어
-`%USERPROFILE%\.pypirc`에 저장한다 (이 파일은 비밀번호와 같으니 저장소에 넣지 말 것):
-
-```ini
-[pypi]
-username = __token__
-password = pypi-여기에_프로젝트_전용_토큰
-```
-
-## 자체 엔진: flydnet.ganglion
-
-torch를 쓰던 사람을 위한 대응표. 이름은 같은 일을 하는 생물 구조에서 땄다.
-
-| torch | flydnet | 생물학적 의미 |
-|---|---|---|
-| `Tensor` | `Signal` | 신경 신호 |
-| `requires_grad` | `plastic` | 학습으로 바뀌는가 (가소성) |
-| `backward()` / `.grad` | `retrograde()` / `.retro` | 역행성 신호: 받는 쪽에서 보내는 쪽으로 거꾸로 가는 신호 |
-| `no_grad()` | `quiescent()` | 휴지 상태: 학습 흔적을 남기지 않음 |
-| `nn.Parameter` / `nn.Module` | `Synapse` / `Tissue` | 시냅스 / 조직 |
-| `nn.Sequential` / `nn.Linear` | `Pathway` / `Projection` | 신경 경로 / 축삭 투사 |
-| (희소 `nn.Linear`) | `Neuropil` | 신경망 영역: 실제 커넥톰 배선으로만 연결 |
-| 활성화 함수 | `LateralInhibition`, `AxonHillock`, `Activation` | 측억제(APL) / 축삭 둔덕(스파이크) / relu·tanh·sigmoid |
-| 분류기 헤드 | `MushroomBodyOutput` (`.learn`) | 버섯체 출력 구역: 도파민 연합 학습 (역전파 없음) |
-| `optim.SGD` / `optim.Adam` | `Plasticity` / `AdaptivePlasticity` | 가소성 규칙 |
-| `zero_grad()` / `state_dict()` | `clear()` / `state()`, `save()`, `load()` | — |
-| `F.cross_entropy` / `F.linear` | `surprise` / `transmit` | 놀람(−log p) / 시냅스 전달 |
-| `"cuda"` | `"gpu"` | — |
-
-```python
-import flydnet.ganglion as G
-
-x = G.Signal(np.random.rand(4, 3), plastic=True, device="gpu")
-loss = (x.tanh() ** 2).sum()
-loss.retrograde()
-x.retro                                    # d loss / d x (CuPy 배열)
-
-layer = fd.Neuropil(mb, "PN", "KC", train="edge")   # "edge"(연결마다, 부호 유지) / "pair" / "free" / None
-layer.to("cpu"); layer.save("pn_kc.npz")           # 다른 회로로 만든 Neuropil에 불러오면 배선이 다르다는 오류
-```
-
-- 검증: 연산마다 수치 미분과 비교, torch와 출력·기울기·Adam 결과 비교, CPU와 GPU 결과 비교 (`tests/test_ganglion.py`)
-- `Neuropil`: 전체 뇌(연결 1,509만)를 한 층으로 만들 수 있다 (torch판 기준 순전파+역전파 배치 64에 0.03초, 1.5 GB)
-- 0.1의 기능도 전부 자체 엔진판이 같은 이름으로 있다: `RateEncoder`, `GlomerularEncoder`, `extract`, `train_linear`,
-  `DopamineReadout`, `AssocReadout`, `KCExpansion`, `synthetic_odors`, `door_odors`, `biconditional_mixtures`,
-  `visual_circuit`, `column_map`, `drifting_grating`, `direction_offsets`. 결과는 numpy (또는 `Signal`).
-  난수를 쓰지 않는 계산은 torch판과 값이 같다 (도파민 규칙 5종, 사구체 인코더, DoOR, PN 입력 KC 확장, 시야 지도, 격자 —
-  `tests/test_ported.py`). 무작위 투영·데이터 생성은 난수 생성기가 달라 값이 다르다
-
-### 시간 시뮬레이션: ConnectomeLayer
-
-회로 전체를 시간에 따라 시뮬레이션한다 (스파이킹 LIF 또는 연속값 뉴런). 인자는 0.1의 torch판과 같다.
-
-```python
-mb = fd.Circuit.from_flywire()
-layer = fd.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=50, dt=0.5, gains={"PN>KC": 2.0},
-                           input_mode="regular", trainable=["KC>MBON"], checkpoint_every=20)
-rates = layer(x_hz)                          # (B, 344) Hz → (B, 2645) Hz, Signal
-loss = fd.surprise(head(rates), y); loss.retrograde()   # 대리 기울기로 시간 역전파
-layer.save("mb.npz"); fd.ConnectomeLayer.load("mb.npz") # 배선 포함 한 파일, FlyWire 데이터 없이 다시 만듦
-with fd.quiescent():
-    out, trace = layer(x_hz, record=[0, 1, 2])          # 스텝별 스파이크 기록 (B, 스텝, 3)
-```
-
-- torch판과 같은 입력이면 **출력이 같다** (버섯체 regular 입력: 스파이크 단위로 100% 일치, CPU·GPU 모두).
-  기울기도 같다 (스파이킹 대리 기울기, 연속값, 세포 유형 매개변수, 시각계 실제 회로에서 상대 차이 2e-5 안).
-- 포아송 입력 난수는 (시드, 스텝, 칸)으로 정하는 해시 난수다. 체크포인팅으로 다시 계산해도 같고, CPU·GPU 결과도 같다
-  (torch판과 같은 시드여도 난수 자체는 다름).
-- 속도 (RTX 5070, 학습 1스텝 = 순전파+역전파+Adam):
-
-| 회로 | 설정 | torch판 | 자체 엔진 |
-|---|---|---|---|
-| 시각계 운동 경로 (2.4만 뉴런, 43만 연결) | 연속값, 300 ms, 배치 16 | 0.17초 | 0.19초 |
-| 전체 뇌 (13.9만 뉴런, 1,509만 연결) | LIF, 50 ms, 배치 8 | 2.2초, 2.2 GB | **0.58초**, 2.3 GB |
-| 전체 뇌 | LIF, 50 ms, 배치 32 | 2.6초, 3.7 GB | **1.3초**, 4.9 GB |
-
-  자체 엔진의 GPU 메모리는 CuPy 메모리 풀 크기(재사용 캐시 포함)라 torch의 실제 사용량보다 크게 잡힌다.
-  빠른 이유: LIF 한 스텝을 역전파까지 직접 유도한 하나의 연산으로 합쳤고(저장 값 최소), 희소 행렬 곱과
-  연결별 기울기를 (뉴런, 배치) 배치에 맞춘 CUDA 커널로 직접 계산한다 (`ganglion/kernels.py`).
-  큰 회로는 `fd.ganglion.limit_gpu_memory(0.75)`로 GPU 메모리 상한을 걸어 두면 넘칠 때 바로 오류가 난다.
-
-## torch 연동 (선택)
-
-`pip install "flydnet[torch]"`. 0.1의 torch판 기능은 `flydnet.torch`에 같은 이름으로 있다 (처음 쓸 때 불러옴):
-`fd.torch.ConnectomeLayer`, `fd.torch.RateEncoder`, `fd.torch.extract`, `fd.torch.AssocReadout`, `fd.torch.KCExpansion`,
-`fd.torch.door_odors`, `fd.torch.drifting_grating` 등. 0.1 코드는 `fd.이름`을 `fd.torch.이름`으로 바꾸면 그대로 돈다.
-시간 시뮬레이션의 torch판은 `fd.torch.ConnectomeLayer` (0.1의 `fd.ConnectomeLayer`, 같은 인자).
-
-```python
-import flydnet as fd
-mb = fd.Circuit.from_flywire()
-enc = fd.RateEncoder(784, len(mb.groups["PN"]))   # 픽셀 → PN 발화율 (고정 무작위 희소 투영)
-layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=100, gains={"PN>KC": 2.0}, input_mode="regular")
-feats = fd.extract(layer, enc, images)            # (n, 2597) KC 발화율 (스파이킹 LIF 시뮬레이션)
-fd.train_linear(feats, y, feats_test, y_test)     # 로지스틱 회귀
-mb.shuffled(seed=0)                               # 무작위 배선 대조군 (연결 수·차수는 그대로)
-```
-
-`flydnet.torch.anatomy` / `flydnet.torch.physiology`는 자체 엔진의 구조물·작용을 torch 텐서로 제공한다
-(`nn.Sequential` 안에 `Neuropil`, `LateralInhibition`, `AxonHillock`, `MushroomBodyOutput`).
-
-### 연속 학습: 새 클래스를 계속 추가하는 분류기
-
-정확도가 필요하면 이 방식이 가장 쓸 만하다 (실험 ⑪). 사전학습 모델로 특징을 뽑고, 도파민 연합 학습으로 클래스를
-차례로 배운다. 역전파가 없고, 데이터를 한 번만 보며, 새 클래스를 배워도 이전 클래스를 잊지 않는다.
-
-```python
-mbo = fd.MushroomBodyOutput(n_in=512, n_classes=100, per_class=10)   # 클래스마다 원형 10개 (torch 필요 없음)
-mbo.learn(feats_task1, y_task1)                                 # 과제 1의 클래스
-mbo.learn(feats_task2, y_task2)                                 # 과제 2 — 과제 1을 잊지 않음
-pred = mbo.predict(feats_test, classes=seen_classes)
-
-# 같은 계산: fd.AssocReadout (fit/predict API), 버섯체 확장 fd.KCExpansion (모두 torch 없이)
-kc = fd.KCExpansion(fd.Circuit.from_flywire(side=None), n_in=512, projection="gaussian", k_frac=0.2)
-codes = kc(feats)                                               # 실제 버섯체 확장 (이 과제에서는 오히려 손해, ⑪ 참고)
-```
-
-### (torch 연동) PyTorch 층처럼 역전파로 학습
-
-`trainable=`을 주면 배선은 고정하고 연결별 세기를 `nn.Parameter`로 학습한다. 스파이크는 대리 기울기
-(순전파는 진짜 스파이크, 역전파는 빠른 시그모이드 기울기)로, 입력 스파이크는 straight-through로 미분되어
-앞쪽 층까지 기울기가 흐른다. 부호(흥분/억제)는 바뀌지 않는다.
-
-```python
-import torch, torch.nn as nn
-import flydnet as fd
-
-mb = fd.Circuit.from_flywire()
-layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 2.0},
-                                 input_mode="regular", trainable=True)  # 또는 trainable=["KC>MBON"]
-model = nn.Sequential(fd.RateEncoder(784, 344), layer,
-                      nn.BatchNorm1d(layer.n_out),                    # 발화율(Hz)은 크기가 커서 정규화 필요
-                      nn.Linear(layer.n_out, 10)).cuda()
-
-opt = torch.optim.Adam([
-    {"params": [layer.log_scale], "lr": 3e-2},                        # 커넥톰 연결 세기 (log 배율)
-    {"params": model[-1].parameters(), "lr": 3e-3},
-])
-loss = nn.functional.cross_entropy(model(x), y)
-opt.zero_grad(); loss.backward(); opt.step()
-
-layer.weights()          # 현재 연결별 세기 (mV, 부호 포함), 순서는 layer.w_idx (post, pre)
-```
-
-버섯체 회로에서 배치 64, 50 ms(100스텝) 순전파 + 역전파가 RTX 5070 기준 약 0.2초, GPU 메모리 약 0.5GB.
-
-### 데이터
-
-```python
-fd.download()                         # 없는 파일만 받음: FlyWire 약 135 MB + DoOR 0.5 MB  (python -m flydnet download)
-fd.set_data_dir(flywire=r"D:\my\fw")  # 이미 받아 둔 폴더를 쓰려면 (~/.flydnet/config.json에 저장)
-fd.data_status()                      # 어디서 무엇을 찾았는지
-```
-위치를 찾는 순서: 함수에 준 경로 → 환경변수 `FLYDNET_FLYWIRE` / `FLYDNET_DOOR` (`FLYDNET_DATA`도 인정)
-→ `~/.flydnet/config.json` → `~/.flydnet/data/<flywire|door>`. 받은 파일은 크기로 온전한지 확인한다.
-출처: FlyWire v783 연결 파일(Shiu et al. 2024, MIT), 세포 주석(Schlegel et al. 2024), DoOR 2.0(CC BY-SA 4.0).
-
-### (torch 연동) 저장 / 불러오기
-
-```python
-layer.save("mb.pt")                           # 배선 + 설정 + 학습한 연결 세기, 파일 하나 (버섯체 약 10 MB)
-layer = fd.torch.ConnectomeLayer.load("mb.pt")   # FlyWire 데이터 없이도 다시 만들어짐
-torch.save(model.state_dict(), "m.pt")        # 표준 PyTorch 방식도 그대로
-readout.save("r.pt"); fd.AssocReadout.load("r.pt")
-```
-모두 `torch.load(weights_only=True)`로 읽힌다 (텐서·기본 자료형만 저장).
-
-### (torch 연동) 메모리 절약: 그래디언트 체크포인팅
-
-```python
-layer = fd.torch.ConnectomeLayer(..., trainable=True, checkpoint_every=20)   # 20스텝 구간마다 다시 계산
-# 자체 엔진도 같은 인자 (fd.ConnectomeLayer(..., checkpoint_every=20), 구현은 fd.checkpoint)
-```
-역전파 때 구간의 중간 상태를 다시 계산해 시간 방향 메모리를 줄인다. 출력은 완전히 같고, 기울기는 GPU 합산
-순서 오차(상대 1e-7) 안에서 같다. 버섯체, 100 ms(200스텝): 배치 64에서 0.74 → 0.18 GB, 배치 256에서
-1.97 → 0.51 GB, 계산은 1.3~2배.
-
-### (torch 연동) 큰 회로 학습: 연결 단위 역전파
-
-`torch.sparse.mm`의 역전파는 연결 기울기를 뉴런 수 × 뉴런 수 크기로 만든다 (전체 뇌면 77 GB).
-`SparsePropagate`는 필요한 연결 칸만 계산한다 (`torch.sparse.sampled_addmm`, 메모리 = 연결 수).
-연결 세기도 순전파당 한 번만 계산한다. `torch.sparse.mm`과 같은 기울기를 내는 것을 `gradcheck`로 확인했다.
-
-```python
-others = ["optic", "central", "visual_projection", "ascending", "descending",
-          "sensory_ascending", "visual_centrifugal", "motor", "endocrine"]
-brain = fd.Circuit.from_flywire({"SENS": ("super_class", "sensory"), "REST": ("super_class", others)}, side=None)
-layer = fd.torch.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="regular",
-                                 trainable=True, checkpoint_every=10)
-```
-
-학습 1스텝 (순전파 + 역전파 + Adam, 50 ms = 100스텝, RTX 5070):
-
-| 회로 | 연결 | 배치 | GPU 메모리 | 시간 |
+| torch | flydnet | | torch | flydnet |
 |---|---|---|---|---|
-| 감각 → 중심 뇌, 4.9만 뉴런 | 486만 | 8 | 0.88 GB (이전 13.9 GB) | 0.8초 (이전 18초) |
-| 전체 뇌, 13.9만 뉴런 | 1,509만 | 8 | 2.16 GB (이전 77 GB 요구) | 2.2초 |
-| 전체 뇌 | 1,509만 | 32 | 3.65 GB | 2.6초 |
+| `Tensor` | `Signal` | | `nn.Module` | `Tissue` |
+| `requires_grad` | `plastic` | | `nn.Sequential` | `Pathway` |
+| `backward()` / `.grad` | `retrograde()` / `.retro` | | `nn.Linear` | `Projection` |
+| `no_grad()` | `quiescent()` | | `optim.SGD` / `Adam` | `Plasticity` / `AdaptivePlasticity` |
+| `nn.Parameter` | `Synapse` | | `F.cross_entropy` | `surprise` |
+| `utils.checkpoint` | `checkpoint` | | `"cuda"` | `"gpu"` |
 
-큰 회로를 시험할 때는 `torch.cuda.set_per_process_memory_fraction(0.75)`처럼 상한을 걸어 두면, GPU 메모리가
-넘칠 때 Windows 가상 메모리(C 드라이브)로 흘러가지 않고 바로 오류가 난다.
+이름은 같은 일을 하는 생물 구조에서 땄다 (역행성 신호, 시냅스, 조직, 신경 경로, 가소성…).
+엔진 검증: 연산마다 수치 미분, torch와 출력·기울기·옵티마이저 비교, CPU↔GPU 비교 (`tests/`).
 
-## 구성
+### torch 연동
 
-| 모듈 | 내용 |
-|---|---|
-| `circuit.py` | `Circuit`: 주석으로 뉴런 그룹을 골라 그 사이 연결만 남긴 회로, `shuffled()` 대조군, `summary()` |
-| `ganglion/` | **자체 엔진** (torch 없음): `signal.py` 신호·역행성 신호·체크포인팅, `tissue.py` 조직, `circuitry.py` 시간 시뮬레이션(`ConnectomeLayer`), `physiology.py` 작용, `rules.py` 가소성 규칙, `backend.py` NumPy/CuPy |
-| `data.py` | 데이터 위치·다운로드·검증 |
-| `torch/` | torch 연동: `anatomy.py` (`torch.nn`처럼), `physiology.py` (`torch.nn.functional`처럼) |
-| `encoders.py` | `RateEncoder`, `GlomerularEncoder`: 값 → 입력 뉴런 발화율 |
-| `readout.py` | `extract()`: 데이터 → 출력 특징 (numpy), `train_linear()`: 로지스틱 회귀 |
-| `plasticity.py` | `DopamineReadout`, `AssocReadout`: 역전파 없는 도파민 학습 리드아웃 |
-| `expansion.py` | `KCExpansion`: 실제 PN→KC 배선 앞먹임 확장 (상위 k만 남김, APL 억제처럼) |
-| `datasets.py` | 합성 냄새, DoOR 실제 냄새, 냄새 혼합물 과제 |
-| `visual.py` | 시각계 회로, 시야 지도, 움직이는 격자, 배선 속 방향 구조 |
-| `torch/` 안 | 위 모듈들과 `layers.py`(`ConnectomeLayer`)의 0.1 torch판 (`fd.torch.*`) |
+0.1 코드는 `fd.이름`을 `fd.torch.이름`으로 바꾸면 그대로 돈다
+(`fd.torch.ConnectomeLayer`, `fd.torch.AssocReadout`, `fd.torch.extract` 등).
 
-## 실험 ① 버섯체 저장소(reservoir) — MNIST
+## 결과 요약
 
-`python examples/mnist_reservoir.py` (train 60k / test 10k, RTX 5070에서 회로 하나당 약 2.5분)
-
-설정: 100 ms, PN→KC 배율 2.0 (KC 약 7% 활성 = 실제 초파리 수준), 규칙적 입력 스파이크
-
-| 특징 | 차원 | test |
-|---|---|---|
-| 픽셀 (기준선) | 784 | **92.72%** |
-| PN 발화율 (인코더 출력) | 344 | 92.41% |
-| KC — 실제 배선 | 2597 | 89.56% |
-| KC — 무작위 배선 ×3 | 2597 | 89.05 / 89.20 / 89.06% |
-| MBON — 실제 배선 | 48 | 24.39% |
-| MBON — 무작위 배선 ×3 | 48 | 26.97 / 35.10 / 32.02% |
-
-해석
-- KC 층은 픽셀보다 약 3%p 낮다. 고정된 스파이킹 층을 거치면서 정보가 줄어든다.
-- 실제 배선이 무작위 배선보다 KC에서 0.4~0.5%p 높다. 무작위 대조군 3개 모두보다 높지만 차이가 작아
-  (테스트 1만 개의 표준오차 약 0.3%p) 확정적이지 않다.
-- MBON 48개는 거의 쓸모없고 실제 배선이 오히려 낮다. MBON은 원래 학습된 KC→MBON 시냅스로
-  읽어야 하는 출력이라, 학습 없는 배선만으로는 의미 있는 판독이 안 되는 것으로 보인다 → 실험 ②의 동기.
-
-개발 중 발견한 점
-- 포아송(무작위) 입력, 100 ms에서는 같은 이미지를 다시 넣어도 켜지는 KC 집합이 26%만 겹쳐
-  리드아웃이 잡음을 외웠다 (test 54%). 규칙적 입력으로 바꿔 같은 입력 → 같은 반응이 되게 했다.
-
-## 실험 ② 도파민 학습 리드아웃 (역전파 없음) — MNIST
-
-`python examples/mnist_dopamine.py` (실험 ①의 KC 특징 캐시 사용, 1분 이내)
-
-숫자마다 MBON 같은 출력 뉴런 하나. KC→출력 시냅스를 `KC 활동 × 도파민` 국소 규칙으로 학습 (`fd.DopamineReadout`).
-- `bidir`: 틀렸을 때 정답 출력 강화 + 이긴 오답 출력 약화 (양방향 도파민 가소성)
-- `assoc`: 정답 출력만 그 클래스 평균 패턴으로 강화 + 출력별 시냅스 총량 정규화. 학습 순서와 무관
-- `ltd`, `ltd_err`, `ltp`: 단방향 규칙. 전체 학습에서 37~73%로 약해 실험에서 제외
-
-**A. 전체 학습** (test, bidir은 3회 평균)
-
-| 특징 | 역전파(로지스틱) | 도파민 bidir | 도파민 assoc |
-|---|---|---|---|
-| 픽셀 | 92.72% | 88.99 ± 0.63% | 82.16% |
-| KC 실제 배선 | 89.46% | 84.77 ± 0.50% | 74.09% |
-| KC 무작위 배선 | 89.06% | 84.39 ± 2.64% | 74.61% |
-
-**B. 연속 학습** (0/1 → 2/3 → 4/5 → 6/7 → 8/9 순서로 한 번씩, 지금까지 본 숫자 전체 정확도)
-
-| 특징 | 방법 | 단계별 | 마지막 후 첫 과제(0/1) |
-|---|---|---|---|
-| KC 실제 배선 | 역전파 | 99.8 → 70.3 → 58.8 → 44.9 → **40.5** | 5.8% |
-| KC 실제 배선 | 도파민 bidir | 99.8 → 47.4 → 30.4 → 24.8 → **19.1** | 0.0% |
-| KC 실제 배선 | 도파민 assoc | 99.3 → 90.2 → 82.8 → 79.6 → **74.1** | 89.4% |
-| 픽셀 | 도파민 assoc | 99.8 → 92.9 → 87.8 → 86.8 → **82.2** | 93.0% |
-
-해석
-- 오류를 고치는 규칙(역전파, bidir)은 전체 학습에서 강하지만 연속 학습에서 앞 과제를 거의 다 잊는다.
-  bidir은 새 숫자를 배울 때 틀린 답이 대부분 옛 숫자라 옛 출력을 계속 약화시켜 역전파보다 더 잊는다.
-- assoc는 다른 출력을 건드리지 않아 망각이 원리상 없다 → 연속 학습 최종 74% (역전파 40%).
-  대신 전체 학습 성능은 낮다 (74% vs 89%).
-- **실제 배선 효과는 여기서도 없다**: KC 실제 ≈ 무작위, 그리고 assoc는 KC보다 픽셀에서 더 좋다 (82% vs 74%).
-  이점은 버섯체 배선이 아니라 학습 규칙(순서 무관 연합 학습)에서 나온다.
-
-## 실험 ③ 합성 냄새 과제 — 실제 배선 대 무작위 배선
-
-`python examples/odor_task.py` (약 8분)
-
-- 냄새 = 사구체 56개 활성 벡터. `fd.GlomerularEncoder`가 같은 사구체의 단일 사구체형 PN(139개)에
-  같은 발화율을 넣음 (실제 더듬이엽 구조)
-- 클래스 = 냄새 원형 여러 개의 묶음 (`fd.synthetic_odors(protos_per_class=K)`) → 사구체 공간에서
-  선형 분리가 어려움. 차원을 넓히는 KC 층이 이론적으로 유리한 과제 (Babadi & Sompolinsky 2014)
-- PN→KC 배율 3.0 (KC 약 5% 활성), 로지스틱 회귀 리드아웃, 과제 seed 5개 × 무작위 배선 5개
-
-| 설정 (클래스 × 원형, 잡음, 학습/클래스) | 사구체 | KC 실제 | KC 무작위 (5개 범위) | 실제 − 무작위 | 실제 승률 |
-|---|---|---|---|---|---|
-| 20 × 5, 0.5, 20 | 68.6 | **76.7** | 75.1 (73.9~76.0) | +1.64 ± 1.36 | 84% |
-| 20 × 10, 0.5, 20 | 41.5 | **52.4** | 50.5 (49.7~51.3) | +1.89 ± 0.68 | 100% |
-| 10 × 20, 0.5, 40 | 38.0 | **54.2** | 53.8 (52.5~54.9) | +0.46 ± 1.73 | 48% |
-| 50 × 5, 0.8, 20 | **53.5** | 47.7 | 46.0 (45.5~46.3) | +1.73 ± 0.65 | 96% |
-
-전체 20개(설정 × seed) 중 18개에서 실제 배선이 무작위 평균보다 높음, 평균 +1.43%p.
-(같은 설정을 다시 돌리면 GPU 연산 순서 때문에 0.5%p 안팎으로 흔들린다)
-
-> 정정: 처음 결과(+1.82%p, 19/20)는 무작위화 결함이 있던 버전이다. 섞을 때 같은 PN→KC 연결이 두 번
-> 생기면 합쳐져서 무작위 회로의 KC가 실제보다 입력을 약 5% 적게 받았다 (PN→KC 중복 497개, KC→KC 1,557개).
-> `shuffled()`가 이제 중복·자기 연결을 맞바꿈으로 없앤다. 실험 ①의 무작위 대조군 숫자는 결함 버전 기준이다.
-
-해석
-- **실제 배선 효과는 결함을 고친 뒤에도 유지된다** (+1.43%p, 18/20). 원형 20개 설정에서는 차이가 없다.
-- KC 활성 비율로는 설명되지 않는다: 실제 5.33%, 무작위 5.12~6.00%.
-- 냄새가 무작위 합성이라 '자연 냄새 통계에 맞춰진 배선'이라는 설명은 아니다.
-- 비선형 과제에서 KC 층은 사구체 값보다 8~16%p 낫다 (이론대로). 단, 잡음이 크고 클래스가 많으면
-  (마지막 행) 오히려 사구체 값이 낫다.
-
-## 실험 ③-b 이점은 어느 연결에서 나오나
-
-`python examples/odor_ablation.py` (약 11분). 한 종류의 연결만 섞고 나머지는 실제 그대로 둠.
-손실 = 실제 − 해당 조건 (3설정 × 5seed, 조건마다 무작위 3개)
-
-| 섞은 연결 | 손실 (%p) | 양수 |
-|---|---|---|
-| 전체 | **+1.61 ± 0.48** | 12/15 |
-| PN→KC | +0.66 ± 0.45 | 10/15 |
-| 나머지 (MBON 관련, PN끼리 등) | +0.32 ± 0.28 | 11/15 |
-| KC→KC | −0.48 ± 0.35 | 4/15 |
-| APL ↔ KC | −0.50 ± 0.31 | 5/15 |
-
-(± = 표준오차)
-
-해석
-- 전체를 섞으면 확실히 손해지만, **한 종류만 섞어서는 뚜렷한 손실이 없다.** 이점이 한 연결에 있지 않고
-  여러 연결 구조가 함께 만드는 것으로 보인다 (손실이 더해지지 않음).
-- KC→KC, APL은 섞으면 오히려 약간 좋아진다 → 이점의 출처가 아님.
-- 결함 버전에서는 PN→KC 손실이 +1.17 (13/15)로 유일한 출처처럼 보였는데, 그중 상당 부분이
-  중복 연결로 무작위 KC 입력이 줄어든 탓이었다.
-- 실제 PN→KC 배선은 무작위보다 같은 사구체 입력을 중복해 받는 KC가 많고 (14.7% 대 10.2%),
-  KC 아형(γ, αβ, α'β')마다 받는 사구체 분포의 치우침이 크다. 이것이 성능에 기여하는지는 확인 못 함.
-
-## 실험 ④ 실제 냄새 데이터 (DoOR 2.0)
-
-`python examples/door_task.py` (약 5분)
-
-데이터: [DoOR.data](https://github.com/ropensci/DoOR.data)의 `door_response_matrix.csv`, `door_mappings.csv`,
-`odor.csv`를 `data/door/`에 둔다 (Münch & Galizia 2016, *Sci Rep* 6:21841, CC BY-SA 4.0. 저장소에는 포함하지 않음).
-`fd.door_odors()`가 수용체 반응을 FlyWire 사구체 이름에 맞춰 사구체 벡터로 바꾼다 (자발 발화 빼고 0 아래는 0).
-사구체 56개 중 47개가 측정됨. 사구체 20개 이상 측정된 냄새 154개 사용, 냄새당 켜진 사구체 평균 9.6개.
-
-| 과제 | 사구체 | KC 실제 | KC 무작위 (5개 범위) | 실제 − 무작위 |
-|---|---|---|---|---|
-| A. 냄새 구별 (154개, seed 3개) | **59.4** | 52.2 | 52.4 (52.0~53.1) | −0.21 ± 0.20, 1/3 |
-| B. 새 냄새의 화학 계열 (8계열 116개, 5겹 × seed 3개, 찍기 22%) | **55.1** | 51.5 | 51.5 (50.9~51.8) | −0.06 ± 0.56, 7/15 |
-
-해석
-- **실제 냄새에서는 실제 배선의 이점이 없다.** 두 과제 모두 실제 ≈ 무작위.
-- 실제 냄새에서는 KC 층이 사구체 값보다도 낮다 (3.6~7.2%p). 합성 과제에서 KC가 유리했던 건 클래스를
-  일부러 '원형 여러 개의 묶음'(선형 분리 어려움)으로 만들었기 때문이고, 실제 냄새 구별·계열 분류는
-  사구체 공간에서 이미 꽤 선형적인 것으로 보인다.
-- 합성 과제의 작은 우위(+1.43%p)는 실제 냄새 통계로 옮겨지지 않았다. 그 우위는 실제 배선이 자연 냄새에
-  맞춰져 있어서가 아니라, 합성 과제의 특정 구조와 맞물린 결과일 가능성이 크다.
-- 한계: 사구체 9개는 측정이 없어 0으로 들어가고, 측정된 칸도 86%가 빈 표에서 채운 값이다.
-  PN→KC 배율(3.0)은 합성 과제 기준으로 맞춘 값이다.
-
-## 실험 ⑤ 실제 냄새 혼합물 — 조건부 구별 (XOR형)
-
-`python examples/door_mixtures.py` (약 6분)
-
-DoOR 냄새 4개 (A, B, C, D)마다 AB+, CD+, AC−, BD− 를 학습 (Young et al. 2011의 형태 학습 과제).
-모든 냄새가 보상·무보상에 한 번씩 들어가서, 반응이 더해지는 한 선형 분류기로는 풀 수 없다.
-혼합물 = 포화(A + B), PN→KC 배율 3.0 (실제 냄새에서 KC 6% 활성), 묶음마다 따로 로지스틱 회귀.
-(A+, B+, AB− 부정 패턴은 '켜진 사구체가 많으면 무보상'이라는 선형 규칙으로 풀려서 쓰지 않았다.)
-
-| 특징 | 정확도 (찍기 50%, 묶음 200개) |
-|---|---|
-| 사구체 | 61.6% |
-| KC 실제 배선 | 80.5% |
-| KC 무작위 배선 ×5 | 81.3% (80.5~81.8) |
-
-실제 − 무작위 = −0.77 ± 0.33%p (표준오차), 실제가 나은 묶음 96 / 못한 묶음 101.
-
-해석
-- **KC 층은 확실히 필요하다**: 선형으로 못 푸는 과제에서 사구체 61.6% → KC 80.5% (+19%p).
-- **하지만 실제 배선일 필요는 없다**: 무작위 배선이 오히려 약간 낫다 (차이는 작음).
-- 배선 가설에 대한 결론: 이점은 '확장 + 희소화'라는 일반 구조에서 나오고, FlyWire의 구체적인
-  PN→KC 배선이 추가로 주는 이점은 이 시험들에서 보이지 않는다 (MNIST, 합성 냄새 +1.4%p,
-  실제 냄새 구별·계열·혼합물 모두 차이 없음).
-
-## 실험 ⑥ 연속 학습 — 도파민 연합 학습 대 역전파(재생 버퍼)
-
-`python examples/continual_mnist.py` (약 1분, KC 특징은 실험 ① 캐시)
-
-`fd.AssocReadout(n_in, n_classes, per_class=k)`: 클래스마다 출력(원형) k개. 샘플이 오면 그 클래스 출력 중
-가장 잘 맞는 하나에만 보상 도파민 → 그 출력이 받은 샘플들의 평균 패턴이 됨 (빈 출력부터 채움).
-다른 클래스의 시냅스는 절대 바뀌지 않는다. k=1이면 실험 ②의 assoc와 같다.
-
-**전체 학습** (한 번 보기, 역전파 없음): k를 늘리면 픽셀 82.2 → 95.4% (k=50), KC 74.1 → 89.9%.
-픽셀 k=50은 역전파 로지스틱 회귀(92.7%)보다 높다.
-
-**class-incremental split MNIST** (0/1 → … → 8/9, 과제당 1에폭, 3회 평균, 최종 = 숫자 10개 전체)
-
-| 특징 | 방법 (저장량: 클래스당 벡터 수) | 최종 | 마지막 후 0/1 |
-|---|---|---|---|
-| 픽셀 | 역전파 (0) | 37.8% | 2.1% |
-| 픽셀 | 역전파 + 재생 20 | 74.8% | 76.7% |
-| 픽셀 | 역전파 + 재생 50 | 82.2% | 86.4% |
-| 픽셀 | **연합 20** | **93.9%** | 98.8% |
-| 픽셀 | **연합 50** | **95.2%** | 99.2% |
-| KC | 역전파 + 재생 50 | 75.6% | 84.1% |
-| KC | 연합 50 | 89.6% | 98.2% |
-
-해석
-- 같은 저장량에서 연합 학습이 재생 버퍼 역전파보다 13~14%p 높고, 첫 과제를 거의 그대로 기억한다.
-- 정직하게: 이 규칙은 머신러닝의 '클래스별 온라인 k-평균 원형 분류기'와 같고, 원형(평균) 기반 분류가
-  연속 학습에 강하다는 것은 알려져 있다 (예: iCaRL의 nearest-mean-of-exemplars). 비교한 역전파도
-  로지스틱 회귀 1에폭이라 약한 편이다. 새로운 건 이것을 버섯체 도파민 회로의 국소 규칙으로 해석·구현한 점이다.
-- 여기서도 KC 특징이 픽셀보다 못하다 (89.6% 대 95.2%).
-- (수정 기록: 처음 버전은 한 묶음의 같은 클래스 샘플이 모두 첫 빈 원형으로 들어가는 버그가 있었다.
-  고친 뒤 MNIST 숫자는 ±0.5%p 안에서만 바뀌었다.)
-
-## 실험 ⑦ 연합 학습에 KC 층이 필요한가 — 실제 냄새 조건부 구별
-
-`python examples/door_assoc.py` (약 6분). 실험 ⑤와 같은 XOR형 과제, 냄새 4개 묶음 200개, 묶음마다 따로 학습.
-
-| 리드아웃 | 사구체 | KC 실제 | KC 무작위 |
-|---|---|---|---|
-| 로지스틱 (역전파, 선형) | 61.4 | 81.1 | 81.4 |
-| MLP (역전파, 은닉 64) | 98.5 | 93.1 | 93.5 |
-| 연합 k=1 | 58.4 | 62.8 | 64.1 |
-| **연합 k=2** | **99.2** | 98.3 | 98.5 |
-| 연합 k=4 | 98.8 | 98.1 | 98.2 |
-| 연합 k=10 | 98.3 | 97.4 | 97.7 |
-
-(찍기 50%, 표준오차 0.3~0.8%p)
-
-해석
-- **원형이 2개 이상인 연합 학습은 KC 없이 사구체 값만으로 XOR형 과제를 푼다** (99.2%).
-  원형 여러 개 = 그 자체로 비선형 분류기라서. KC를 거치면 오히려 약간 낮다 (98.3%).
-- KC 층이 필요한 건 리드아웃이 선형일 때뿐이다 (로지스틱 61 → 81%). 역전파 MLP도 사구체에서 가장 좋다.
-
-## 실험 ⑧ 커넥톰 층을 역전파로 학습 — MNIST
-
-`python examples/train_backprop.py` (약 11분). 일반 PyTorch 학습 루프, 학습 2만 / 평가 1만, 3에폭,
-dt 0.5 ms, 50 ms 창, 선형 층 학습률 3e-3, 커넥톰 연결 세기 학습률 3e-2.
-
-| 설정 | 학습 파라미터 | 에폭별 test |
-|---|---|---|
-| 커넥톰 고정 + 선형 | 25,980 | 80.4 → 83.1 → **84.4** |
-| 연결 19만 개 전부 학습 (KC 판독) | 216,836 | 84.2 → 85.1 → **85.9** |
-| KC→MBON만 학습 (MBON 48개 판독) | 24,064 | 67.3 → 72.5 → **74.4** |
-| 무작위 배선, 전부 학습 (KC 판독) | 216,836 | 84.8 → 84.2 → **85.9** |
-
-해석
-- 커넥톰 층을 통과하는 역전파가 동작한다. 연결 세기가 실제로 바뀌고(배율 5~95% 범위 0.2~4.3배),
-  고정 층보다 1.5%p 좋아졌다.
-- MBON 48개 판독은 고정이면 24%(실험 ①)였지만 **KC→MBON 연결만 학습하면 74%**가 된다. 초파리에서
-  학습이 일어나는 바로 그 자리만 바꿔도 판독이 쓸모 있어진다.
-- 학습해도 실제 배선과 무작위 배선은 같다 (85.87% 대 85.91%).
-- 설정이 실험 ①과 달라(dt 0.5, 50 ms, Adam 3에폭) 고정 층 숫자도 다르다 (84.4% 대 89.6%).
-
-## 실험 ⑨ 시각계 — 전체 시야 운동 방향
-
-`python examples/visual_motion.py --circuit real` (약 8분, `--circuit shuffled`). 오른쪽 시각계 전체
-(`fd.visual_circuit()`, 뉴런 4.8만, 연결 429만, 세포 유형 584개), 연속값 뉴런(`neuron="graded"`), 연결 종류별
-배율과 유형별 bias·시간 상수를 학습. 격자 8방향을 T4a–d·T5a–d 아형별 평균 8개로 맞힘.
-
-| | 정확도 (찍기 12.5%) | 뉴런별 방향 선택 지수 (중앙값) |
-|---|---|---|
-| 실제 배선 | 100% | 0.003–0.014 |
-| 무작위 배선 | 100% | 0.000–0.002 |
-
-둘 다 100%지만 뉴런은 방향을 거의 가리지 않음(실제 T4/T5는 0.3–0.8). 수천 개 평균의 미세한 차이를 리드아웃이
-증폭한 지름길 → 실험 ⑩으로.
-
-## 실험 ⑩ 시각계 — 국소 운동 방향
-
-`python examples/visual_local_motion.py --circuit real|shuffled|local --seed 0` (약 6분). 운동 감지 경로만
-(`MOTION_PATHWAY`, 뉴런 2.4만, 연결 43만). 시야를 칸 13개로 나눠 칸마다 다른 방향, 리드아웃은 모든 칸이 공유.
-1500스텝, seed 3개씩.
-
-| 회로 | 위치 대응 | 방향 구조 | 정확도 (찍기 12.5%) |
-|---|---|---|---|
-| 실제 배선 | 있음 | 있음 | 24.0 ± 8.3% (2/3 학습) |
-| 국소 무작위 (`shuffled(local=..., merge=...)`) | 있음 | 없음 | **31.6 ± 2.8%** (3/3) |
-| 전체 무작위 (`shuffled()`) | 없음 | 없음 | 12.5 ± 0.2% (0/3) |
-
-해석
-- 전체 무작위가 못 배운 이유는 **시야 위치 대응**이 깨져서(입력이 1.5 대신 14기둥 밖에서 옴, 기울기 약 100배 작음).
-- 위치 대응만 남기고 아형별 방향 구조를 지운 회로도 똑같이 배운다 → 이 과제에서 세부 배선의 이점은 없음.
-
-```python
-vc = fd.visual_circuit().subset(fd.MOTION_PATHWAY)     # 광수용체 → 라미나 → 메둘라 → T4/T5
-xy = fd.column_map(fd.visual_circuit())                 # 뉴런별 시야 좌표 (기둥 간격 단위)
-layer = fd.ConnectomeLayer(vc.normalized(), fd.PHOTORECEPTORS, ["T4a", "T4b", "T4c", "T4d"],
-                           neuron="graded", params={"w_syn": 3.0}, bias=0.2, t_ms=300, dt=2.0,
-                           trainable=True, share="pair", train_neurons=True)
-```
-
-## 실험 ⑪ CIFAR-100 연속 학습 — 사전학습 특징 + 도파민 연합 학습
-
-`python examples/continual_cifar.py` (처음엔 CIFAR-100·ResNet-18 가중치 받고 특징 추출 약 1분, 이후 10초).
-100개 클래스를 10개씩 10과제로 차례로 배움, 과제당 데이터 한 번(1에폭), ResNet-18(ImageNet) 특징 고정.
-
-| 방법 | 마지막 정확도 |
-|---|---|
-| 상한선: 모든 데이터를 한꺼번에 (연속 학습 아님) | 65.6% |
-| **도파민 연합 학습, 원형 10개 (특징 그대로)** | **57.7%** |
-| 같은 밀도 무작위 행렬 확장 + 연합 학습 | 54.9% |
-| 클래스 평균 (NCM) | 53.9% |
-| 재생 버퍼 (클래스당 20개) + 역전파 | 51.6% |
-| 실제 FlyWire KC 확장 + 연합 학습 (양쪽 버섯체, 가우스 투영, 20%) | 49.7% |
-| 무작위 배선 KC 확장 + 연합 학습 | 49.0% |
-| 미세조정 (앞의 것을 잊음) | 23.0% |
-
-해석
-- 도파민 연합 학습은 연속 학습에서 실제로 경쟁력 있다 (재생 버퍼 +6.1%p, NCM +3.8%p, 역전파 없음).
-- 버섯체 KC 확장은 손해였다 (투영·켜짐 비율·양쪽 버섯체를 바꿔 38.9 → 49.7%까지 올렸지만 특징 그대로보다 낮음).
-  실제 버섯체는 냄새 수용체 50여 개를 받도록 만들어져, 512차원 특징을 받기에는 PN 입구와 KC당 입력(약 5개)이 좁다.
-- 실제·무작위 배선은 같았다 (49.7% 대 49.0%).
-
-## 지금까지의 결론
+12개 실험 (자세한 방법·수치·한계는 소스 저장소의 `REPORT.md`):
 
 | 질문 | 답 |
 |---|---|
-| 실제 FlyWire 배선이 무작위 배선보다 나은가 | 아니다. 합성 냄새에서만 +1.4%p, MNIST·실제 냄새 4가지 과제에서 차이 없음 |
-| 시각계처럼 배선이 기능을 정하는 회로에서는 | 시야 위치 대응은 필수(없으면 학습 불가). 하지만 그 안의 세부 배선(아형별 방향 구조)은 학습으로 대체됨 |
-| KC 층(확장 + 희소화)이 도움이 되나 | 리드아웃이 선형일 때만 (XOR형 과제 +19%p). 원형 연합 학습·MLP에는 불필요하거나 손해 |
-| 도파민 연합 학습(AssocReadout)이 쓸모 있나 | 그렇다. 한 번 보기, 역전파 없음. 연속 학습에서 재생 버퍼보다 MNIST +13%p, 사전학습 특징의 CIFAR-100 +6%p. 단 알려진 원형 분류기와 같은 원리 |
-| 정확도가 필요하면 | 사전학습 특징 + `AssocReadout`. 커넥톰 배선(KC 확장)은 이 용도에서 도움이 안 됨 |
+| 실제 배선이 정확도를 높이나 | 대체로 아니다. 차수와 큰 구조(위치 대응)를 유지한 무작위 배선과는 MNIST·냄새·시각 과제에서 차이 없음 |
+| 그럼 배선의 무엇이 중요했나 | 큰 구조: 시각계의 위치 대응(없으면 학습 불가), 스파이킹 버섯체의 KC 연결 수 분포(무작위면 −13%p) |
+| 도파민 연합 학습은 | 연속 학습에서 쓸모 있음: CIFAR-100 10과제 57.7% (재생 버퍼 역전파 51.6%), 역전파 없이 한 번 보기 |
+| KC 확장 층은 | 선형 리드아웃일 때만 도움 (XOR형 과제 +19%p) |
 
-## 다음 단계 아이디어
-- 질문을 "커넥톰이 정확도를 높이는가"(10개 실험에서 아니다)에서 **"커넥톰이 어떤 해법을 찾게 하는가"**로 바꾸기:
-  학습된 T4/T5 아형별 선호 방향이 배선 속 방향 구조(Mi9→Mi4 어긋남)와 일치하는지, 국소 무작위에서는 제멋대로인지
-- 적은 학습량에서의 차이 (타고난 방향 구조가 출발점으로 유리한지)
-- 실제 측정과 비교 (T4/T5 선호 방향·시간 반응, Lappalainen et al. 2024 방식)
+## 개발
+
+```bash
+python -m venv .venv
+.venv\Scripts\pip install --no-cache-dir -e ".[examples,dev,gpu-cuda13]"
+.venv\Scripts\python -m pytest -q                       # 테스트
+.venv\Scripts\python scripts\release.py bump patch      # 버전 올리기 + CHANGELOG 틀
+.venv\Scripts\python scripts\release.py check --upload  # 커밋·CHANGELOG·PyPI 중복·테스트·빌드·설치 확인 후 업로드
+```
+
+데이터 출처: FlyWire v783 연결(Shiu et al. 2024, MIT), 세포 주석(Schlegel et al. 2024), DoOR 2.0(CC BY-SA 4.0).
+MIT 라이선스.
