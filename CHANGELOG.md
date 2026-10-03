@@ -24,6 +24,10 @@
   `train_linear`, `DopamineReadout`, `AssocReadout`, `KCExpansion`, `synthetic_odors`, `door_odors`,
   `biconditional_mixtures`, `visual_circuit`, `column_map`, `drifting_grating`, `direction_offsets`.
   난수 없는 계산은 torch판과 값이 같음. torch판은 모두 `fd.torch.*` (0.1 코드는 `fd.` → `fd.torch.`)
+- **`fd.compare`** (대조 실험): 실제 배선 대 대조군을 seed마다 짝지어 같은 학습으로 비교. 부호 뒤집기 순열 검정
+  (정확한 p), 효과 크기, 95% CI, 함정 경고 (seed 부족·최소 p, 상한, 찍기 수준, 재현 안 됨, 큰 구조만 이김,
+  큰 효과인데 비유의), 대조군 포함 관계로 중요한 구조 해석. `fd.controls`: Shuffled, Randomized, ShuffledWeights,
+  Local, Custom. `Circuit.randomized()`, `Circuit.shuffled_weights()`. 예제 `examples/compare_odor.py`
 - **성능**: LIF·연속값 한 스텝을 하나의 연산으로 합치고(역전파 직접 유도), 행 우선 SpMM·연결별 내적 CUDA 커널.
   전체 뇌 학습 1스텝 배치 8: 0.58초 (torch판 2.2초), 배치 32: 1.3초 (torch판 2.6초)
 - 버그 수정: 정수 신호 × 실수가 0으로 잘림 / GPU에서 `MushroomBodyOutput.predict`가 cupy 배열이라 numpy 라벨과 비교 불가 /

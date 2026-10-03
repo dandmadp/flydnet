@@ -5,6 +5,12 @@ engine (`flydnet.ganglion`) on NumPy (CPU) and CuPy (GPU). PyTorch is optional.*
 annotation (mushroom body, visual system, whole brain) and wire a layer exactly as the fly's synapse map;
 train synapse strengths with backprop or with dopamine-like associative learning. Docs are in Korean.
 
+**What makes it different: `fd.compare` asks "does this wiring actually matter?"** — it trains the same model on
+the real connectome and on nested null models (degree-preserving shuffle, degree-randomized, spatially-local
+shuffle, shuffled weights) over paired seeds, runs exact sign-flip tests, warns about the pitfalls that fake or hide
+wiring effects (too few seeds, ceiling, non-reproducible runs), and reads the nested controls to say *which*
+structure matters.
+
 > **Alpha (0.2).** API가 바뀔 수 있다. 연구용 도구로 쓰고, 정확도 향상을 기대하지는 말 것 — 아래 "지금까지의 결론" 참고.
 
 초파리 커넥톰(FlyWire v783)의 실제 배선을 신경망 층으로 쓰는 라이브러리. **0.2부터 기준 엔진은 flydnet 자체 엔진
@@ -12,6 +18,8 @@ train synapse strengths with backprop or with dopamine-like associative learning
 선택 설치이며, 시간에 따른 스파이크 시뮬레이션(`ConnectomeLayer`)도 자체 엔진으로 돈다. 0.1의 torch판 기능은
 torch가 있으면 `flydnet.torch`로 그대로 쓸 수 있다.
 
+- **대조 실험** (`fd.compare`): "이 배선이 정말 중요한가?"를 통계로 — 실제 배선 대 겹겹이 놓인 대조군, 짝지은 seed,
+  정확한 순열 검정, 함정 경고, 그리고 **어떤 구조가 중요한지** 해석 (아래 "대조 실험" 참고). 다른 ML 라이브러리에 없는 기능
 - **회로 고르기**: 주석(세포 유형·계열)으로 뉴런을 골라 그 사이 연결만 남김 — 버섯체, 시각계, 전체 뇌(13.9만 뉴런)
 - **자체 엔진** (`flydnet.ganglion`): 신호·역행성 신호(자동 미분)·조직·가소성 규칙. 이름은 같은 일을 하는 생물 구조에서 땀
 - **커넥톰 배선 층** (`Neuropil`): 실제 시냅스만으로 연결된 희소 층, 부호 유지 학습. 전체 뇌(연결 1,509만)도 한 층으로
@@ -42,6 +50,51 @@ rule.clear(); loss.retrograde(); rule.step()         # 역행성 신호(자동 �
 MNIST에서 2에폭 96.2% (GPU 약 6초, CPU 약 9초, `examples/ganglion_mnist.py`).
 
 연구 기록 전체(실험 11개, 방법, 한계)는 소스 저장소의 `REPORT.md`에 있다.
+
+## 대조 실험: fd.compare — "이 배선이 정말 중요한가?"
+
+일반 ML 라이브러리는 "정확도를 어떻게 높이나"를 묻는다. flydnet은 **"이 기능에 실제 배선이 필요한가, 무엇이 필요한가"**를
+묻는다. 같은 학습 절차를 실제 배선과 대조군 배선에 seed마다 짝지어 돌리고 비교한다.
+
+```python
+def run(circuit, seed):                       # 회로 하나로 모델을 만들고 학습해서 점수 하나 (seed를 학습 난수에)
+    kc = fd.ConnectomeLayer(circuit, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 3.0}, input_mode="regular")
+    ...
+    return accuracy
+
+report = fd.compare(run, mb, controls=["shuffled", "randomized", "shuffled_weights"], seeds=6, chance=1/30)
+print(report)
+```
+```
+조건                               평균              95% CI      실제 − 대조      d       p    실제 우세
+real (실제 배선)                 0.7806     [0.759, 0.8021]
+shuffled                     0.7833    [0.7685, 0.7982]    -0.002778  -0.16   0.750      1/6
+randomized                   0.6517     [0.6353, 0.668]      +0.1289   5.35   0.031      6/6
+shuffled_weights             0.7736     [0.755, 0.7922]    +0.006944   0.73   0.188      4/6
+
+해석 (대조군 포함 관계):
+  → 실제 배선이 randomized는 이기고 shuffled와는 차이가 없음 → 중요한 구조: 뉴런별 연결 수 분포 (차수·허브)
+```
+(`examples/compare_odor.py --model lif`, 스파이킹 버섯체, 합성 냄새 30클래스, 약 20초)
+
+| 대조군 | 유지하는 것 | 묻는 것 |
+|---|---|---|
+| `"randomized"` | 그룹 쌍별 연결 수 | 연결 수 분포(허브·차수)까지 중요한가 |
+| `"shuffled"` | + 뉴런별 연결 수 | 누가 누구와 연결되는가 |
+| `fd.controls.Local(xy, r, merge=)` | + 시야 위치 대응 | 큰 공간 구조 말고 세부 배선까지 중요한가 |
+| `"shuffled_weights"` | 배선 전부, 세기만 섞음 | 시냅스 세기 분포 |
+| 함수 `f(circuit, seed)` | 직접 정의 | — |
+
+- **짝지은 비교**: seed i의 실제 회로와 seed i로 만든 대조군을 같은 학습 seed로 → 학습 잡음이 상쇄된다.
+- **검정**: 짝 차이의 부호 뒤집기 순열 검정 (분포 가정 없음, seed ≤ 14면 정확한 p). 효과 크기 d, 차이의 95% CI, 실제가 이긴 seed 수.
+- **해석**: randomized ⊂ shuffled ⊂ local ⊂ 실제 배선. 아래 단계는 이기고 바로 위 단계와 같으면 그 사이 구조가 원인.
+- **함정 경고** (이 프로젝트의 실험에서 실제로 빠졌던 것들):
+  - seed가 적어 p가 0.05 아래로 내려갈 수 없음 (seed 5개 이하면 최소 p = 2/2ⁿ > 0.05)
+  - 모두 상한 근처 → 차이가 가려짐 (전체 시야 운동 실험이 100% 대 100%)
+  - 모두 찍기 수준 → 아무것도 학습되지 않음
+  - 같은 seed를 다시 돌리면 점수가 다름 → 재현되지 않음 (GPU 연산 순서 + 불안정한 학습)
+  - 실제 배선이 전체 무작위만 이김 → 위치 대응 같은 큰 구조 때문일 수 있음 (국소 운동 실험의 첫 결론이 틀렸던 이유)
+  - 효과가 큰데 유의하지 않음 → seed를 늘리면 확인될 수 있음
 
 ## 설치
 

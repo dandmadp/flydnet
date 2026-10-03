@@ -30,6 +30,8 @@ from .readout import extract, train_linear
 from .plasticity import DopamineReadout, AssocReadout
 from .expansion import KCExpansion
 from .datasets import synthetic_odors, door_odors, biconditional_mixtures
+from . import controls                     # fd.controls.Shuffled / Randomized / ShuffledWeights / Local / Custom
+from .controls import compare, CompareReport, sign_flip_p
 from .visual import (visual_circuit, column_map, drifting_grating, direction_offsets,
                      VISUAL_SYSTEM, PHOTORECEPTORS, COLUMNAR, LPTC, MOTION_PATHWAY)
 

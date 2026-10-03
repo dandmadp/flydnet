@@ -170,6 +170,48 @@ class Circuit:
         return Circuit(self.root_ids, self.groups, self.pre, post, self.weight,
                        name=f"{self.name} [shuffled{what}]", meta=self.meta, pos=self.pos)
 
+    def _pair_index(self):
+        """(보내는 그룹, 받는 그룹) 쌍마다 연결 번호들"""
+        g = self.group_of()
+        key = pd.Series(g[self.pre] + ">" + g[self.post])
+        return {k: np.asarray(v) for k, v in key.groupby(key).groups.items()}
+
+    def randomized(self, seed: int = 0) -> "Circuit":
+        """더 강한 무작위 대조군: 그룹 쌍마다 연결 수와 시냅스 수 목록만 유지하고, 연결 상대를 그룹 안에서 균등하게 다시 뽑음.
+        shuffled()와 달리 뉴런별 연결 수(차수) 분포도 무작위가 됨 (허브·차수 구조가 중요한지 묻는 대조군)"""
+        rng = np.random.default_rng(seed)
+        member = {}
+        for gname, idx in self.groups.items():
+            member[gname] = np.asarray(idx)
+        new_pre, new_post = self.pre.copy(), self.post.copy()
+        for k, idx in self._pair_index().items():
+            a, _, b = k.partition(">")
+            src, dst = member[a], member[b]
+            E, nd = len(idx), len(dst)
+            total = len(src) * nd
+            size = min(total, E)
+            while True:                                                  # 겹치지 않게 뽑고 자기 연결은 빼기
+                cand = rng.choice(total, size, replace=False)            # 무작위 순서 → 앞 E개가 균등 표본
+                cand = cand[src[cand // nd] != dst[cand % nd]]
+                if len(cand) >= E:
+                    break
+                if size == total:
+                    raise ValueError(f"{k}: 연결 {E}개가 가능한 쌍보다 많음")
+                size = min(total, size + 2 * (E - len(cand)) + 16)
+            new_pre[idx] = src[cand[:E] // nd]
+            new_post[idx] = dst[cand[:E] % nd]
+        return Circuit(self.root_ids, self.groups, new_pre, new_post, self.weight,
+                       name=f"{self.name} [randomized]", meta=self.meta, pos=self.pos)
+
+    def shuffled_weights(self, seed: int = 0) -> "Circuit":
+        """배선은 그대로, 그룹 쌍마다 시냅스 수(세기)만 연결끼리 섞음 (세기 분포가 중요한지 묻는 대조군)"""
+        rng = np.random.default_rng(seed)
+        w = self.weight.copy()
+        for idx in self._pair_index().values():
+            w[idx] = w[idx][rng.permutation(len(idx))]
+        return Circuit(self.root_ids, self.groups, self.pre, self.post, w,
+                       name=f"{self.name} [shuffled weights]", meta=self.meta, pos=self.pos)
+
     def subset(self, groups) -> "Circuit":
         """지정한 그룹들의 뉴런만 남긴 회로 (그 사이 연결만)"""
         groups = [g for g in groups if g in self.groups]
