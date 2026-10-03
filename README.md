@@ -28,6 +28,7 @@ pip install "flydnet[torch]"         # torch 연동 (flydnet.torch)이 필요할
 ```
 Colab처럼 CuPy가 이미 깔린 곳에 GPU 옵션을 붙이면 CuPy가 두 개가 되고 CUDA 라이브러리가 바뀌어 torch까지
 망가질 수 있다 (`doctor`가 잡아 줌. Colab이면 런타임을 삭제하고 옵션 없이 다시 설치).
+드라이버를 업데이트해도 설치한 CuPy는 그대로 돈다 (드라이버는 하위 호환). CUDA·CuPy를 바꾼 뒤에는 `doctor`를 한 번 돌릴 것.
 데이터 위치는 `~/.flydnet/data` (`fd.set_data_dir(...)`로 바꿈). `FLYDNET_DEVICE=cpu`로 CPU를 강제할 수 있다.
 
 ## 빠른 시작

@@ -112,3 +112,42 @@ def test_example_help_runs(script):
     r = subprocess.run([sys.executable, str(path), "--help"], capture_output=True, text=True, encoding="utf-8",
                        env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=300)
     assert r.returncode == 0, r.stderr[-500:]
+
+
+def test_doctor_extra_hint_matches_pyproject():
+    """doctor가 권하는 GPU 옵션이 pyproject에 실제로 있고, 새 드라이버에는 지원하는 것 중 가장 새것"""
+    import re
+    from pathlib import Path
+    from flydnet.__main__ import GPU_EXTRAS, _extra_hint
+    text = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert sorted(int(v) for v in re.findall(r"^gpu-cuda(\d+)\s*=", text, re.M)) == list(GPU_EXTRAS)
+    assert "gpu-cuda12" in _extra_hint(12)
+    assert "gpu-cuda13" in _extra_hint(13)
+    assert f"gpu-cuda{GPU_EXTRAS[-1]}" in _extra_hint(99)          # 미래 드라이버 → 지원하는 최신 (하위 호환)
+    assert "업데이트" in _extra_hint(11)
+
+
+def test_kernel_compile_failure_falls_back():
+    """전용 커널 컴파일이 실패해도 CuPy 기본 연산으로 같은 결과"""
+    import numpy as np
+    import pytest
+    import scipy.sparse as sps
+    from flydnet.ganglion import backend as B, kernels as K
+    if not B.gpu_available():
+        pytest.skip("GPU 없음")
+    M = sps.random(60, 50, density=0.2, format="csr", dtype=np.float32, random_state=1)
+    x = np.random.default_rng(1).standard_normal((50, 20)).astype(np.float32)
+    Mg = B.sparse("gpu").csr_matrix(M); Mg.indices = Mg.indices.astype(np.int32)
+    xg = B.to(x, "gpu")
+    fast = B.numpy(K.spmm(Mg, xg))
+    saved = list(K._MOD)
+    try:
+        K._MOD[:] = [None]                                           # 컴파일 실패한 상태
+        slow = B.numpy(K.spmm(Mg, xg))
+        e = K.edge_dot(B.to(np.ones((60, 20), np.float32), "gpu"), xg,
+                       B.to(M.indptr.astype(np.int32), "gpu"), B.to(np.repeat(np.arange(60), np.diff(M.indptr)).astype(np.int32), "gpu"),
+                       B.to(M.indices.astype(np.int32), "gpu"))
+    finally:
+        K._MOD[:] = saved
+    np.testing.assert_allclose(slow, fast, atol=1e-4)
+    np.testing.assert_allclose(B.numpy(e), x[M.indices].sum(1), atol=1e-4)

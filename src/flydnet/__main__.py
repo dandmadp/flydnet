@@ -6,6 +6,7 @@
   python -m flydnet verify             # 받은 파일이 기대한 버전인지 (크기 + SHA-256)
   python -m flydnet doctor             # 설치 진단: GPU·CUDA·CuPy·torch, 어떤 설치 옵션을 쓸지
 """
+import re
 import sys
 
 from . import __version__
@@ -15,7 +16,6 @@ from .data import SOURCES, data_status, download, verify
 
 def _driver_cuda() -> str | None:
     """드라이버가 지원하는 CUDA 버전 (nvidia-smi). 없으면 None"""
-    import re
     import shutil
     import subprocess
     exe = shutil.which("nvidia-smi")
@@ -27,6 +27,43 @@ def _driver_cuda() -> str | None:
         return None
     m = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", out)
     return m.group(1) if m else None
+
+
+GPU_EXTRAS = (12, 13)                       # pyproject의 gpu-cuda12, gpu-cuda13
+
+
+def _extra_hint(driver: int) -> str:
+    """드라이버 CUDA 주 버전에 맞는 설치 옵션 (드라이버가 더 새것이면 지원하는 것 중 가장 새것 - 하위 호환)"""
+    ok = [v for v in GPU_EXTRAS if v <= driver]
+    if not ok:
+        return f"CUDA {driver} 드라이버는 너무 오래됨 - 드라이버를 CUDA {GPU_EXTRAS[0]} 이상으로 업데이트"
+    return f"pip install \"flydnet[gpu-cuda{ok[-1]}]\""
+
+
+def _kernel_check() -> int:
+    """전용 CUDA 커널을 실제로 컴파일·실행해 CuPy 기본 연산과 비교. 문제면 1"""
+    import warnings
+    import numpy as np
+    import scipy.sparse as sps
+    from .ganglion import backend as B, kernels as K
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ok = K._cuda() is not None
+    for w in caught:
+        say(f"  ! {w.message}")
+    if not ok:
+        return 1
+    rng = np.random.default_rng(0)
+    M = sps.random(50, 40, density=0.2, format="csr", dtype=np.float32, random_state=0)
+    x = rng.standard_normal((40, 8)).astype(np.float32)
+    Mg = B.sparse("gpu").csr_matrix(M)
+    Mg.indices = Mg.indices.astype(np.int32)
+    got = B.numpy(K.spmm(Mg, B.to(x, "gpu")))
+    if not np.allclose(got, M @ x, atol=1e-4):
+        say("  ! 전용 GPU 커널 결과가 다름 - FLYDNET_DEVICE=cpu로 쓰고 이슈로 알려 주세요")
+        return 1
+    say("전용 GPU 커널: 컴파일·실행·결과 확인됨")
+    return 0
 
 
 def doctor() -> int:
@@ -43,12 +80,15 @@ def doctor() -> int:
         problems += 1
         say(f"  ! CuPy가 {len(cupys)}개 - 서로 충돌함. 드라이버 CUDA에 맞는 하나만 남길 것: "
             f"pip uninstall -y {' '.join(c for c in cupys)} 후 하나만 다시 설치 (Colab이면 런타임 삭제 후 새로)")
-    if cuda and cupys:
-        major = cuda.split(".")[0]
-        wrong = [c for c in cupys if "cuda" in c.lower() and f"cuda{major}x" not in c.lower()]
-        if wrong:
-            problems += 1
-            say(f"  ! 드라이버는 CUDA {major}인데 {', '.join(wrong)}가 설치됨 - cupy-cuda{major}x를 쓸 것")
+    driver = int(cuda.split(".")[0]) if cuda else None
+    if driver and cupys:
+        # 드라이버는 하위 호환: CUDA 13 드라이버에서 cupy-cuda12x도 돈다. 반대(CuPy가 드라이버보다 새것)는 안 됨
+        for c in cupys:
+            m = re.search(r"cuda(\d+)x", c.lower())
+            if m and int(m.group(1)) > driver:
+                problems += 1
+                say(f"  ! {c}는 CUDA {m.group(1)}용인데 드라이버는 CUDA {driver} - 드라이버를 업데이트하거나 "
+                    f"{_extra_hint(driver)}")
     try:
         import torch
         say(f"torch: {torch.__version__} (GPU {'사용 가능' if torch.cuda.is_available() else '없음'}) - flydnet.torch 사용 가능")
@@ -64,10 +104,12 @@ def doctor() -> int:
         say(f"  ! {w.message}")
     if dev == "cpu" and cuda:
         if not cupys:
-            say(f"  → GPU를 쓰려면: pip install \"flydnet[gpu-cuda{cuda.split('.')[0]}]\"")
+            say(f"  → GPU를 쓰려면: {_extra_hint(driver)}")
         else:
             problems += 1
             say("  ! CuPy가 있는데 GPU 계산이 안 됨 (위 경고 참고)")
+    if dev == "gpu":
+        problems += _kernel_check()
     say("문제 없음" if not problems else f"문제 {problems}개")
     return 1 if problems else 0
 

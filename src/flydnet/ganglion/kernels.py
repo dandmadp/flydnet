@@ -67,9 +67,19 @@ _MOD = []
 
 
 def _cuda():
+    """전용 CUDA 커널 모듈. 컴파일이 안 되면 (새 GPU 구조를 모르는 오래된 NVRTC, CuPy 변경 등) 경고 후 None → CuPy 기본 연산"""
     if not _MOD:
         import cupy as cp
-        _MOD.append(cp.RawModule(code=_CUDA_SRC))
+        try:
+            mod = cp.RawModule(code=_CUDA_SRC)
+            for name in ("spmm_rm", "edge_dot_rm", "edge_dot_thread"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
+                mod.get_function(name)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"flydnet 전용 GPU 커널 컴파일 실패 - CuPy 기본 연산으로 계속함 (결과 같음, 더 느림). "
+                          f"({type(e).__name__}: {str(e)[:200]}) python -m flydnet doctor 참고")
+            mod = None
+        _MOD.append(mod)
     return _MOD[0]
 
 
@@ -80,7 +90,8 @@ def _gpu_ok(*arrays) -> bool:
 
 def spmm(M, x):
     """희소 CSR (n_rows, n) @ 밀집 (n, nb). GPU·float32면 행 우선 전용 커널 (CuPy 기본보다 몇 배 빠름)"""
-    if B.device_of(x) != "gpu" or x.ndim != 2 or not _gpu_ok(x, M.data) or M.indices.dtype.itemsize != 4:
+    if (B.device_of(x) != "gpu" or x.ndim != 2 or not _gpu_ok(x, M.data) or M.indices.dtype.itemsize != 4
+            or _cuda() is None):
         return M @ x
     import cupy as cp
     n_rows, nb = M.shape[0], x.shape[1]
@@ -99,7 +110,7 @@ def edge_dot(g, x, indptr, post, pre, chunk: int = 1 << 26):
         import cupy as cp
         g = g if g.flags.c_contiguous else cp.ascontiguousarray(g)
         x = x if x.flags.c_contiguous else cp.ascontiguousarray(x)
-        if _gpu_ok(g, x) and pre.dtype.itemsize == 4:
+        if _gpu_ok(g, x) and pre.dtype.itemsize == 4 and _cuda() is not None:
             n_rows, nb = len(indptr) - 1, g.shape[1]
             out = cp.empty(len(pre), dtype=cp.float32)
             threads = 256

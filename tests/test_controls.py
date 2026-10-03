@@ -192,11 +192,22 @@ def test_doctor_flags_colab_style_cupy_conflict(monkeypatch, capsys):
     class D:
         def __init__(self, name):
             self.metadata = {"Name": name}
+    monkeypatch.setattr(cli, "_kernel_check", lambda: 0)           # 가짜 패키지 목록으로는 실제 컴파일 불가
     monkeypatch.setattr(cli, "_driver_cuda", lambda: "13.0")
     monkeypatch.setattr(metadata, "distributions", lambda: [D("cupy-cuda12x"), D("cupy-cuda13x"), D("numpy")])
     assert cli.doctor() == 1
     out = capsys.readouterr().out
-    assert "CuPy가 2개" in out and "cupy-cuda12x" in out and "cupy-cuda13x를 쓸 것" in out
+    assert "CuPy가 2개" in out and "cupy-cuda12x" in out
     monkeypatch.setattr(metadata, "distributions", lambda: [D("cupy-cuda13x")])
     cli.doctor()
     assert "CuPy가" not in capsys.readouterr().out.split("설치된 CuPy")[1].split("\n", 1)[1]
+    # 드라이버 업데이트 뒤 (CUDA 13 드라이버 + 예전 cupy-cuda12x): 하위 호환이라 문제 아님
+    monkeypatch.setattr(metadata, "distributions", lambda: [D("cupy-cuda12x")])
+    cli.doctor()
+    assert "드라이버는 CUDA" not in capsys.readouterr().out
+    # CuPy가 드라이버보다 새것 (CUDA 12 드라이버 + cupy-cuda13x): 안 돎
+    monkeypatch.setattr(cli, "_driver_cuda", lambda: "12.4")
+    monkeypatch.setattr(metadata, "distributions", lambda: [D("cupy-cuda13x")])
+    cli.doctor()
+    out = capsys.readouterr().out
+    assert "드라이버는 CUDA 12" in out and "gpu-cuda12" in out
