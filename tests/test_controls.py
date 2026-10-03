@@ -182,3 +182,21 @@ def test_console_output_survives_cp949_pipe():
     code = "import flydnet as fd; fd.data.CITATIONS['door'] = 'Münch — test'; from flydnet._console import say; say(fd.data.CITATIONS['door'])"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, env=dict(os.environ, PYTHONIOENCODING="cp949"))
     assert r.returncode == 0, r.stderr.decode("cp949", "replace")
+
+
+def test_doctor_flags_colab_style_cupy_conflict(monkeypatch, capsys):
+    """Colab 실제 사례: 드라이버 CUDA 13 + cupy-cuda12x와 cupy-cuda13x가 함께 설치 → 문제로 잡아야 함"""
+    import flydnet.__main__ as cli
+    from importlib import metadata
+
+    class D:
+        def __init__(self, name):
+            self.metadata = {"Name": name}
+    monkeypatch.setattr(cli, "_driver_cuda", lambda: "13.0")
+    monkeypatch.setattr(metadata, "distributions", lambda: [D("cupy-cuda12x"), D("cupy-cuda13x"), D("numpy")])
+    assert cli.doctor() == 1
+    out = capsys.readouterr().out
+    assert "CuPy가 2개" in out and "cupy-cuda12x" in out and "cupy-cuda13x를 쓸 것" in out
+    monkeypatch.setattr(metadata, "distributions", lambda: [D("cupy-cuda13x")])
+    cli.doctor()
+    assert "CuPy가" not in capsys.readouterr().out.split("설치된 CuPy")[1].split("\n", 1)[1]

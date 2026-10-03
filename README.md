@@ -14,15 +14,21 @@ Own autograd engine on NumPy (CPU) / CuPy (GPU); PyTorch optional. Docs in Korea
 ## 설치
 
 ```bash
-pip install flydnet                  # CPU (NumPy·SciPy). torch 없음
-pip install "flydnet[gpu-cuda12]"    # + GPU (CuPy, CUDA 12.x 드라이버). CUDA 13.x면 [gpu-cuda13]
-pip install "flydnet[torch]"         # + torch 연동 (flydnet.torch)
-
+pip install flydnet                  # CPU (NumPy·SciPy). torch 없음. CuPy가 이미 있으면(Colab 등) GPU도 자동으로 씀
+python -m flydnet doctor             # 설치 진단: GPU 드라이버 CUDA·CuPy·torch, 어떤 옵션을 쓸지 알려 줌
 python -m flydnet download           # FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130 MB, 버전 고정·SHA-256 확인)
-python -m flydnet                    # 데이터 상태
 ```
-CUDA 버전은 `nvidia-smi` 오른쪽 위에 나온다. 데이터 위치는 `~/.flydnet/data` (`fd.set_data_dir(...)`로 바꿈).
-`FLYDNET_DEVICE=cpu`로 CPU를 강제할 수 있다.
+
+GPU: **CuPy가 없을 때만** 드라이버 CUDA 버전(`nvidia-smi` 오른쪽 위)에 맞는 옵션 하나를 쓴다.
+
+```bash
+pip install "flydnet[gpu-cuda13]"    # CUDA 13.x 드라이버 (CuPy + CUDA 런타임)
+pip install "flydnet[gpu-cuda12]"    # CUDA 12.x 드라이버
+pip install "flydnet[torch]"         # torch 연동 (flydnet.torch)이 필요할 때
+```
+Colab처럼 CuPy가 이미 깔린 곳에 GPU 옵션을 붙이면 CuPy가 두 개가 되고 CUDA 라이브러리가 바뀌어 torch까지
+망가질 수 있다 (`doctor`가 잡아 줌. Colab이면 런타임을 삭제하고 옵션 없이 다시 설치).
+데이터 위치는 `~/.flydnet/data` (`fd.set_data_dir(...)`로 바꿈). `FLYDNET_DEVICE=cpu`로 CPU를 강제할 수 있다.
 
 ## 빠른 시작
 
