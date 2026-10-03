@@ -535,3 +535,20 @@ def test_subset_keeps_only_selected_groups():
     assert s.N == 12 and list(s.groups) == ["OUT"]
     m = np.isin(c.pre, c.groups["OUT"]) & np.isin(c.post, c.groups["OUT"])
     assert s.n_edges == m.sum() and np.array_equal(np.sort(s.weight), np.sort(c.weight[m]))
+
+
+def test_local_shuffle_stays_within_bins_and_merge_mixes_subtypes():
+    rng = np.random.default_rng(0)
+    N = 60
+    groups = {"A": np.arange(20), "Ba": np.arange(20, 40), "Bb": np.arange(40, 60)}
+    pre = rng.integers(0, 20, 400); post = rng.integers(20, 60, 400)
+    key = np.unique(pre * N + post); pre, post = key // N, key % N
+    c = fd.Circuit(np.arange(N), groups, pre, post, np.ones(len(pre), np.float32))
+    xy = np.stack([np.arange(N) % 10, np.zeros(N)], 1).astype(np.float32)
+    s = c.shuffled(seed=1, local=(xy, 5.0))
+    assert np.array_equal(np.floor(xy[s.post, 0] / 5), np.floor(xy[c.post, 0] / 5))   # 칸은 그대로
+    g = c.group_of()
+    assert np.array_equal(g[s.post], g[c.post])                                      # merge 없으면 아형 유지
+    m = c.shuffled(seed=1, local=(xy, 5.0), merge={"Ba": "B", "Bb": "B"})
+    assert (g[m.post] != g[c.post]).any()                                            # merge면 아형 섞임
+    assert np.array_equal(np.bincount(m.post, minlength=N), np.bincount(c.post, minlength=N))

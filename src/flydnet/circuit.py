@@ -111,12 +111,18 @@ class Circuit:
         return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})",
                    meta=meta, pos=a[["pos_x", "pos_y", "pos_z"]].values)
 
-    def shuffled(self, seed: int = 0, pairs=None, exclude=None) -> "Circuit":
+    def shuffled(self, seed: int = 0, pairs=None, exclude=None, local=None, merge=None) -> "Circuit":
         """무작위 배선 대조군: (보내는 그룹, 받는 그룹) 쌍마다 받는 뉴런을 섞음.
         그룹 간 연결 수·시냅스 수·뉴런별 입출력 개수는 그대로, '누가 누구에게'만 무작위.
 
         pairs:   섞을 쌍만 지정 (예: ["PN>KC"]). None이면 전부
         exclude: 섞지 않을 쌍 (예: ["PN>KC", "KC>KC"])
+        local:   (xy, radius) 이면 받는 뉴런 위치 xy (N, 2)를 radius 크기 칸으로 나눠 같은 칸 안에서만 섞음
+                 → 시야 위치 대응(retinotopy)은 유지, 그 안의 미세 배선(누가 정확히 누구에게)만 무작위.
+                 위치가 NaN인 뉴런은 한 칸으로 묶음
+        merge:   {그룹: 별칭} 섞을 때 같은 별칭 그룹들을 하나로 봄 (예: T4a~d → "T4").
+                 받는 뉴런이 원래 다른 아형으로 가던 연결도 받게 됨 → 아형별 배선 차이(방향 구조)가 사라짐.
+                 pairs/exclude는 별칭이 아닌 원래 그룹 이름 기준
         """
         rng = np.random.default_rng(seed)
         g = self.group_of()
@@ -124,11 +130,28 @@ class Circuit:
         key = pd.Series(g[self.pre] + ">" + g[self.post])
         if pairs is not None and (unknown := set(pairs) - set(key.unique())):
             raise ValueError(f"회로에 없는 연결 쌍: {sorted(unknown)}")
+        pair_of = key.values
+        if merge:
+            ga = np.array([merge.get(x, x) for x in g], dtype=object)
+            key = pd.Series(ga[self.pre] + ">" + ga[self.post])
+        if local is not None:
+            xy, radius = local
+            b = np.floor(np.asarray(xy)[self.post] / radius)
+            b = np.where(np.isnan(b).any(1, keepdims=True), np.inf, b)
+            key = key + "|" + pd.Series(b[:, 0]).astype(str) + "," + pd.Series(b[:, 1]).astype(str)
         stuck = []
         for k, idx in key.groupby(key).groups.items():
-            if (pairs is not None and k not in pairs) or (exclude is not None and k in exclude):
-                continue
             idx = np.asarray(idx)
+            if pairs is not None or exclude is not None:
+                pk = pair_of[idx]
+                sel = np.ones(len(idx), bool)
+                if pairs is not None:
+                    sel &= np.isin(pk, list(pairs))
+                if exclude is not None:
+                    sel &= ~np.isin(pk, list(exclude))
+                idx = idx[sel]
+                if len(idx) == 0:
+                    continue
             try:
                 post[idx] = _repair(self.pre[idx], post[idx][rng.permutation(len(idx))], self.N, rng)
             except RuntimeError:                                 # 뉴런 몇 개뿐인 쌍은 중복 없이 섞을 수 없을 때가 있음
@@ -140,6 +163,10 @@ class Circuit:
                           f"{', '.join(k for k, _ in stuck[:5])}{' …' if len(stuck) > 5 else ''}")
         what = "" if pairs is None and exclude is None else \
             f" {'+'.join(pairs) if pairs is not None else 'all'}{' -' + '-'.join(exclude) if exclude else ''}"
+        if local is not None:
+            what += f" local r={local[1]:g}"
+        if merge:
+            what += f" merge {'+'.join(sorted(set(merge.values())))}"
         return Circuit(self.root_ids, self.groups, self.pre, post, self.weight,
                        name=f"{self.name} [shuffled{what}]", meta=self.meta, pos=self.pos)
 

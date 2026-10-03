@@ -26,7 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 �
 import flydnet as fd
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--circuit", default="real", choices=["real", "shuffled"])
+ap.add_argument("--circuit", default="real", choices=["real", "shuffled", "local"],
+                help="shuffled = 같은 유형 안에서 시야 전체로 섞음 (위치 대응까지 깨짐) / "
+                     "local = 반경 --local-radius 기둥 안에서, T4a~d·T5a~d를 한 묶음으로 섞음 "
+                     "(위치 대응은 유지, 아형별 방향 구조만 사라짐)")
+ap.add_argument("--local-radius", type=float, default=2.0)
 ap.add_argument("--shuffle-seed", type=int, default=0)
 ap.add_argument("--freeze-circuit", action="store_true", help="회로는 학습하지 않고 리드아웃만")
 ap.add_argument("--steps", type=int, default=1000)
@@ -66,7 +70,14 @@ keep = np.concatenate([vc.groups[g] for g in fd.MOTION_PATHWAY if g in vc.groups
 xy = xy_full[keep]                                              # subset은 그룹 순서대로 뉴런을 남김
 if args.pathway == "motion":
     vc = vc.subset(fd.MOTION_PATHWAY)
-circ = (vc if args.circuit == "real" else vc.shuffled(seed=args.shuffle_seed)).normalized()
+if args.circuit == "real":
+    circ = vc
+elif args.circuit == "shuffled":
+    circ = vc.shuffled(seed=args.shuffle_seed)
+else:
+    merge = {f"T{k}{d}": f"T{k}" for k in "45" for d in "abcd"}
+    circ = vc.shuffled(seed=args.shuffle_seed, local=(xy, args.local_radius), merge=merge)
+circ = circ.normalized()
 OUT = [f"T{k}{d}" for k in "45" for d in "abcd"]
 train = not args.freeze_circuit
 layer = fd.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, neuron="graded",
@@ -211,7 +222,7 @@ layer._build()
 print(f"검증 손실이 가장 낮았던 step {best['step']} ({best['loss']:.3f})의 모델로 최종 평가", flush=True)
 
 out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
-tag = (f"{args.circuit}{args.shuffle_seed if args.circuit == 'shuffled' else ''}"
+tag = (f"{args.circuit}{args.shuffle_seed if args.circuit != 'real' else ''}"
        f"{'_frozen' if args.freeze_circuit else ''}_{args.pathway}_r{args.region:g}_s{args.seed}")
 acc, opp, test_loss = evaluate(256, seed=54321)
 nd = neuron_dsi()
