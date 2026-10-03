@@ -1,14 +1,36 @@
 # flydnet
 
-> 연구 결과 전체 정리는 [REPORT.md](REPORT.md) 참고
+**Use the real *Drosophila* connectome (FlyWire v783) as PyTorch layers.** Pick any set of neurons by
+annotation (mushroom body, visual system, whole brain), and run them as a batched GPU spiking (LIF) or graded
+network whose wiring is the fly's actual synapse map. Layers are differentiable (surrogate gradients), so
+synapse strengths and per-cell-type parameters can be trained with backprop. Docs are in Korean.
+
+> **Alpha (0.1).** API가 바뀔 수 있다. 연구용 도구로 쓰고, 정확도 향상을 기대하지는 말 것 — 아래 "지금까지의 결론" 참고.
 
 초파리 커넥톰(FlyWire v783)의 실제 배선을 신경망 층으로 쓰는 PyTorch 라이브러리.
-텐서를 입력 뉴런의 발화율(설탕 뉴런 150Hz 자극처럼)로 바꿔 넣고, 스파이킹 LIF 모델로 전파한 뒤
-출력 뉴런의 발화율을 특징으로 읽는다.
+텐서를 입력 뉴런의 발화율로 바꿔 넣고, 실제 배선을 따라 전파한 뒤 출력 뉴런의 활동을 특징으로 읽는다.
 
 ```
 텐서 ─RateEncoder─▶ PN 발화율 ─ConnectomeLayer(실제 배선, LIF)─▶ KC/MBON 발화율 ─리드아웃─▶ 예측
 ```
+
+- **회로 고르기**: 주석(세포 유형·계열)으로 뉴런을 골라 그 사이 연결만 남김 — 버섯체, 시각계, 전체 뇌(13.9만 뉴런)
+- **뉴런 모델**: 스파이킹 LIF(Shiu et al. 2024 매개변수) 또는 연속값(graded) 뉴런
+- **역전파 학습**: 연결별 또는 연결 종류별 세기, 세포 유형별 bias·막 시간 상수. 전체 뇌도 12GB GPU에서 학습
+- **대조군**: 연결 수·차수를 유지한 무작위 배선, 시야 위치를 유지한 국소 무작위 배선
+- **도파민 연합 학습 리드아웃**: 역전파 없이 한 번 보고 학습, 연속 학습에 강함
+- **데이터 도우미**: `python -m flydnet download`로 FlyWire·DoOR 데이터를 받음 (패키지에는 데이터 없음)
+
+빠른 시작 (설치와 데이터 받기 후):
+
+```python
+import torch, flydnet as fd
+mb = fd.Circuit.from_flywire()                                   # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
+layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, gains={"PN>KC": 2.0}, input_mode="regular")
+kc = layer(torch.rand(8, 344) * 100)                             # 입력 PN 발화율(Hz) → (8, 2597) KC 발화율
+```
+
+연구 기록 전체(실험 10개, 방법, 한계)는 소스 저장소의 `REPORT.md`에 있다.
 
 ## 설치
 
@@ -17,8 +39,8 @@
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 pip install flydnet
 
-python -m flydnet.data            # 데이터 받기: FlyWire v783 연결·주석 (약 135MB) + DoOR 냄새 데이터
-python -c "import flydnet as fd; fd.data_status()"  # 데이터 상태 확인
+python -m flydnet download        # 데이터 받기: FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130MB)
+python -m flydnet                 # 데이터 상태 확인
 ```
 `pip install flydnet`만 하면 PyTorch는 CPU 버전이 설치된다. 데이터는 패키지에 들어 있지 않고 `download()`가
 `~/.flydnet/data`에 받는다(위치는 `fd.set_data_dir(...)` 또는 환경변수 `FLYDNET_FLYWIRE`로 바꿀 수 있음).
@@ -79,7 +101,7 @@ layer.weights()          # 현재 연결별 세기 (mV, 부호 포함), 순서�
 ### 데이터
 
 ```python
-fd.download()                         # 없는 파일만 받음: FlyWire 약 135 MB + DoOR 0.5 MB  (python -m flydnet.data)
+fd.download()                         # 없는 파일만 받음: FlyWire 약 135 MB + DoOR 0.5 MB  (python -m flydnet download)
 fd.set_data_dir(flywire=r"D:\my\fw")  # 이미 받아 둔 폴더를 쓰려면 (~/.flydnet/config.json에 저장)
 fd.data_status()                      # 어디서 무엇을 찾았는지
 ```

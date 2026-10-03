@@ -4,16 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flydnet"
-version = "0.1.0"
-description = "초파리 커넥톰(FlyWire v783)을 배선으로 쓰는 스파이킹 신경망 층"
+dynamic = ["version"]
+description = "Drosophila connectome (FlyWire v783) as PyTorch layers: spiking/graded networks with real fly wiring"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ email = "icecx17@gmail.com" }]
 requires-python = ">=3.10"
-dependencies = ["numpy", "pandas", "pyarrow", "torch"]
+dependencies = ["numpy>=1.23", "pandas>=1.5", "pyarrow>=10", "torch>=2.1"]
 keywords = ["connectome", "drosophila", "flywire", "spiking neural network", "pytorch", "neuroscience"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
@@ -28,6 +29,9 @@ dev = ["pytest"]
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = ["flydnet"]
+
+[tool.setuptools.dynamic]
+version = { attr = "flydnet.__version__" }      # 버전은 src/flydnet/__init__.py 한 곳에서만
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

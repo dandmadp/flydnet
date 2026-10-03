@@ -552,3 +552,9 @@ def test_local_shuffle_stays_within_bins_and_merge_mixes_subtypes():
     m = c.shuffled(seed=1, local=(xy, 5.0), merge={"Ba": "B", "Bb": "B"})
     assert (g[m.post] != g[c.post]).any()                                            # merge면 아형 섞임
     assert np.array_equal(np.bincount(m.post, minlength=N), np.bincount(c.post, minlength=N))
+
+
+def test_cli_status_and_unknown_command(capsys):
+    from flydnet.__main__ import main
+    assert main(["status"]) == 0 and "flydnet" in capsys.readouterr().out
+    assert main(["bogus"]) == 1

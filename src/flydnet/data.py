@@ -93,7 +93,7 @@ def require(kind: str = "flywire", path=None) -> Path:
     if lack:
         raise FileNotFoundError(
             f"{kind} 데이터 파일이 없음: {lack}\n  찾은 위치: {d}\n"
-            f"  받기: flydnet.download('{kind}')  또는  python -m flydnet.data {kind}\n"
+            f"  받기: flydnet.download('{kind}')  또는  python -m flydnet download {kind}\n"
             f"  이미 있으면: flydnet.set_data_dir({kind}=r'경로') 또는 환경변수 {_ENV[kind][0]}")
     return d
 
@@ -143,8 +143,3 @@ def data_status() -> dict:
     for k, v in st.items():
         print(f"{k:<8} {'준비됨' if not v['missing'] else '빠짐: ' + ', '.join(v['missing'])}  ({v['dir']})")
     return st
-
-
-if __name__ == "__main__":                               # python -m flydnet.data [flywire|door]
-    import sys
-    download(sys.argv[1:] or ("flywire", "door"))
