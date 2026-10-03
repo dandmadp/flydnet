@@ -18,6 +18,7 @@ from .layers import ConnectomeLayer, SpikeFn, DEFAULT_PARAMS
 from .readout import extract, train_linear
 from .plasticity import DopamineReadout, AssocReadout
 from .datasets import synthetic_odors, door_odors, biconditional_mixtures
+from .expansion import KCExpansion
 from .visual import (visual_circuit, column_map, drifting_grating, direction_offsets,
                      VISUAL_SYSTEM, PHOTORECEPTORS, COLUMNAR, LPTC, MOTION_PATHWAY)
 

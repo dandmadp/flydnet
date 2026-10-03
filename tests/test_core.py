@@ -590,3 +590,34 @@ def test_download_checks_content(tmp_path, monkeypatch):
 @needs_data
 def test_local_data_matches_pinned_version():
     assert set(fd.data.verify("flywire").values()) == {"ok"}
+
+
+# ─────────────── KCExpansion (앞먹임 확장 층) ───────────────
+def _pn_kc_circuit(n_pn=30, n_kc=200, per_kc=6, seed=0):
+    rng = np.random.default_rng(seed)
+    pre = np.concatenate([rng.choice(n_pn, per_kc, replace=False) for _ in range(n_kc)])
+    post = np.repeat(np.arange(n_pn, n_pn + n_kc), per_kc)
+    w = rng.integers(1, 10, len(pre)).astype(np.float32)
+    return fd.Circuit(np.arange(n_pn + n_kc), {"PN": np.arange(n_pn), "KC": np.arange(n_pn, n_pn + n_kc)}, pre, post, w)
+
+
+def test_kc_expansion_sparsity_and_weights():
+    c = _pn_kc_circuit()
+    kc = fd.KCExpansion(c, n_in=50, k_frac=0.1, device="cpu")
+    assert kc.W.shape == (200, 30) and kc.W.sum() == c.weight.sum()
+    x = torch.rand(7, 50)
+    out = kc(x)
+    assert out.shape == (7, 200) and ((out != 0).sum(1) <= 20).all()
+    assert torch.equal(out, kc(x))                                       # 결정론적
+    b = fd.KCExpansion(c, n_in=50, k_frac=0.1, binary=True, device="cpu")(x)
+    assert set(b.unique().tolist()) <= {0.0, 1.0} and (b.sum(1) == 20).all()
+
+
+def test_kc_expansion_similar_inputs_share_codes():
+    c = _pn_kc_circuit(n_pn=60, n_kc=1000)
+    kc = fd.KCExpansion(c, n_in=100, k_frac=0.05, binary=True, device="cpu")
+    g = torch.Generator().manual_seed(0)
+    x = torch.rand(1, 100, generator=g)
+    near, far = x + 0.02 * torch.randn(1, 100, generator=g), torch.rand(1, 100, generator=g)
+    ov = lambda a, b: (kc(a) * kc(b)).sum().item() / kc.k
+    assert ov(x, near) > 0.6 > 0.3 > ov(x, far)
