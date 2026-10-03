@@ -1,13 +1,25 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "flydnet"
 version = "0.1.0"
 description = "초파리 커넥톰(FlyWire v783)을 배선으로 쓰는 스파이킹 신경망 층"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ email = "icecx17@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = ["numpy", "pandas", "pyarrow", "torch"]
+keywords = ["connectome", "drosophila", "flywire", "spiking neural network", "pytorch", "neuroscience"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 
 [project.optional-dependencies]
 examples = ["torchvision"]

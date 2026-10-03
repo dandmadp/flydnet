@@ -12,6 +12,19 @@
 
 ## 설치
 
+```bash
+# GPU(CUDA)로 쓰려면 PyTorch를 먼저 설치 (https://pytorch.org 에서 자기 CUDA 버전 명령 확인). 예:
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+pip install flydnet
+
+python -m flydnet.data            # 데이터 받기: FlyWire v783 연결·주석 (약 135MB) + DoOR 냄새 데이터
+python -c "import flydnet as fd; fd.data_status()"  # 데이터 상태 확인
+```
+`pip install flydnet`만 하면 PyTorch는 CPU 버전이 설치된다. 데이터는 패키지에 들어 있지 않고 `download()`가
+`~/.flydnet/data`에 받는다(위치는 `fd.set_data_dir(...)` 또는 환경변수 `FLYDNET_FLYWIRE`로 바꿀 수 있음).
+
+### 개발용 (소스에서)
+
 전용 가상환경 `D:\flydnet\.venv` (Python 3.11, torch 2.14.1+cu132)에 편집 모드로 설치되어 있다.
 
 ```bash
