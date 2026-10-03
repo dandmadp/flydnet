@@ -1,9 +1,9 @@
-"""역전파 없는 도파민 학습 리드아웃 — 버섯체 KC→MBON 시냅스 규칙 (자체 엔진판, torch 없음)
+"""역전파 없는 도파민 학습 리드아웃 - 버섯체 KC→MBON 시냅스 규칙 (자체 엔진판, torch 없음)
 
-    w[c, k] ← w[c, k] · (1 − lr · a_k · DA_c)        (ltd, 처벌 도파민: 시냅스 약화)
-    w[c, k] ← w[c, k] + lr · a_k · DA_c · (w_max − w) (ltp, 보상 도파민: 시냅스 강화)
-    w[c, k] ← max(0, w[c, k] + lr · a_k · DA_c)        (bidir, DA_c = +1 정답 / −1 이긴 오답, 틀렸을 때만)
-    w[c, k] ← w[c, k] + DA_c · (a_k − w[c, k]) / n_c   (assoc, DA_c = 1 정답만. 정답 출력이 그 클래스 평균 패턴이 됨)
+    w[c, k] ← w[c, k] · (1 - lr · a_k · DA_c)        (ltd, 처벌 도파민: 시냅스 약화)
+    w[c, k] ← w[c, k] + lr · a_k · DA_c · (w_max - w) (ltp, 보상 도파민: 시냅스 강화)
+    w[c, k] ← max(0, w[c, k] + lr · a_k · DA_c)        (bidir, DA_c = +1 정답 / -1 이긴 오답, 틀렸을 때만)
+    w[c, k] ← w[c, k] + DA_c · (a_k - w[c, k]) / n_c   (assoc, DA_c = 1 정답만. 정답 출력이 그 클래스 평균 패턴이 됨)
 
 a_k  = KC k의 활동 (샘플 안에서 최대 발화율로 정규화, 0~1)
 DA_c = 출력 c를 담당하는 도파민 뉴런의 신호 (정답/오답에서 결정)
@@ -117,7 +117,7 @@ class DopamineReadout(_Saveable):
     def dopamine(self, X, y, classes=None):
         """(B, C) 도파민 신호"""
         xp = self.xp
-        y = B.to(B.labels(y), self.device)
+        y = B.to(B.check_labels(y, self.n_classes), self.device)
         onehot = xp.eye(self.n_classes, dtype=xp.float32)[y]
         if self.mode == "bidir":
             win = self._masked(self.scores(X), classes).argmax(1)
@@ -171,7 +171,7 @@ def _take(X, idx):
 
 
 class AssocReadout(DopamineReadout):
-    """보상 연합 학습 리드아웃, 클래스마다 출력(원형) 여러 개 — 연속 학습용 (MushroomBodyOutput과 같은 계산)
+    """보상 연합 학습 리드아웃, 클래스마다 출력(원형) 여러 개 - 연속 학습용 (MushroomBodyOutput과 같은 계산)
 
     샘플 (a, y)가 오면 클래스 y의 출력 중 가장 잘 맞는 하나에만 보상 도파민 → 그 출력 = 받은 샘플들의 평균.
     비어 있는 출력이 있으면 그것부터 채움 (클래스당 온라인 k-평균). 점수 = 코사인, 클래스 점수 = 그 클래스 출력 중 최대.

@@ -2,7 +2,7 @@
 
   circ = fd.visual_circuit()                 # 오른쪽 시각엽, 세포 유형마다 그룹 하나
   xy   = fd.column_map(circ)                 # 뉴런별 시야 좌표 (단위 ≈ 기둥 간격)
-  lum  = fd.drifting_grating(xy[circ.groups["R1-6"]], directions, ...)   # (B, T, n) 밝기 −1~1
+  lum  = fd.drifting_grating(xy[circ.groups["R1-6"]], directions, ...)   # (B, T, n) 밝기 -1~1
 
 시야 좌표는 FlyWire 주석의 뉴런 대표 점(pos)을 메둘라 평면에 투영한 뒤, 같은 기둥에 속한 뉴런끼리의
 연결을 따라 평균내서 다듬은 것 (대표 점만으로는 격자가 고르지 않음). 정밀한 기둥 배정
@@ -91,7 +91,7 @@ def column_map(circuit: Circuit, anchor: str = "Mi1", smooth: int = 3, columnar=
 
 def drifting_grating(xy, directions, t_ms: float, frames: int, wavelength: float = 8.0, temporal_hz: float = 5.0,
                      phase=None, contrast: float = 1.0, onset_ms: float = 0.0) -> np.ndarray:
-    """움직이는 사인파 격자. 밝기 (B, frames, n), −contrast ~ +contrast (onset 전은 0 = 회색)
+    """움직이는 사인파 격자. 밝기 (B, frames, n), -contrast ~ +contrast (onset 전은 0 = 회색)
     xy: (n, 2) 시야 좌표 (기둥 간격 단위) / directions: (B,) 도 (0 = +x 방향)
     wavelength: 기둥 수 / temporal_hz: 한 점에서 밝기가 바뀌는 빈도 (속도 = wavelength × temporal_hz 기둥/s)"""
     xy = np.nan_to_num(np.asarray(xy, np.float32))

@@ -73,6 +73,8 @@ class ConnectomeLayer(Tissue):
             raise ValueError(share)
         if not 0 <= count_from_ms < t_ms:
             raise ValueError("count_from_ms는 0 이상 t_ms 미만")
+        if t_ms < (dt if dt is not None else DEFAULT_PARAMS["dt"]):
+            raise ValueError(f"t_ms({t_ms})가 시간 간격 dt보다 짧아 시뮬레이션이 한 스텝도 안 됨")
         dev = B.check(device) if device is not None else B.default_device()
         self.neuron, self.input_mode, self.v_init, self.share = neuron, input_mode, v_init, share
         self.circuit = circuit
@@ -248,6 +250,8 @@ class ConnectomeLayer(Tissue):
             x = Signal(x.data.astype(np.float32))
         if x.shape[-1] != self.n_in:
             raise ValueError(f"입력 마지막 차원 {x.shape[-1]} ≠ 입력 뉴런 {self.n_in}")
+        if x.data.size and not bool(B.xp(self.device).isfinite(x.data).all()):
+            raise ValueError("입력에 NaN·무한대가 있음 (그대로 두면 스파이크가 안 생겨 출력이 조용히 0이 됨)")
         if self.neuron == "graded":
             return self._forward_graded(x, return_all, record)
         p, N, xp = self.p, self.circuit.N, B.xp(self.device)

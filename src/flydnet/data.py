@@ -6,7 +6,7 @@
 
 위치를 찾는 순서 (묶음마다)
   1. 함수에 직접 준 경로
-  2. 환경변수  FLYDNET_FLYWIRE / FLYDNET_DOOR  (FLYDNET_DATA도 flywire로 인정 — 이전 버전 호환)
+  2. 환경변수  FLYDNET_FLYWIRE / FLYDNET_DOOR  (FLYDNET_DATA도 flywire로 인정 - 이전 버전 호환)
   3. 설정 파일 ~/.flydnet/config.json  ← fd.set_data_dir()로 저장
   4. 기본값    ~/.flydnet/data/<묶음>
 
@@ -21,6 +21,8 @@ import hashlib
 import json
 import os
 import urllib.request
+
+from ._console import say
 from pathlib import Path
 
 CONFIG = Path.home() / ".flydnet" / "config.json"
@@ -139,13 +141,13 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
             f = d / name
             if state[name] == "ok" and not overwrite:
                 if not quiet:
-                    print(f"  있음  {f}")
+                    say(f"  있음  {f}")
                 continue
             if state[name] in ("size", "sha256") and not quiet:
-                print(f"  {name}: 기대한 버전과 내용이 달라 다시 받음")
+                say(f"  {name}: 기대한 버전과 내용이 달라 다시 받음")
             tmp = f.with_suffix(f.suffix + ".part")
             if not quiet:
-                print(f"  받는 중 {name}", flush=True)
+                say(f"  받는 중 {name}", flush=True)
             _fetch(url, tmp, quiet)
             got = tmp.stat().st_size
             if got != size or _sha256(tmp) != sha:
@@ -154,7 +156,7 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
                               f"네트워크 문제일 수 있으니 다시 시도. 계속되면 원본 주소 확인: {url}")
             tmp.replace(f)
         if not quiet:
-            print(f"[{kind}] {d}\n  출처: {CITATIONS[kind]}")
+            say(f"[{kind}] {d}\n  출처: {CITATIONS[kind]}")
         out[kind] = d
     return out
 
@@ -169,15 +171,15 @@ def _fetch(url: str, dest: Path, quiet: bool):
             done += len(chunk)
             pct = int(done / total * 100) if total else -1
             if not quiet and total and pct != shown and (pct % 5 == 0 or done == total):
-                print(f"\r    {pct:3d}%  {done / 1e6:6.1f} / {total / 1e6:.1f} MB", end="", flush=True)
+                say(f"\r    {pct:3d}%  {done / 1e6:6.1f} / {total / 1e6:.1f} MB", end="", flush=True)
                 shown = pct
         if not quiet and total:
-            print()
+            say()
 
 
 def data_status() -> dict:
     """묶음별 위치와 빠진 파일"""
     st = {k: dict(dir=str(data_dir(k)), missing=missing(k)) for k in SOURCES}
     for k, v in st.items():
-        print(f"{k:<8} {'준비됨' if not v['missing'] else '빠짐: ' + ', '.join(v['missing'])}  ({v['dir']})")
+        say(f"{k:<8} {'준비됨' if not v['missing'] else '빠짐: ' + ', '.join(v['missing'])}  ({v['dir']})")
     return st

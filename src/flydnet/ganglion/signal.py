@@ -103,7 +103,7 @@ class Signal:
         return B.numpy(self.data)
 
     def to_torch(self):
-        """torch 텐서로 (torch 연동, 값만 복사 — 역행성 신호 경로는 이어지지 않음)"""
+        """torch 텐서로 (torch 연동, 값만 복사 - 역행성 신호 경로는 이어지지 않음)"""
         import torch
         if self.device == "gpu":
             return torch.from_dlpack(self.data).clone()
@@ -398,7 +398,7 @@ def checkpoint(fn, *inputs):
 
 
 def multi_output(parents, outs, back=None, back_packed=None, force: bool = False):
-    """출력이 여러 개인 연산을 만듦. outs: 출력 배열 목록, back(grads 목록 — 없는 것은 None) → 부모마다 역행성 신호.
+    """출력이 여러 개인 연산을 만듦. outs: 출력 배열 목록, back(grads 목록 - 없는 것은 None) → 부모마다 역행성 신호.
     force=True면 부모가 plastic이 아니어도 경로를 만듦 (안에서 바깥 Synapse를 쓰는 경우, checkpoint)"""
     parents = tuple(parents)
     if not learning_enabled() or not (force or any(p.plastic for p in parents)):

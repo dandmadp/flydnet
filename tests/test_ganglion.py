@@ -505,3 +505,13 @@ def test_gpu_predict_returns_numpy_and_rule_follows_device():
             G.surprise(proj(np.random.rand(4, 3).astype(np.float32)), [0, 1, 0, 1]).retrograde()
             rule.step(); rule.clear()
         assert proj.device == "cpu"
+
+
+def test_device_env_override_and_check():
+    import subprocess, sys, os
+    code = "import flydnet.ganglion as G; print(G.default_device())"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       env=dict(os.environ, FLYDNET_DEVICE="cpu"))
+    assert r.stdout.strip() == "cpu"
+    with pytest.raises(ValueError):
+        B.check("cuda")                                                        # torch식 이름은 안내 오류

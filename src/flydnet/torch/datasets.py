@@ -41,7 +41,7 @@ def door_odors(glomeruli, data_dir=None, min_measured: int = 20):
 
     glomeruli: 사구체 이름 순서 (예: GlomerularEncoder.glomeruli)
     반환 dict:
-      X        (n_odors, n_glomeruli) 반응 − 자발 발화(SFR), 0 아래는 0. 측정 안 된 칸도 0
+      X        (n_odors, n_glomeruli) 반응 - 자발 발화(SFR), 0 아래는 0. 측정 안 된 칸도 0
       measured (n_odors, n_glomeruli) 측정 여부
       names, classes (화학 계열), inchikey
     min_measured: 이만큼 이상의 사구체가 측정된 냄새만

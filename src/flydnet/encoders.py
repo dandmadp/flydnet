@@ -65,7 +65,7 @@ class GlomerularEncoder(Tissue):
     def __init__(self, circuit, group: str = "PN", max_rate: float = 100.0, device: str | None = None):
         super().__init__()
         if circuit.meta is None:
-            raise ValueError("circuit.meta(세포 주석)가 필요함 — Circuit.from_flywire()로 만든 회로를 쓸 것")
+            raise ValueError("circuit.meta(세포 주석)가 필요함 - Circuit.from_flywire()로 만든 회로를 쓸 것")
         dev = B.check(device) if device is not None else B.default_device()
         m = circuit.meta.iloc[circuit.groups[group]]
         uni = m.cell_sub_class.astype(str).eq("uniglomerular").values

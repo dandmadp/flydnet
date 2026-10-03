@@ -20,11 +20,31 @@ except ImportError as e:
 import scipy.sparse as _sps
 
 
+_HEALTH = []
+
+
 def gpu_available() -> bool:
-    return _cp is not None
+    """GPU를 실제로 쓸 수 있는지 (처음 한 번 작은 계산으로 확인 - CuPy는 있어도 CUDA 런타임·NVRTC가 없으면 계산에서 실패)"""
+    if _cp is None:
+        return False
+    if not _HEALTH:
+        try:
+            ok = float((_cp.arange(4, dtype=_cp.float32) * 2).sum()) == 12.0
+            _HEALTH.append(ok)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"CuPy는 있지만 GPU 계산이 안 되어 CPU를 씀 ({type(e).__name__}: {str(e)[:200]}). "
+                          "CUDA 런타임이 없다면: pip install \"cupy-cuda12x[ctk]\" (또는 cuda13x)")
+            _HEALTH.append(False)
+    return _HEALTH[0]
 
 
 def default_device() -> str:
+    """기본 장치: 환경변수 FLYDNET_DEVICE가 cpu·gpu면 그것, 아니면 GPU를 쓸 수 있으면 gpu, 없으면 cpu"""
+    import os
+    forced = os.environ.get("FLYDNET_DEVICE", "").strip().lower()
+    if forced in ("cpu", "gpu"):
+        return check(forced)
     return "gpu" if gpu_available() else "cpu"
 
 
@@ -32,7 +52,8 @@ def check(device: str) -> str:
     if device not in ("cpu", "gpu"):
         raise ValueError(f"장치는 'cpu' 또는 'gpu': {device}")
     if device == "gpu" and not gpu_available():
-        raise RuntimeError(f"GPU를 쓸 수 없음 (CuPy 설치: pip install flydnet[gpu]) — {_GPU_ERROR}")
+        why = _GPU_ERROR if _cp is None else "GPU 계산 시험 실패 (위 경고 참고)"
+        raise RuntimeError(f"GPU를 쓸 수 없음 - pip install \"flydnet[gpu-cuda12]\" 또는 [gpu-cuda13] ({why})")
     return device
 
 
@@ -97,3 +118,12 @@ def gpu_memory_peak_reset():
 def gpu_memory_used() -> int:
     """CuPy 메모리 풀이 지금 쓰고 있는 바이트"""
     return int(_cp.get_default_memory_pool().total_bytes()) if gpu_available() else 0
+
+
+def check_labels(y, n_classes: int, what: str = "라벨") -> np.ndarray:
+    """정수 라벨이 0 ~ n_classes−1 안인지 (음수는 파이썬 음수 인덱스로 조용히 엉뚱한 칸을 고르므로 오류)"""
+    y = labels(y)
+    if y.size and (y.min() < 0 or y.max() >= n_classes):
+        bad = sorted({int(v) for v in y[(y < 0) | (y >= n_classes)]})[:5]
+        raise ValueError(f"{what}은 0 ~ {n_classes - 1} 이어야 함: 범위 밖 값 {bad} (클래스 수 {n_classes})")
+    return y

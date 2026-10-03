@@ -121,3 +121,64 @@ def test_interpret_ladder():
     for bonus, expect in cases:
         rep = fd.compare(make(bonus), c, controls=controls, seeds=6, verbose=False)
         assert any(expect in x for x in rep.interpret()), (bonus, rep.interpret())
+
+
+# ─────────────── 오류 처리 회귀 테스트 ───────────────
+def test_invalid_labels_raise_clear_errors():
+    import flydnet.ganglion as G
+    X = np.random.rand(4, 3).astype(np.float32)
+    for bad in ([0, 1, 2, 5], [0, 1, -1, 1]):                                  # 범위 밖, 음수 (음수는 조용히 틀렸음)
+        with pytest.raises(ValueError, match="범위 밖"):
+            G.surprise(X, bad)
+        with pytest.raises(ValueError, match="범위 밖"):
+            G.MushroomBodyOutput(3, 2, device="cpu").learn(X, bad)
+        with pytest.raises(ValueError, match="범위 밖"):
+            fd.AssocReadout(3, 2, device="cpu").fit(X, bad)
+        with pytest.raises(ValueError, match="범위 밖"):
+            fd.DopamineReadout(3, 2, device="cpu").fit(X, bad)
+    with pytest.raises(ValueError, match="범위 밖"):
+        fd.train_linear(X, [0, 1, 2, 3], X, [0, 1, 0, 1], n_classes=2, epochs=1, device="cpu")
+
+
+def test_connectome_layer_rejects_nan_and_zero_steps():
+    c = _circuit()
+    layer = fd.ConnectomeLayer(c, "A", "B", t_ms=5, dt=0.5, device="cpu")
+    x = np.ones((1, 20), np.float32); x[0, 3] = np.nan
+    with pytest.raises(ValueError, match="NaN"):
+        layer(x)
+    with pytest.raises(ValueError, match="한 스텝도"):
+        fd.ConnectomeLayer(c, "A", "B", t_ms=0.05, dt=0.1, device="cpu")
+
+
+def test_compare_errors_have_context():
+    c = _circuit()
+    with pytest.raises(RuntimeError, match="'shuffled', seed 0"):
+        fd.compare(lambda circ, s: 1 / 0 if "shuffled" in circ.name else 0.5, c, seeds=2, verbose=False)
+    with pytest.raises(ValueError, match="nan"):
+        fd.compare(lambda circ, s: float("nan"), c, seeds=2, verbose=False)
+    with pytest.raises(RuntimeError, match="xy 모양"):
+        fd.compare(lambda circ, s: 0.5, c, controls=[fd.controls.Local(np.zeros((3, 2)), 2)], seeds=2, verbose=False)
+
+
+def test_loss_mode_has_no_accuracy_warnings():
+    c = _circuit()
+    rep = fd.compare(lambda circ, s: 1.5 + 0.01 * np.random.default_rng(s).random(), c, seeds=6,
+                     higher_is_better=False, chance=2.0, verbose=False)
+    assert not any("너무 쉬워" in w or "찍기" in w or "상한" in w for w in rep.warnings)
+
+
+def test_extract_does_not_swallow_layer_errors():
+    def layer(x):                                                              # seed를 받지 않는 층 안에서 TypeError
+        raise TypeError("층 안의 진짜 버그")
+    with pytest.raises(TypeError, match="진짜 버그"):
+        fd.extract(layer, None, np.ones((2, 3)), batch=2)
+    calls = []
+    fd.extract(lambda x, seed: calls.append(seed) or x, None, np.ones((4, 3)), batch=2, seed=10)
+    assert calls == [10, 12]
+
+
+def test_console_output_survives_cp949_pipe():
+    import subprocess, sys, os
+    code = "import flydnet as fd; fd.data.CITATIONS['door'] = 'Münch — test'; from flydnet._console import say; say(fd.data.CITATIONS['door'])"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, env=dict(os.environ, PYTHONIOENCODING="cp949"))
+    assert r.returncode == 0, r.stderr.decode("cp949", "replace")

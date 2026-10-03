@@ -5,7 +5,7 @@
         return accuracy
 
     report = fd.compare(run, mb, controls=["shuffled", "randomized"], seeds=5, chance=0.125)
-    print(report)                              # 조건별 평균 ± 95% 신뢰구간, 실제 − 대조군 차이, 효과 크기, p값, 경고
+    print(report)                              # 조건별 평균 ± 95% 신뢰구간, 실제 - 대조군 차이, 효과 크기, p값, 경고
     report.table()                             # pandas 표
 
 같은 seed끼리 짝을 지음: seed i에서 실제 회로와, seed i로 만든 대조군 회로를 같은 학습 seed i로 돌림.
@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
+
+from ._console import say
 
 
 # ─────────────── 대조군 ───────────────
@@ -77,6 +79,9 @@ class Local(Control):
         self.name = name or f"local(r={radius:g}{', merge' if merge else ''})"
 
     def build(self, circuit, seed):
+        if self.xy.shape != (circuit.N, 2):
+            raise ValueError(f"Local: xy 모양 {self.xy.shape} ≠ (회로 뉴런 수 {circuit.N}, 2) — "
+                             "이 회로로 만든 시야 좌표(fd.column_map(circuit))를 줄 것")
         return circuit.shuffled(seed=seed, local=(self.xy, self.radius), merge=self.merge)
 
 
@@ -146,7 +151,7 @@ class CompareReport:
     warnings: list = field(default_factory=list)
 
     def table(self):
-        """조건별 요약 표 (pandas): 평균, 표준편차, 95% CI, 실제 − 대조군 차이와 그 CI, 효과 크기 d, p, 실제가 이긴 seed 수"""
+        """조건별 요약 표 (pandas): 평균, 표준편차, 95% CI, 실제 - 대조군 차이와 그 CI, 효과 크기 d, p, 실제가 이긴 seed 수"""
         import pandas as pd
         real = self.scores["real"]
         rows = []
@@ -207,7 +212,7 @@ class CompareReport:
         t = self.table()
         lines = [f"대조 실험: seed {len(self.seeds)}개, {self.seconds:.0f}초" +
                  (f", 찍기 수준 {self.chance:g}" if self.chance is not None else ""), ""]
-        lines.append(f"{'조건':<26}{'평균':>9}{'95% CI':>20}{'실제 − 대조':>13}{'d':>7}{'p':>8}{'실제 우세':>9}")
+        lines.append(f"{'조건':<26}{'평균':>9}{'95% CI':>20}{'실제 - 대조':>13}{'d':>7}{'p':>8}{'실제 우세':>9}")
         for name, r in t.iterrows():
             ci = f"[{r.ci_low:.4g}, {r.ci_high:.4g}]" if not math.isnan(r.ci_low) else "-"
             if name == "real":
@@ -217,7 +222,7 @@ class CompareReport:
                              f"{r.p:>8.3f}{r.real_wins:>9}")
         lines.append("")
         for c in self.controls:
-            lines.append(f"  · {c.name}: {self.verdict(c.name)}  — 묻는 것: {c.question}")
+            lines.append(f"  · {c.name}: {self.verdict(c.name)}  - 묻는 것: {c.question}")
         interp = self.interpret()
         if interp:
             lines += ["", "해석 (대조군 포함 관계):"] + [f"  → {x}" for x in interp]
@@ -239,26 +244,28 @@ def _diagnose(rep: CompareReport, check_repeat, ceiling, floor_margin):
     n = len(rep.seeds)
     min_p = 2 / 2 ** n if n else 1.0                                      # 부호 뒤집기 검정이 낼 수 있는 가장 작은 p
     if min_p > 0.05:
-        w.append(f"seed {n}개로는 p가 {min_p:.3g} 아래로 내려갈 수 없음 — 효과가 아무리 커도 '차이를 확인하지 못함'으로 "
+        w.append(f"seed {n}개로는 p가 {min_p:.3g} 아래로 내려갈 수 없음 - 효과가 아무리 커도 '차이를 확인하지 못함'으로 "
                  "나옴. p < 0.05를 보려면 seed 6개 이상")
     elif n < 5:
-        w.append(f"seed가 {n}개뿐 — 우연과 구별하기 어려움. 6개 이상 권장")
+        w.append(f"seed가 {n}개뿐 - 우연과 구별하기 어려움. 6개 이상 권장")
     all_scores = np.concatenate(list(rep.scores.values()))
+    if not rep.higher_is_better:                                         # 손실처럼 낮을수록 좋은 점수: 상한·찍기 경고 안 함
+        ceiling = None
     if ceiling is not None and (all_scores >= ceiling).all():
-        w.append(f"실제·대조군 모두 {ceiling:g} 이상 — 과제가 너무 쉬워 배선 차이가 드러나지 않음 "
+        w.append(f"실제·대조군 모두 {ceiling:g} 이상 - 과제가 너무 쉬워 배선 차이가 드러나지 않음 "
                  "(예: 수천 뉴런 평균 같은 지름길). 더 어려운·국소적인 과제로")
     elif ceiling is not None and rep.scores["real"].mean() >= ceiling - 0.05:
         t0 = rep.table()
         if all(t0.loc[c.name].p >= 0.05 for c in rep.controls):
-            w.append(f"실제 배선 점수가 상한({ceiling:g})에 가까움 ({rep.scores['real'].mean():.3g}) — 차이가 없다고 나왔어도 "
+            w.append(f"실제 배선 점수가 상한({ceiling:g})에 가까움 ({rep.scores['real'].mean():.3g}) - 차이가 없다고 나왔어도 "
                      "상한에 가려졌을 수 있음. 더 어려운 과제(클래스 늘리기·잡음 키우기·학습 데이터 줄이기)로 다시")
-    if rep.chance is not None and (all_scores <= rep.chance + floor_margin).all():
-        w.append(f"모든 조건이 찍기 수준({rep.chance:g}) — 아무것도 학습되지 않음. 학습 설정부터 확인")
+    if rep.higher_is_better and rep.chance is not None and (all_scores <= rep.chance + floor_margin).all():
+        w.append(f"모든 조건이 찍기 수준({rep.chance:g}) - 아무것도 학습되지 않음. 학습 설정부터 확인")
     real = rep.scores["real"]
     if n >= 2 and np.ptp(real) == 0 and not (rep.chance is not None and real[0] <= rep.chance):
-        w.append("실제 배선 점수가 seed마다 똑같음 — run이 seed를 쓰지 않는지 확인 (반복의 의미가 없음)")
+        w.append("실제 배선 점수가 seed마다 똑같음 - run이 seed를 쓰지 않는지 확인 (반복의 의미가 없음)")
     if check_repeat is not None and not np.isclose(check_repeat[0], check_repeat[1], rtol=1e-6, atol=1e-9):
-        w.append(f"같은 회로·같은 seed를 다시 돌렸더니 점수가 다름 ({check_repeat[0]:.6g} → {check_repeat[1]:.6g}) — "
+        w.append(f"같은 회로·같은 seed를 다시 돌렸더니 점수가 다름 ({check_repeat[0]:.6g} → {check_repeat[1]:.6g}) - "
                  "결과가 재현되지 않음 (GPU 연산 순서·전역 난수). 학습이 불안정하면 차이가 크게 벌어질 수 있음")
     t = rep.table()
     names = [c.name for c in rep.controls]
@@ -267,17 +274,17 @@ def _diagnose(rep: CompareReport, check_repeat, ceiling, floor_margin):
     shuffled_wins = [c.name for c in rep.controls if isinstance(c, Shuffled) and c.pairs is None
                      and c.exclude is None and win(c)]
     if shuffled_wins and Local not in kinds:
-        w.append(f"실제 배선이 {', '.join(shuffled_wins)}를 이겼지만, 원인이 시야 위치 대응 같은 큰 공간 구조일 수 있음 — "
+        w.append(f"실제 배선이 {', '.join(shuffled_wins)}를 이겼지만, 원인이 시야 위치 대응 같은 큰 공간 구조일 수 있음 - "
                  "위치를 유지한 대조군(fd.controls.Local)으로 세부 배선을 따로 확인할 것 (실험 ⑩)")
     rand_wins = [c.name for c in rep.controls if isinstance(c, Randomized) and win(c)]
     if rand_wins and Shuffled not in kinds:
-        w.append(f"실제 배선이 {', '.join(rand_wins)}를 이겼지만, 연결 수 분포(차수) 때문인지 연결 상대 때문인지 모름 — "
+        w.append(f"실제 배선이 {', '.join(rand_wins)}를 이겼지만, 연결 수 분포(차수) 때문인지 연결 상대 때문인지 모름 - "
                  "차수를 유지한 'shuffled'도 같이 비교할 것")
     big = [nm for nm in names if t.loc[nm].p >= 0.05 and abs(t.loc[nm].effect_d) >= 1 and n < 10]
     if big:
-        w.append(f"{', '.join(big)}: 효과 크기는 큰데(|d| ≥ 1) 유의하지 않음 — seed를 늘리면 확인될 수 있음")
+        w.append(f"{', '.join(big)}: 효과 크기는 큰데(|d| ≥ 1) 유의하지 않음 - seed를 늘리면 확인될 수 있음")
     elif len(names) and all(t.loc[nm].p >= 0.05 for nm in names) and n < 6:
-        w.append("차이를 확인하지 못했지만 seed가 적음 — '차이 없음'의 근거로는 약함")
+        w.append("차이를 확인하지 못했지만 seed가 적음 - '차이 없음'의 근거로는 약함")
 
 
 def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None = None,
@@ -287,7 +294,7 @@ def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None 
 
     run:       run(circuit, seed) → 점수 (float). 학습 난수에 seed를 쓸 것
     controls:  이름("shuffled", "randomized", "shuffled_weights"), Control 객체(Local 등), 함수 f(circuit, seed)
-    seeds:     정수 n (0..n−1) 또는 seed 목록
+    seeds:     정수 n (0..n-1) 또는 seed 목록
     chance:    찍기 수준 (주면 '아무것도 못 배움' 경고)
     ceiling:   모든 점수가 이 이상이면 '과제가 너무 쉬움' 경고 (None이면 안 함)
     check_repeat: 실제 회로·첫 seed를 한 번 더 돌려 재현되는지 확인 (실행 한 번 추가)
@@ -300,16 +307,29 @@ def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None 
     t0 = time.time()
     scores = {"real": []}
     scores.update({c.name: [] for c in controls})
+    def call(name, circ, s):
+        try:
+            v = float(run(circ, s))
+        except Exception as e:
+            raise RuntimeError(f"compare: 조건 '{name}', seed {s}에서 run이 실패함 ({type(e).__name__}: {e})") from e
+        if not np.isfinite(v):
+            raise ValueError(f"compare: 조건 '{name}', seed {s}에서 run이 {v}를 돌려줌 (학습 발산 또는 점수 계산 확인)")
+        return v
+
     for i, s in enumerate(seeds):
-        scores["real"].append(float(run(circuit, s)))
+        scores["real"].append(call("real", circuit, s))
         for c in controls:
-            scores[c.name].append(float(run(c.build(circuit, s), s)))
+            try:
+                circ = c.build(circuit, s)
+            except Exception as e:
+                raise RuntimeError(f"compare: 대조군 '{c.name}'을 seed {s}로 만들지 못함 ({type(e).__name__}: {e})") from e
+            scores[c.name].append(call(c.name, circ, s))
         if verbose:
             parts = ", ".join(f"{k} {v[-1]:.4g}" for k, v in scores.items())
-            print(f"  seed {s} ({i + 1}/{len(seeds)}): {parts}  [{time.time() - t0:.0f}s]", flush=True)
+            say(f"  seed {s} ({i + 1}/{len(seeds)}): {parts}  [{time.time() - t0:.0f}s]", flush=True)
     rep_pair = None
     if check_repeat and seeds:
-        rep_pair = (scores["real"][0], float(run(circuit, seeds[0])))
+        rep_pair = (scores["real"][0], call("real (재현 확인)", circuit, seeds[0]))
     rep = CompareReport(scores={k: np.array(v) for k, v in scores.items()}, seeds=seeds, controls=controls,
                         chance=chance, higher_is_better=higher_is_better, seconds=time.time() - t0)
     _diagnose(rep, rep_pair, ceiling, floor_margin)

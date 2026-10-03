@@ -46,7 +46,7 @@ class SparsePropagate(torch.autograd.Function):
     (전체 뇌 13.9만 뉴런 → 77 GB). 여기서는 필요한 연결 칸만 계산:
       d values[e] = Σ_b grad[post_e, b] · spk[pre_e, b]   (sampled_addmm, 메모리 = 연결 수)
       d spk       = Wᵀ @ grad                              (미리 정렬해 둔 전치 CSR)
-    직사각도 가능: W는 (행 = len(crow) − 1) × (열 = len(crow_t) − 1)
+    직사각도 가능: W는 (행 = len(crow) - 1) × (열 = len(crow_t) - 1)
     """
 
     @staticmethod
@@ -88,7 +88,7 @@ class ConnectomeLayer(nn.Module):
     trainable:  False = 고정 층 / True = 모든 연결 세기 학습 / ["KC>MBON", ...] = 그 연결 종류만 학습.
                 연결별 세기 = 원래 세기 × exp(log_scale). 부호(흥분/억제)는 바뀌지 않음 (Dale의 법칙)
     dt:         시간 간격 ms (기본 0.1). 학습할 때는 0.5 정도로 키우면 스텝 수·메모리가 1/5
-    slope:      대리 기울기의 날카로움 (막전위를 문턱−휴지 간격으로 나눈 단위 기준)
+    slope:      대리 기울기의 날카로움 (막전위를 문턱-휴지 간격으로 나눈 단위 기준)
     checkpoint_every: 역전파 메모리 절약 (그래디언트 체크포인팅). n이면 n스텝 구간마다 중간 상태를 버리고
                 역전파 때 다시 계산 → 메모리는 대략 (전체 스텝/n + n)에 비례, 계산은 약 1.3~2배.
                 학습할 때(기울기 필요)만 적용, 추론에는 영향 없음
@@ -96,7 +96,7 @@ class ConnectomeLayer(nn.Module):
                 (커넥톰이 정한 시냅스 수 비율은 그대로, 종류별 세기만 학습 → 매개변수가 훨씬 적음)
 
     뉴런 매개변수 (그룹 = 세포 유형마다 하나, 셋 중 하나라도 주면 켜짐):
-    bias:       휴지 전위에 더할 값 mV (숫자 또는 {그룹: mV}). 문턱(v_th − v_0 = 7 mV)보다 크면 입력 없이도
+    bias:       휴지 전위에 더할 값 mV (숫자 또는 {그룹: mV}). 문턱(v_th - v_0 = 7 mV)보다 크면 입력 없이도
                 꾸준히 발화 → 억제·감소 신호도 전달 가능 (시각계처럼 평소에도 활동하는 회로)
     t_mbr:      막 시간 상수 ms (숫자 또는 {그룹: ms}). 세포 유형마다 반응 속도가 다르게
     train_neurons: True면 그룹별 bias와 막 시간 상수도 학습
@@ -108,7 +108,7 @@ class ConnectomeLayer(nn.Module):
 
     neuron:     "lif" = 스파이킹 뉴런 (기본) /
                 "graded" = 스파이크 없이 연속값을 전달하는 뉴런 (라미나·메둘라처럼 막전위로 신호를 보내는 회로).
-                  τ dV/dt = bias − V + Σ w·r_pre,  r = clamp(V, 0, r_max)   (V는 휴지 전위 기준, 단위 없음)
+                  τ dV/dt = bias - V + Σ w·r_pre,  r = clamp(V, 0, r_max)   (V는 휴지 전위 기준, 단위 없음)
                   w = ±시냅스 수 × params["w_syn"] × 배율. 입력 뉴런은 r = 입력값 (rates를 활동값으로 씀),
                   출력은 count_from_ms 이후 평균 r. 시냅스 지연·불응기 없음, input_mode·v_init 무시
     """

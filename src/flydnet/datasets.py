@@ -38,7 +38,7 @@ def door_odors(glomeruli, data_dir=None, min_measured: int = 20):
     """DoOR 2.0 실제 냄새 반응 → 사구체 벡터 (Münch & Galizia 2016, CC BY-SA 4.0)
 
     glomeruli: 사구체 이름 순서 (예: GlomerularEncoder.glomeruli)
-    반환 dict: X (n_odors, n_glomeruli) 반응 − 자발 발화(SFR), 0 아래는 0 / measured 측정 여부 /
+    반환 dict: X (n_odors, n_glomeruli) 반응 - 자발 발화(SFR), 0 아래는 0 / measured 측정 여부 /
               names, classes (화학 계열), inchikey. min_measured 이상 사구체가 측정된 냄새만
     """
     import pandas as pd

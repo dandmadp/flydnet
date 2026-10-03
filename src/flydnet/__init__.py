@@ -1,4 +1,4 @@
-"""flydnet — 초파리 커넥톰(FlyWire)을 배선으로 쓰는 신경망
+"""flydnet - 초파리 커넥톰(FlyWire)을 배선으로 쓰는 신경망
 
 기준 엔진은 flydnet.ganglion (자체 자동 미분, CPU = NumPy, GPU = CuPy). torch 없이 동작:
 
@@ -10,7 +10,7 @@
 
 모든 기능이 자체 엔진 (torch 없음): 시간 시뮬레이션 fd.ConnectomeLayer, 인코더, 리드아웃, 도파민 학습,
 KC 확장, 데이터셋, 시각계 도구.
-torch 연동 (pip install flydnet[torch]): flydnet.torch — 0.1의 torch판 전부 (같은 이름), torch.nn용 구조물.
+torch 연동 (pip install flydnet[torch]): flydnet.torch - 0.1의 torch판 전부 (같은 이름), torch.nn용 구조물.
 """
 import importlib as _importlib
 

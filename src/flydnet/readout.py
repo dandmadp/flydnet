@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._console import say
+
 from .ganglion import backend as B
 from .ganglion.physiology import surprise
 from .ganglion.rules import AdaptivePlasticity
@@ -18,20 +20,29 @@ def _np(x) -> np.ndarray:
     return B.numpy(x) if B.device_of(x) == "gpu" else np.asarray(x)
 
 
+def _accepts_seed(fn) -> bool:
+    """fn(x, seed=...)를 받는지 (TypeError를 잡아 다시 부르면 층 안의 진짜 오류까지 삼킴)"""
+    import inspect
+    target = getattr(fn, "forward", fn)
+    try:
+        params = inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    return "seed" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+
+
 def extract(layer, encoder, X, batch: int = 256, seed: int = 0, log_every: int = 0) -> np.ndarray:
     """데이터 X 전체를 (encoder →) layer에 통과시켜 출력 특징 (n, n_out)을 numpy로. encoder=None이면 X를 바로"""
     out = []
+    takes_seed = _accepts_seed(layer)
     with quiescent():
         for i in range(0, len(X), batch):
             x = X[i:i + batch]
             x = encoder(x) if encoder is not None else x
-            try:
-                y = layer(x, seed=seed + i)
-            except TypeError:                                        # seed를 받지 않는 층
-                y = layer(x)
+            y = layer(x, seed=seed + i) if takes_seed else layer(x)
             out.append(_np(y))
             if log_every and (i // batch) % log_every == 0:
-                print(f"    {i + len(out[-1]):6d}/{len(X)}", flush=True)
+                say(f"    {i + len(out[-1]):6d}/{len(X)}", flush=True)
     return np.concatenate(out)
 
 
@@ -46,7 +57,8 @@ def train_linear(Xtr, ytr, Xte, yte, n_classes=None, epochs: int = 30, lr: float
     dev = B.check(device) if device is not None else B.default_device()
     Xtr, Xte = _np(Xtr).astype(np.float32), _np(Xte).astype(np.float32)
     ytr, yte = B.labels(ytr), B.labels(yte)
-    n_classes = n_classes or int(ytr.max()) + 1
+    n_classes = n_classes or int(max(ytr.max(), yte.max())) + 1
+    B.check_labels(ytr, n_classes, "학습 라벨"); B.check_labels(yte, n_classes, "평가 라벨")
     mu = Xtr.mean(0)
     sd = np.maximum(Xtr.std(0), 1e-6) if scale == "feature" else max(float((Xtr - mu).std()), 1e-6)
     xp = B.xp(dev)

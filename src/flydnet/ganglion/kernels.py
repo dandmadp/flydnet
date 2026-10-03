@@ -1,6 +1,6 @@
 """시간 시뮬레이션용 합친 연산 (역전파를 직접 유도해 필요한 값만 저장 → 메모리·시간 절약)
 
-신호 배치는 (뉴런 N, 배치 B) — 희소 행렬 곱에 바로 쓰고 전치가 없게.
+신호 배치는 (뉴런 N, 배치 B) - 희소 행렬 곱에 바로 쓰고 전치가 없게.
 
   propagate(x, values, M, MT, wiring)        out = M @ x,  d values[e] = Σ_b g[post_e, b]·x[pre_e, b]
   lif_step(V, G, I, p_in, spikes, ...)       LIF 한 스텝 (누설 적분 → 입력 주입 → 발화 → 리셋)
@@ -153,9 +153,9 @@ def _reduce_to(g, like):
 
 def lif_step(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx, v_eq, a, gd: float,
              poi_w: float, v_th: float, v_rst: float, scale: float, slope: float):
-    """LIF 한 스텝. 반환 (V, G, spk) — torch판 ConnectomeLayer의 한 스텝과 같은 계산
-      G1 = G + I;  V1 = act ? V + (v_eq − V + G1)·a : V;  G2 = act ? G1·gd : G1
-      V2 = V1 + 입력 스파이크·poi_w (입력 뉴런 행);  spk = (V2 − v_th)/scale > 0
+    """LIF 한 스텝. 반환 (V, G, spk) - torch판 ConnectomeLayer의 한 스텝과 같은 계산
+      G1 = G + I;  V1 = act ? V + (v_eq - V + G1)·a : V;  G2 = act ? G1·gd : G1
+      V2 = V1 + 입력 스파이크·poi_w (입력 뉴런 행);  spk = (V2 - v_th)/scale > 0
       V3 = spk ? v_rst : V2;  G3 = spk ? 0 : G2
     역전파: 리셋은 기울기 끊음, 발화는 대리 기울기 1/(1 + slope·|u|)², 입력 스파이크는 확률 p_in으로 (straight-through).
     v_eq, a: 숫자 또는 (N, 1) Signal (세포 유형별 매개변수)"""
@@ -196,7 +196,7 @@ def lif_step(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx,
 
 
 def graded_step(V: Signal, I: Signal, x_in: Signal, in_idx, b, a, r_max: float):
-    """연속값 뉴런 한 스텝. 반환 (V', r):  V' = V + (b − V + I)·a,  r = clip(V', 0, r_max), 입력 뉴런 행은 r = x_in"""
+    """연속값 뉴런 한 스텝. 반환 (V', r):  V' = V + (b - V + I)·a,  r = clip(V', 0, r_max), 입력 뉴런 행은 r = x_in"""
     xp = B.xp(B.device_of(V.data))
     bb = b.data if isinstance(b, Signal) else b
     aa = a.data if isinstance(a, Signal) else a

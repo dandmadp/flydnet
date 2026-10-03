@@ -317,7 +317,7 @@ class Neuropil(Tissue):
         return out + self.bias if self.bias is not None else out
 
     def dense(self) -> np.ndarray:
-        """밀집 가중치 (n_post, n_pre), numpy — 확인용"""
+        """밀집 가중치 (n_post, n_pre), numpy - 확인용"""
         if self.out_features * self.in_features > 2e8:
             raise MemoryError(f"밀집 행렬 {self.out_features}×{self.in_features}는 너무 큼")
         with quiescent():
@@ -411,7 +411,7 @@ class MushroomBodyOutput(Tissue):
         return Signal(self._scores(self.activity(x)))
 
     def learn(self, x, y, batch: int = 256):
-        """도파민 강화 (physiology.reinforce_ — AssocReadout과 같은 규칙)"""
+        """도파민 강화 (physiology.reinforce_ - AssocReadout과 같은 규칙)"""
         a_all = self.activity(x)
         y_all = B.labels(y)
         for s in range(0, len(a_all), batch):
@@ -419,7 +419,7 @@ class MushroomBodyOutput(Tissue):
         return self
 
     def predict(self, x, classes=None) -> np.ndarray:
-        """예측 클래스 (numpy, 장치와 상관없이 — 정답 라벨과 바로 비교하도록)"""
+        """예측 클래스 (numpy, 장치와 상관없이 - 정답 라벨과 바로 비교하도록)"""
         s = self._scores(self.activity(x))
         xp = B.xp(B.device_of(s))
         if classes is not None:

@@ -3,7 +3,7 @@
   transmit(x, values, wiring)   시냅스 전달: 커넥톰 배선(희소)으로 (B, n_pre) → (B, n_post)   ≈ F.linear
   fire(v, threshold, slope)     발화: 문턱 넘으면 1, 역전파는 대리 기울기
   inhibit(x, k=, frac=)         측억제: 가장 강한 k개만 남김 (APL)
-  surprise(logits, y)           놀람 = −log p(정답) 평균                                    ≈ F.cross_entropy
+  surprise(logits, y)           놀람 = -log p(정답) 평균                                    ≈ F.cross_entropy
   log_softmax(x)
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ def wiring(post, pre, n_post: int, n_pre: int, device: str = "cpu") -> tuple[Wir
     order = np.lexsort((pre, post))
     post, pre = post[order], pre[order]
     if len(post) > 1 and ((np.diff(post) == 0) & (np.diff(pre) == 0)).any():
-        raise ValueError("같은 연결이 두 번 있음 — 시냅스 수를 먼저 합칠 것")
+        raise ValueError("같은 연결이 두 번 있음 - 시냅스 수를 먼저 합칠 것")
     indptr = np.zeros(n_post + 1, np.int64)
     indptr[1:] = np.cumsum(np.bincount(post, minlength=n_post))
     idx = np.int32 if max(n_post, n_pre, len(post)) < 2 ** 31 else np.int64
@@ -66,7 +66,7 @@ def transmit(x, values: Signal, w: Wiring, edge_chunk: int = 1 << 26, matrix=Non
     x = as_signal(x)
     values = as_signal(values)
     if x.ndim != 2 or x.shape[1] != w.n_pre:
-        raise ValueError(f"입력 모양 {x.shape} — (B, {w.n_pre}) 이어야 함")
+        raise ValueError(f"입력 모양 {x.shape} - (B, {w.n_pre}) 이어야 함")
     if x.device != w.device or values.device != w.device:
         raise RuntimeError(f"장치가 다름: 입력 {x.device}, 값 {values.device}, 배선 {w.device}")
     xp = x.xp
@@ -137,7 +137,7 @@ def hash_uniform(xp, seed: int, step: int, shape) -> object:
 
 # ─────────────── 발화 · 억제 ───────────────
 def fire(v, threshold: float = 0.0, slope: float = 10.0) -> Signal:
-    """발화: v > threshold면 1. 역전파는 g / (1 + slope·|v − threshold|)² (대리 기울기, SuperSpike)"""
+    """발화: v > threshold면 1. 역전파는 g / (1 + slope·|v - threshold|)² (대리 기울기, SuperSpike)"""
     v = as_signal(v)
     d = v.data - threshold
     out = (d > 0).astype(v.data.dtype)
@@ -171,10 +171,10 @@ def log_softmax(x, axis: int = -1) -> Signal:
 
 
 def surprise(logits, y) -> Signal:
-    """놀람 = 정답 확률의 −log, 묶음 평균 (교차 엔트로피, F.cross_entropy). y: 정수 클래스 배열"""
+    """놀람 = 정답 확률의 -log, 묶음 평균 (교차 엔트로피, F.cross_entropy). y: 정수 클래스 배열"""
     logits = as_signal(logits)
     xp = logits.xp
-    y = B.to(B.labels(y), logits.device)
+    y = B.to(B.check_labels(y, logits.shape[-1]), logits.device)
     lp = log_softmax(logits)
     picked = lp[xp.arange(len(y)), y]
     return -picked.mean()
@@ -186,7 +186,7 @@ def _arr(x):
 
 
 def recall(a, prototypes, count=None):
-    """기억 인출: 활동 a (B, n)와 원형 (P, n)의 코사인 유사도 (B, P) 배열. count가 0인(빈) 원형은 −inf"""
+    """기억 인출: 활동 a (B, n)와 원형 (P, n)의 코사인 유사도 (B, P) 배열. count가 0인(빈) 원형은 -inf"""
     a, W = _arr(a), _arr(prototypes)
     xp = B.xp(B.device_of(W))
     s = a @ (W / xp.maximum(xp.linalg.norm(W, axis=1, keepdims=True), 1e-8)).T
@@ -200,9 +200,9 @@ def reinforce_(prototypes, count, a, y, per_class: int):
     다른 클래스의 원형은 바뀌지 않음 → 클래스를 차례로 배워도 잊지 않음"""
     xp = B.xp(B.device_of(prototypes))
     a = _arr(a)
-    y = B.to(B.labels(y), B.device_of(prototypes))
     k = per_class
     C = len(count) // k
+    y = B.to(B.check_labels(y, C), B.device_of(prototypes))
     onehot = xp.eye(C, dtype=xp.int64)[y]
     rank = (xp.cumsum(onehot, axis=0) * onehot).sum(1) - 1               # 클래스 안 순번
     empty = count.reshape(C, k) == 0

@@ -7,6 +7,8 @@
 """
 import sys
 
+from ._console import say
+
 from . import __version__
 from .data import SOURCES, data_status, download, verify
 
@@ -15,7 +17,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     cmd = argv.pop(0) if argv else "status"
     if cmd == "status":
-        print(f"flydnet {__version__}")
+        say(f"flydnet {__version__}")
         data_status()
     elif cmd == "download":
         download(argv or ("flywire", "door"))
@@ -23,11 +25,11 @@ def main(argv=None):
         bad = 0
         for kind in argv or SOURCES:
             for name, st in verify(kind).items():
-                print(f"  {kind:<8} {name:<28} {st}")
+                say(f"  {kind:<8} {name:<28} {st}")
                 bad += st != "ok"
         return 1 if bad else 0
     else:
-        print(__doc__)
+        say(__doc__)
         return 1
     return 0
 

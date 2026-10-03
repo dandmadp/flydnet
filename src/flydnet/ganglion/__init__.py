@@ -1,4 +1,4 @@
-"""flydnet.ganglion — flydnet 자체 엔진 (신경절): NumPy(CPU)·CuPy(GPU) 위의 신경 신호와 역행성 신호(자동 미분)
+"""flydnet.ganglion - flydnet 자체 엔진 (신경절): NumPy(CPU)·CuPy(GPU) 위의 신경 신호와 역행성 신호(자동 미분)
 
     import flydnet.ganglion as G
 

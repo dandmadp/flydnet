@@ -83,7 +83,7 @@ class Neuropil(nn.Module):
         self.register_buffer("edge_post", torch.tensor(q, device=dev), persistent=False)
         self.register_buffer("edge_pre", torch.tensor(p, device=dev), persistent=False)
 
-        # 연결 종류 (예: "PN>KC") — 정수 번호로 계산 (전체 뇌 1,500만 연결에서 문자열을 만들면 느림)
+        # 연결 종류 (예: "PN>KC") - 정수 번호로 계산 (전체 뇌 1,500만 연결에서 문자열을 만들면 느림)
         names = list(circuit.groups)
         gid = np.full(circuit.N, -1, np.int64)
         for i, nm in enumerate(names):
@@ -138,7 +138,7 @@ class Neuropil(nn.Module):
         return out + self.bias if self.bias is not None else out
 
     def dense(self) -> torch.Tensor:
-        """밀집 가중치 (n_post, n_pre) — 확인용. 큰 회로에서는 메모리 주의"""
+        """밀집 가중치 (n_post, n_pre) - 확인용. 큰 회로에서는 메모리 주의"""
         if self.out_features * self.in_features > 2e8:
             raise MemoryError(f"밀집 행렬 {self.out_features}×{self.in_features}는 너무 큼")
         W = torch.zeros(self.out_features, self.in_features, device=self.base.device)
@@ -192,7 +192,7 @@ class MushroomBodyOutput(nn.Module):
 
     클래스마다 출력(원형) per_class개. learn(x, y): 정답 클래스의 가장 잘 맞는 원형 하나만 보상 → 그 원형은
     받은 샘플의 평균이 됨. 다른 클래스는 절대 안 바뀜 → 클래스를 차례로 배워도 잊지 않음.
-    forward(x) = 클래스 점수 (B, n_classes): 그 클래스 원형 중 최대 코사인 유사도 (배우지 않은 클래스는 −inf).
+    forward(x) = 클래스 점수 (B, n_classes): 그 클래스 원형 중 최대 코사인 유사도 (배우지 않은 클래스는 -inf).
     nn.Module이라 .to(device), state_dict 저장, nn.Sequential 안에 넣기가 됨. AssocReadout과 같은 계산.
     """
 

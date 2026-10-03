@@ -47,7 +47,7 @@ def wiring(post, pre, n_post: int, n_pre: int, device=None) -> tuple[Wiring, np.
     order = np.lexsort((pre, post))                              # 행(post) 순, 그 안에서 열(pre) 순
     post, pre = post[order], pre[order]
     if len(post) > 1 and ((np.diff(post) == 0) & (np.diff(pre) == 0)).any():
-        raise ValueError("같은 연결이 두 번 있음 — 시냅스 수를 먼저 합칠 것")
+        raise ValueError("같은 연결이 두 번 있음 - 시냅스 수를 먼저 합칠 것")
     crow = np.zeros(n_post + 1, np.int64); crow[1:] = np.cumsum(np.bincount(post, minlength=n_post))
     perm_t = np.lexsort((post, pre))                             # 전치: 열(pre) 순
     crow_t = np.zeros(n_pre + 1, np.int64); crow_t[1:] = np.cumsum(np.bincount(pre, minlength=n_pre))
@@ -109,7 +109,7 @@ def kenyon_code(x: torch.Tensor, w_pn_kc: torch.Tensor, k: int, projection: torc
 
 # ─────────────── 기억: 인출과 도파민 강화 ───────────────
 def recall(a: torch.Tensor, prototypes: torch.Tensor, count: torch.Tensor | None = None) -> torch.Tensor:
-    """기억 인출: 활동 a (B, n)와 원형 (P, n)의 코사인 유사도 (B, P). count가 0인(빈) 원형은 −inf"""
+    """기억 인출: 활동 a (B, n)와 원형 (P, n)의 코사인 유사도 (B, P). count가 0인(빈) 원형은 -inf"""
     s = a @ (prototypes / prototypes.norm(dim=1, keepdim=True).clamp_min(1e-8)).T
     return s if count is None else s.masked_fill(count == 0, float("-inf"))
 

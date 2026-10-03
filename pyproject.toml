@@ -24,8 +24,8 @@ classifiers = [
 
 [project.optional-dependencies]
 torch = ["torch>=2.1"]                   # torch 연동 (flydnet.torch, ConnectomeLayer 등 0.1.0 기능)
-gpu-cuda12 = ["cupy-cuda12x>=13"]        # GPU (CUDA 12.x 드라이버)
-gpu-cuda13 = ["cupy-cuda13x>=14"]        # GPU (CUDA 13.x 드라이버)
+gpu-cuda12 = ["cupy-cuda12x[ctk]>=13"]   # GPU (CUDA 12.x 드라이버). [ctk] = CUDA 런타임·NVRTC도 pip으로
+gpu-cuda13 = ["cupy-cuda13x[ctk]>=14"]   # GPU (CUDA 13.x 드라이버)
 examples = ["torch>=2.1", "torchvision"]
 dev = ["pytest", "torch>=2.1"]
 
