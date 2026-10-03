@@ -8,7 +8,14 @@
 """
 from __future__ import annotations
 
+from . import backend as B
 from .signal import quiescent
+
+
+def _to_device(state, device):
+    if isinstance(state, tuple):
+        return tuple(B.to(a, device) for a in state)
+    return B.to(state, device)
 
 
 class _Rule:
@@ -27,6 +34,8 @@ class _Rule:
         with quiescent():
             for i, s in enumerate(self.synapses):
                 if s.retro is not None:
+                    if self.state[i] is not None:                       # 시냅스가 다른 장치로 옮겨졌으면 상태도
+                        self.state[i] = _to_device(self.state[i], s.device)
                     self._update(i, s, s.retro)
 
     def _update(self, i, s, g):

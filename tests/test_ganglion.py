@@ -483,3 +483,25 @@ def test_gpu_kernels_match_reference(nb):
     np.testing.assert_allclose(cp.asnumpy(K.spmm(MT, g)), cp.asnumpy(MT @ g), rtol=1e-4, atol=1e-4)
     ref = cp.asnumpy((g[w.post] * x[w.pre]).sum(axis=1))
     np.testing.assert_allclose(cp.asnumpy(K.edge_dot(g, x, w.indptr, w.post, w.pre)), ref, rtol=1e-4, atol=1e-4)
+
+
+# ─────────────── 버그 회귀 테스트 ───────────────
+def test_python_scalars_do_not_truncate_or_upcast():
+    assert G.Signal([1, 2, 3]).__mul__(0.5).numpy().tolist() == [0.5, 1.0, 1.5]      # 정수 신호 × 실수
+    assert (G.Signal(np.ones(2, np.float32)) * 0.5).dtype == np.float32               # float32 유지
+    assert (G.Signal([2, 4]) * 2).numpy().tolist() == [4, 8]                         # 정수 × 정수는 정수
+
+
+@needs_gpu
+def test_gpu_predict_returns_numpy_and_rule_follows_device():
+    m = G.MushroomBodyOutput(4, 3, device="gpu").learn(np.eye(3, 4, dtype=np.float32), [0, 1, 2])
+    p = m.predict(np.eye(3, 4, dtype=np.float32))
+    assert isinstance(p, np.ndarray) and (p == np.array([0, 1, 2])).all()
+    for rule_cls in (G.AdaptivePlasticity, lambda s: G.Plasticity(s, momentum=0.9)):
+        proj = G.Projection(3, 2, device="cpu")
+        rule = rule_cls(proj.synapses())
+        for dev in ("cpu", "gpu", "cpu"):
+            proj.to(dev)
+            G.surprise(proj(np.random.rand(4, 3).astype(np.float32)), [0, 1, 0, 1]).retrograde()
+            rule.step(); rule.clear()
+        assert proj.device == "cpu"

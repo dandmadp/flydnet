@@ -100,3 +100,15 @@ def test_visual_tools_match_torch():
     xy = a[vc.groups["R1-6"]]
     np.testing.assert_allclose(fd.drifting_grating(xy, [0, 45], 60, 12, onset_ms=10),
                                fd.torch.drifting_grating(xy, [0, 45], 60, 12, onset_ms=10).numpy(), atol=1e-5)
+
+
+@pytest.mark.parametrize("script", sorted(p.name for p in __import__("pathlib").Path(__file__).resolve()
+                                          .parents[1].joinpath("examples").glob("*.py")))
+def test_example_help_runs(script):
+    """예제의 --help가 죽지 않는지 (도움말 문장의 %는 %%로 써야 함 — 실제로 잡힌 버그)"""
+    import subprocess, sys, os
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "examples" / script
+    r = subprocess.run([sys.executable, str(path), "--help"], capture_output=True, text=True, encoding="utf-8",
+                       env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=300)
+    assert r.returncode == 0, r.stderr[-500:]

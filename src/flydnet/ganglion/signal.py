@@ -180,7 +180,17 @@ class Signal:
             if other.device != self.device:
                 raise RuntimeError(f"장치가 다름: {self.device} 와 {other.device}")
             return other
-        return Signal(self.xp.asarray(other, dtype=self.data.dtype), device=self.device)
+        xp = self.xp
+        if isinstance(other, (bool, int, float)) and not isinstance(other, np.ndarray):
+            # 파이썬 숫자: 실수 신호면 그 자료형 그대로 (float32 유지), 정수 신호에 실수를 곱하면 float32로 (잘림 방지)
+            if self.data.dtype.kind == "f":
+                dt = self.data.dtype
+            elif isinstance(other, float):
+                dt = xp.float32
+            else:
+                dt = self.data.dtype
+            return Signal(xp.asarray(other, dtype=dt), device=self.device)
+        return Signal(B.to(np.asarray(other) if not hasattr(other, "shape") else other, self.device))
 
     def __add__(self, o):
         o = self._wrap(o)

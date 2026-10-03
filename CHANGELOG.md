@@ -20,6 +20,15 @@
   torch판과 출력이 같고(버섯체 스파이크 100% 일치) 기울기도 같음. 포아송 난수는 상태 없는 해시 난수 (CPU·GPU 같음).
   **0.1의 torch판은 `fd.torch.ConnectomeLayer`** (이전 코드는 이 이름으로 바꾸면 됨)
 - `fd.ganglion.limit_gpu_memory(fraction)`: GPU 메모리 상한, `Circuit.to_arrays()`/`from_arrays()`: torch 없는 저장
+- **0.1의 나머지 기능도 전부 자체 엔진판** (같은 이름, 결과는 numpy): `RateEncoder`, `GlomerularEncoder`, `extract`,
+  `train_linear`, `DopamineReadout`, `AssocReadout`, `KCExpansion`, `synthetic_odors`, `door_odors`,
+  `biconditional_mixtures`, `visual_circuit`, `column_map`, `drifting_grating`, `direction_offsets`.
+  난수 없는 계산은 torch판과 값이 같음. torch판은 모두 `fd.torch.*` (0.1 코드는 `fd.` → `fd.torch.`)
+- **성능**: LIF·연속값 한 스텝을 하나의 연산으로 합치고(역전파 직접 유도), 행 우선 SpMM·연결별 내적 CUDA 커널.
+  전체 뇌 학습 1스텝 배치 8: 0.58초 (torch판 2.2초), 배치 32: 1.3초 (torch판 2.6초)
+- 버그 수정: 정수 신호 × 실수가 0으로 잘림 / GPU에서 `MushroomBodyOutput.predict`가 cupy 배열이라 numpy 라벨과 비교 불가 /
+  가소성 규칙을 만든 뒤 모델을 다른 장치로 옮기면 오류 / CUDA 소스의 한국어 주석 때문에 한국어 윈도우에서 컴파일 실패 /
+  예제 4개의 `--help`가 도움말의 `%` 때문에 죽음 / 연결 종류 순서가 torch판과 달라 학습된 배율이 엉뚱한 종류에 붙음
 
 아래는 배포하지 않은 0.1.1의 변경 (모두 0.2.0에 포함):
 

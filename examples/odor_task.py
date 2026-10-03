@@ -26,7 +26,7 @@ import flydnet as fd
 ap = argparse.ArgumentParser()
 ap.add_argument("--task-seeds", type=int, default=5)
 ap.add_argument("--shuffles", type=int, default=5)
-ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="3.0 ≈ KC 6% 활성")
+ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="3.0 ≈ KC 6%% 활성")
 ap.add_argument("--t-ms", type=float, default=100)
 args = ap.parse_args()
 

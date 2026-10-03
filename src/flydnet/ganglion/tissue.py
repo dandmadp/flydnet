@@ -418,14 +418,15 @@ class MushroomBodyOutput(Tissue):
             P.reinforce_(self.prototypes, self.count, a_all[s:s + batch], y_all[s:s + batch], self.per_class)
         return self
 
-    def predict(self, x, classes=None):
+    def predict(self, x, classes=None) -> np.ndarray:
+        """예측 클래스 (numpy, 장치와 상관없이 — 정답 라벨과 바로 비교하도록)"""
         s = self._scores(self.activity(x))
         xp = B.xp(B.device_of(s))
         if classes is not None:
             mask = xp.full(self.n_classes, -xp.inf, dtype=s.dtype)
             mask[xp.asarray(list(classes))] = 0
             s = s + mask
-        return s.argmax(1)
+        return B.numpy(s.argmax(1))
 
     def extra_repr(self):
         n = int((B.numpy(self.count).reshape(self.n_classes, self.per_class).sum(1) > 0).sum())

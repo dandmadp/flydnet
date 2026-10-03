@@ -124,8 +124,11 @@ layer.to("cpu"); layer.save("pn_kc.npz")           # 다른 회로로 만든 Neu
 
 - 검증: 연산마다 수치 미분과 비교, torch와 출력·기울기·Adam 결과 비교, CPU와 GPU 결과 비교 (`tests/test_ganglion.py`)
 - `Neuropil`: 전체 뇌(연결 1,509만)를 한 층으로 만들 수 있다 (torch판 기준 순전파+역전파 배치 64에 0.03초, 1.5 GB)
-- 아직 자체 엔진에 없는 것 (torch 연동으로 사용): 시각계 도구(`visual_circuit` 등), `KCExpansion`, `AssocReadout`
-  (`AssocReadout`은 `MushroomBodyOutput`이 같은 계산)
+- 0.1의 기능도 전부 자체 엔진판이 같은 이름으로 있다: `RateEncoder`, `GlomerularEncoder`, `extract`, `train_linear`,
+  `DopamineReadout`, `AssocReadout`, `KCExpansion`, `synthetic_odors`, `door_odors`, `biconditional_mixtures`,
+  `visual_circuit`, `column_map`, `drifting_grating`, `direction_offsets`. 결과는 numpy (또는 `Signal`).
+  난수를 쓰지 않는 계산은 torch판과 값이 같다 (도파민 규칙 5종, 사구체 인코더, DoOR, PN 입력 KC 확장, 시야 지도, 격자 —
+  `tests/test_ported.py`). 무작위 투영·데이터 생성은 난수 생성기가 달라 값이 다르다
 
 ### 시간 시뮬레이션: ConnectomeLayer
 
@@ -151,15 +154,19 @@ with fd.quiescent():
 | 회로 | 설정 | torch판 | 자체 엔진 |
 |---|---|---|---|
 | 시각계 운동 경로 (2.4만 뉴런, 43만 연결) | 연속값, 300 ms, 배치 16 | 0.17초 | 0.19초 |
-| 전체 뇌 (13.9만 뉴런, 1,509만 연결) | LIF, 50 ms, 배치 8 | 2.2초, 2.2 GB | 1.65초, 3.5 GB |
-| 전체 뇌 | LIF, 50 ms, 배치 32 | 2.6초, 3.7 GB | 5.8초, 7.5 GB |
+| 전체 뇌 (13.9만 뉴런, 1,509만 연결) | LIF, 50 ms, 배치 8 | 2.2초, 2.2 GB | **0.58초**, 2.3 GB |
+| 전체 뇌 | LIF, 50 ms, 배치 32 | 2.6초, 3.7 GB | **1.3초**, 4.9 GB |
 
-  배치가 크면 아직 torch판보다 느리고 메모리를 더 쓴다 (연결 기울기 계산과 중간 값 저장을 더 다듬어야 함).
+  자체 엔진의 GPU 메모리는 CuPy 메모리 풀 크기(재사용 캐시 포함)라 torch의 실제 사용량보다 크게 잡힌다.
+  빠른 이유: LIF 한 스텝을 역전파까지 직접 유도한 하나의 연산으로 합쳤고(저장 값 최소), 희소 행렬 곱과
+  연결별 기울기를 (뉴런, 배치) 배치에 맞춘 CUDA 커널로 직접 계산한다 (`ganglion/kernels.py`).
   큰 회로는 `fd.ganglion.limit_gpu_memory(0.75)`로 GPU 메모리 상한을 걸어 두면 넘칠 때 바로 오류가 난다.
 
 ## torch 연동 (선택)
 
-`pip install "flydnet[torch]"`. 0.1의 torch 기반 기능은 이름 그대로 쓸 수 있다(처음 쓸 때 불러옴).
+`pip install "flydnet[torch]"`. 0.1의 torch판 기능은 `flydnet.torch`에 같은 이름으로 있다 (처음 쓸 때 불러옴):
+`fd.torch.ConnectomeLayer`, `fd.torch.RateEncoder`, `fd.torch.extract`, `fd.torch.AssocReadout`, `fd.torch.KCExpansion`,
+`fd.torch.door_odors`, `fd.torch.drifting_grating` 등. 0.1 코드는 `fd.이름`을 `fd.torch.이름`으로 바꾸면 그대로 돈다.
 시간 시뮬레이션의 torch판은 `fd.torch.ConnectomeLayer` (0.1의 `fd.ConnectomeLayer`, 같은 인자).
 
 ```python
@@ -186,7 +193,7 @@ mbo.learn(feats_task1, y_task1)                                 # 과제 1의 �
 mbo.learn(feats_task2, y_task2)                                 # 과제 2 — 과제 1을 잊지 않음
 pred = mbo.predict(feats_test, classes=seen_classes)
 
-# torch 연동판: fd.AssocReadout (같은 계산), 버섯체 확장 fd.KCExpansion
+# 같은 계산: fd.AssocReadout (fit/predict API), 버섯체 확장 fd.KCExpansion (모두 torch 없이)
 kc = fd.KCExpansion(fd.Circuit.from_flywire(side=None), n_in=512, projection="gaussian", k_frac=0.2)
 codes = kc(feats)                                               # 실제 버섯체 확장 (이 과제에서는 오히려 손해, ⑪ 참고)
 ```
@@ -284,11 +291,13 @@ layer = fd.torch.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_m
 | `ganglion/` | **자체 엔진** (torch 없음): `signal.py` 신호·역행성 신호·체크포인팅, `tissue.py` 조직, `circuitry.py` 시간 시뮬레이션(`ConnectomeLayer`), `physiology.py` 작용, `rules.py` 가소성 규칙, `backend.py` NumPy/CuPy |
 | `data.py` | 데이터 위치·다운로드·검증 |
 | `torch/` | torch 연동: `anatomy.py` (`torch.nn`처럼), `physiology.py` (`torch.nn.functional`처럼) |
-| 아래는 torch 연동 (0.1 기능) | |
-| `encoders.py` | `RateEncoder`: 텐서 → 입력 뉴런 발화율 |
-| `layers.py` | `ConnectomeLayer`의 torch판 (`fd.torch.ConnectomeLayer`). 자체 엔진판은 `ganglion/circuitry.py` |
-| `readout.py` | `extract()`: 데이터 → 발화율 특징, `train_linear()`: 리드아웃 학습 |
+| `encoders.py` | `RateEncoder`, `GlomerularEncoder`: 값 → 입력 뉴런 발화율 |
+| `readout.py` | `extract()`: 데이터 → 출력 특징 (numpy), `train_linear()`: 로지스틱 회귀 |
+| `plasticity.py` | `DopamineReadout`, `AssocReadout`: 역전파 없는 도파민 학습 리드아웃 |
 | `expansion.py` | `KCExpansion`: 실제 PN→KC 배선 앞먹임 확장 (상위 k만 남김, APL 억제처럼) |
+| `datasets.py` | 합성 냄새, DoOR 실제 냄새, 냄새 혼합물 과제 |
+| `visual.py` | 시각계 회로, 시야 지도, 움직이는 격자, 배선 속 방향 구조 |
+| `torch/` 안 | 위 모듈들과 `layers.py`(`ConnectomeLayer`)의 0.1 torch판 (`fd.torch.*`) |
 
 ## 실험 ① 버섯체 저장소(reservoir) — MNIST
 

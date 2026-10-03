@@ -41,7 +41,7 @@ ap.add_argument("--wavelength", type=float, default=8.0)
 ap.add_argument("--hz", type=float, default=4.0)
 ap.add_argument("--noise", type=float, default=0.5,
                 help="광수용체·프레임마다 독립인 밝기 잡음 표준편차 (격자 진폭 1 기준). 잡음이 없으면 결정론적 시뮬레이션의 "
-                     "아주 작은 차이(0.1%)까지 리드아웃이 증폭해 맞혀 버림")
+                     "아주 작은 차이(0.1%%)까지 리드아웃이 증폭해 맞혀 버림")
 ap.add_argument("--w-syn", type=float, default=None, help="기본: graded 3.0 (정규화 회로), lif 0.05")
 ap.add_argument("--bias", type=float, default=None, help="기본: graded 0.2, lif 10 mV")
 ap.add_argument("--lr", type=float, default=3e-2, help="연결 종류별 log 배율, log 막 시간 상수")
