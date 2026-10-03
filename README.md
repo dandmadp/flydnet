@@ -1,72 +1,78 @@
 # flydnet
 
-**Use the real *Drosophila* connectome (FlyWire v783) as PyTorch layers.** Pick any set of neurons by
-annotation (mushroom body, visual system, whole brain), and run them as a batched GPU spiking (LIF) or graded
-network whose wiring is the fly's actual synapse map. Layers are differentiable (surrogate gradients), so
-synapse strengths and per-cell-type parameters can be trained with backprop. Docs are in Korean.
+**Use the real *Drosophila* connectome (FlyWire v783) as neural-network layers — with flydnet's own autograd
+engine (`flydnet.ganglion`) on NumPy (CPU) and CuPy (GPU). PyTorch is optional.** Pick any set of neurons by
+annotation (mushroom body, visual system, whole brain) and wire a layer exactly as the fly's synapse map;
+train synapse strengths with backprop or with dopamine-like associative learning. Docs are in Korean.
 
-> **Alpha (0.1).** API가 바뀔 수 있다. 연구용 도구로 쓰고, 정확도 향상을 기대하지는 말 것 — 아래 "지금까지의 결론" 참고.
+> **Alpha (0.2).** API가 바뀔 수 있다. 연구용 도구로 쓰고, 정확도 향상을 기대하지는 말 것 — 아래 "지금까지의 결론" 참고.
 
-초파리 커넥톰(FlyWire v783)의 실제 배선을 신경망 층으로 쓰는 PyTorch 라이브러리.
-텐서를 입력 뉴런의 발화율로 바꿔 넣고, 실제 배선을 따라 전파한 뒤 출력 뉴런의 활동을 특징으로 읽는다.
-
-```
-텐서 ─RateEncoder─▶ PN 발화율 ─ConnectomeLayer(실제 배선, LIF)─▶ KC/MBON 발화율 ─리드아웃─▶ 예측
-```
+초파리 커넥톰(FlyWire v783)의 실제 배선을 신경망 층으로 쓰는 라이브러리. **0.2부터 기준 엔진은 flydnet 자체 엔진
+`flydnet.ganglion`**(신경절)이다: 자동 미분을 직접 구현했고, CPU에서는 NumPy, GPU에서는 CuPy로 돈다. torch는
+선택 설치이며, 0.1의 torch 기반 기능(스파이크 시뮬레이션 `ConnectomeLayer` 등)은 torch가 있으면 그대로 쓸 수 있다.
 
 - **회로 고르기**: 주석(세포 유형·계열)으로 뉴런을 골라 그 사이 연결만 남김 — 버섯체, 시각계, 전체 뇌(13.9만 뉴런)
-- **뉴런 모델**: 스파이킹 LIF(Shiu et al. 2024 매개변수) 또는 연속값(graded) 뉴런
-- **역전파 학습**: 연결별 또는 연결 종류별 세기, 세포 유형별 bias·막 시간 상수. 전체 뇌도 12GB GPU에서 학습
-- **대조군**: 연결 수·차수를 유지한 무작위 배선, 시야 위치를 유지한 국소 무작위 배선
-- **도파민 연합 학습 리드아웃**: 역전파 없이 한 번 보고 학습, 연속 학습에 강함 — 사전학습 특징에 붙이면
+- **자체 엔진** (`flydnet.ganglion`): 신호·역행성 신호(자동 미분)·조직·가소성 규칙. 이름은 같은 일을 하는 생물 구조에서 땀
+- **커넥톰 배선 층** (`Neuropil`): 실제 시냅스만으로 연결된 희소 층, 부호 유지 학습. 전체 뇌(연결 1,509만)도 한 층으로
+- **도파민 연합 학습** (`MushroomBodyOutput`): 역전파 없이 한 번 보고 학습, 연속 학습에 강함 — 사전학습 특징에 붙이면
   CIFAR-100 클래스 증가 10과제에서 57.7% (재생 버퍼 역전파 51.6%, 상한선 65.6%)
-- **빠른 버섯체 확장 층** (`KCExpansion`): 실제 PN→KC 배선을 시뮬레이션 없이 한 번에 계산
-- **`flydnet.anatomy` / `flydnet.physiology`**: `torch.nn` / `torch.nn.functional`처럼 쓰는 구조물·작용
-  (`Neuropil` = 커넥톰 배선 희소 층, `LateralInhibition`, `AxonHillock`, `MushroomBodyOutput` / `transmit`, `fire`, …)
-- **데이터 도우미**: `python -m flydnet download`로 FlyWire·DoOR 데이터를 받음 (패키지에는 데이터 없음)
+- **대조군**: 연결 수·차수를 유지한 무작위 배선, 시야 위치를 유지한 국소 무작위 배선
+- **torch 연동** (선택): 스파이킹 LIF·연속값 시간 시뮬레이션 `ConnectomeLayer`, `flydnet.torch.anatomy` 등
+- **데이터 도우미**: `python -m flydnet download`로 FlyWire·DoOR 데이터를 받음 (패키지에는 데이터 없음, 버전 고정·SHA-256 확인)
 
-빠른 시작 (설치와 데이터 받기 후):
+빠른 시작 (설치와 데이터 받기 후, torch 필요 없음):
 
 ```python
-import torch, flydnet as fd
-mb = fd.Circuit.from_flywire()                                   # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
-layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, gains={"PN>KC": 2.0}, input_mode="regular")
-kc = layer(torch.rand(8, 344) * 100)                             # 입력 PN 발화율(Hz) → (8, 2597) KC 발화율
-```
+import numpy as np, flydnet as fd
 
-연구 기록 전체(실험 10개, 방법, 한계)는 소스 저장소의 `REPORT.md`에 있다.
+mb = fd.Circuit.from_flywire()                       # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
+model = fd.Pathway(
+    fd.Projection(784, 344),                         # 축삭 투사: 픽셀 → PN (모두 연결)
+    fd.Neuropil(mb, "PN", "KC"),                     # 실제 PN→KC 배선 (연결 13,485개만)
+    fd.LateralInhibition(frac=0.05),                 # APL 억제: KC 5%만
+    fd.Projection(2597, 10),
+)                                                    # GPU(CuPy)가 있으면 GPU, 없으면 CPU
+rule = fd.AdaptivePlasticity(model.synapses(), rate=1e-3)
+loss = fd.surprise(model(x), y)                      # 놀람 = 교차 엔트로피
+rule.clear(); loss.retrograde(); rule.step()         # 역행성 신호(자동 미분) → 가소성
+```
+MNIST에서 2에폭 96.2% (GPU 약 6초, CPU 약 9초, `examples/ganglion_mnist.py`).
+
+연구 기록 전체(실험 11개, 방법, 한계)는 소스 저장소의 `REPORT.md`에 있다.
 
 ## 설치
 
 ```bash
-# GPU(CUDA)로 쓰려면 PyTorch를 먼저 설치 (https://pytorch.org 에서 자기 CUDA 버전 명령 확인). 예:
-pip install torch --index-url https://download.pytorch.org/whl/cu128
-pip install flydnet
+pip install flydnet                  # CPU (NumPy·SciPy). torch 없음
+pip install "flydnet[gpu-cuda12]"    # + GPU: CUDA 12.x 드라이버 (CuPy)
+pip install "flydnet[gpu-cuda13]"    # + GPU: CUDA 13.x 드라이버
+pip install "flydnet[torch]"         # + torch 연동 (ConnectomeLayer 등). GPU torch는 pytorch.org 명령으로 먼저 설치
 
-python -m flydnet download        # 데이터 받기: FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130MB)
-python -m flydnet                 # 데이터 상태 확인
+python -m flydnet download           # 데이터 받기: FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130MB)
+python -m flydnet                    # 데이터 상태 확인
+python -m flydnet verify             # 받은 데이터가 기대한 버전인지 (크기 + SHA-256)
 ```
-`pip install flydnet`만 하면 PyTorch는 CPU 버전이 설치된다. 데이터는 패키지에 들어 있지 않고 `download()`가
-`~/.flydnet/data`에 받는다(위치는 `fd.set_data_dir(...)` 또는 환경변수 `FLYDNET_FLYWIRE`로 바꿀 수 있음).
+CUDA 버전은 `nvidia-smi` 오른쪽 위에 나온다. 데이터는 `~/.flydnet/data`에 받는다
+(위치는 `fd.set_data_dir(...)` 또는 환경변수 `FLYDNET_FLYWIRE`로 바꿀 수 있음).
 
 ### 개발용 (소스에서)
 
-전용 가상환경 `D:\flydnet\.venv` (Python 3.11, torch 2.14.1+cu132)에 편집 모드로 설치되어 있다.
+전용 가상환경 `D:\flydnet\.venv` (Python 3.11, torch 2.14.1+cu132, CuPy 14 CUDA 13)에 편집 모드로 설치되어 있다.
 
 ```bash
 # 새로 만들 때
 python -m venv .venv
 .venv\Scripts\pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu132
-.venv\Scripts\pip install -e ".[examples,dev]"   # 편집 모드: 코드를 고치면 바로 반영
+.venv\Scripts\pip install --no-cache-dir -e ".[examples,dev,gpu-cuda13]"   # 편집 모드: 코드를 고치면 바로 반영
 
-.venv\Scripts\python -m pytest -q                # 테스트
+.venv\Scripts\python -m pytest -q                # 테스트 (torch 연동 테스트는 torch가 없으면 건너뜀)
 ```
 `examples/`의 스크립트는 설치하지 않아도 `src/`를 직접 불러와서 실행된다.
 
 ### 새 버전 배포
 
 ```bash
-.venv\Scripts\python scripts\release.py bump patch    # 버전 올리기 (0.1.1 → 0.1.2), CHANGELOG.md에 항목 틀 추가
+.venv\Scripts\python scripts\release.py bump patch    # 버전 올리기 (0.2.0 → 0.2.1), CHANGELOG.md에 항목 틀 추가
 # CHANGELOG.md에 바뀐 점을 적고 커밋
 .venv\Scripts\python scripts\release.py check          # 검사 + 빌드만 (커밋·CHANGELOG·PyPI 중복·테스트·wheel 설치·태그)
 .venv\Scripts\python scripts\release.py check --upload # 검사 통과하면 PyPI에 업로드
@@ -81,54 +87,58 @@ username = __token__
 password = pypi-여기에_프로젝트_전용_토큰
 ```
 
-## 사용
+## 자체 엔진: flydnet.ganglion
+
+torch를 쓰던 사람을 위한 대응표. 이름은 같은 일을 하는 생물 구조에서 땄다.
+
+| torch | flydnet | 생물학적 의미 |
+|---|---|---|
+| `Tensor` | `Signal` | 신경 신호 |
+| `requires_grad` | `plastic` | 학습으로 바뀌는가 (가소성) |
+| `backward()` / `.grad` | `retrograde()` / `.retro` | 역행성 신호: 받는 쪽에서 보내는 쪽으로 거꾸로 가는 신호 |
+| `no_grad()` | `quiescent()` | 휴지 상태: 학습 흔적을 남기지 않음 |
+| `nn.Parameter` / `nn.Module` | `Synapse` / `Tissue` | 시냅스 / 조직 |
+| `nn.Sequential` / `nn.Linear` | `Pathway` / `Projection` | 신경 경로 / 축삭 투사 |
+| (희소 `nn.Linear`) | `Neuropil` | 신경망 영역: 실제 커넥톰 배선으로만 연결 |
+| 활성화 함수 | `LateralInhibition`, `AxonHillock`, `Activation` | 측억제(APL) / 축삭 둔덕(스파이크) / relu·tanh·sigmoid |
+| 분류기 헤드 | `MushroomBodyOutput` (`.learn`) | 버섯체 출력 구역: 도파민 연합 학습 (역전파 없음) |
+| `optim.SGD` / `optim.Adam` | `Plasticity` / `AdaptivePlasticity` | 가소성 규칙 |
+| `zero_grad()` / `state_dict()` | `clear()` / `state()`, `save()`, `load()` | — |
+| `F.cross_entropy` / `F.linear` | `surprise` / `transmit` | 놀람(−log p) / 시냅스 전달 |
+| `"cuda"` | `"gpu"` | — |
+
+```python
+import flydnet.ganglion as G
+
+x = G.Signal(np.random.rand(4, 3), plastic=True, device="gpu")
+loss = (x.tanh() ** 2).sum()
+loss.retrograde()
+x.retro                                    # d loss / d x (CuPy 배열)
+
+layer = fd.Neuropil(mb, "PN", "KC", train="edge")   # "edge"(연결마다, 부호 유지) / "pair" / "free" / None
+layer.to("cpu"); layer.save("pn_kc.npz")           # 다른 회로로 만든 Neuropil에 불러오면 배선이 다르다는 오류
+```
+
+- 검증: 연산마다 수치 미분과 비교, torch와 출력·기울기·Adam 결과 비교, CPU와 GPU 결과 비교 (`tests/test_ganglion.py`)
+- `Neuropil`: 전체 뇌(연결 1,509만)를 한 층으로 만들 수 있다 (torch판 기준 순전파+역전파 배치 64에 0.03초, 1.5 GB)
+- 아직 자체 엔진에 없는 것: 시간에 따른 스파이크 시뮬레이션(`ConnectomeLayer`), 시각계 도구 — torch 연동으로 사용
+
+## torch 연동 (선택)
+
+`pip install "flydnet[torch]"`. 0.1의 torch 기반 기능은 이름 그대로 쓸 수 있다(처음 쓸 때 불러옴).
 
 ```python
 import flydnet as fd
-mb = fd.Circuit.from_flywire()                    # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
+mb = fd.Circuit.from_flywire()
 enc = fd.RateEncoder(784, len(mb.groups["PN"]))   # 픽셀 → PN 발화율 (고정 무작위 희소 투영)
 layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=100, gains={"PN>KC": 2.0}, input_mode="regular")
-feats = fd.extract(layer, enc, images)            # (n, 2597) KC 발화율
+feats = fd.extract(layer, enc, images)            # (n, 2597) KC 발화율 (스파이킹 LIF 시뮬레이션)
 fd.train_linear(feats, y, feats_test, y_test)     # 로지스틱 회귀
 mb.shuffled(seed=0)                               # 무작위 배선 대조군 (연결 수·차수는 그대로)
 ```
 
-### 구조물(anatomy)과 작용(physiology): torch.nn처럼 쓰기
-
-`flydnet.anatomy`는 `torch.nn`, `flydnet.physiology`는 `torch.nn.functional`에 해당한다. 이름은 같은 일을 하는
-생물 구조에서 땄다. 시간 시뮬레이션 없이 한 번에 계산해서 일반 신경망처럼 빠르다.
-
-```python
-import torch.nn as nn
-from flydnet.anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
-import flydnet.physiology as P
-
-model = nn.Sequential(
-    nn.Linear(784, 344),                  # 픽셀 → PN 344개
-    Neuropil(mb, "PN", "KC"),             # 실제 PN→KC 배선 (연결 13,485개만, 학습 가능, 부호 유지)
-    LateralInhibition(frac=0.05),         # APL 억제: KC 5%만
-    nn.Linear(2597, 10),
-)                                         # MNIST 2에폭 96.7% (무작위 배선 96.4%), 약 1초
-```
-
-| 구조물 (`flydnet.anatomy`) | 생물 | torch에서 비슷한 것 |
-|---|---|---|
-| `Neuropil(circuit, pre, post, train="edge"/"pair"/"free"/None)` | 신경망 영역: 실제 커넥톰 배선으로 전달 | `nn.Linear` (희소) |
-| `LateralInhibition(k= 또는 frac=)` | 측억제 (APL): 가장 강한 k개만 | 활성화 함수 |
-| `AxonHillock(threshold, slope)` | 축삭 둔덕: 스파이크 (대리 기울기) | 활성화 함수 |
-| `MushroomBodyOutput(n_in, n_classes, per_class)` | 버섯체 출력 구역: 도파민 연합 학습 (`.learn`) | 분류기 헤드 |
-
-| 작용 (`flydnet.physiology`) | 생물 | torch에서 비슷한 것 |
-|---|---|---|
-| `transmit(x, values, wiring)` | 시냅스 전달 | `F.linear` |
-| `fire(v, threshold, slope)` | 발화 | 활성화 함수 |
-| `inhibit(x, k=, frac=)` | 측억제 | — |
-| `transduce(x, max_rate)` | 감각 변환 (값 → 발화율) | 정규화 |
-| `kenyon_code(x, w_pn_kc, k)` | KC 희소 부호화 | — |
-| `recall(a, prototypes)` / `reinforce_(...)` | 기억 인출 / 도파민 강화 | — |
-
-`Neuropil`은 전체 뇌(뉴런 13.9만, 연결 1,509만)도 한 층으로 만들 수 있다: 순전파+역전파 배치 64에 0.03초, 1.5 GB.
-다른 회로로 만든 `Neuropil`의 `state_dict`를 불러오면 배선이 다르다는 오류가 난다.
+`flydnet.torch.anatomy` / `flydnet.torch.physiology`는 자체 엔진의 구조물·작용을 torch 텐서로 제공한다
+(`nn.Sequential` 안에 `Neuropil`, `LateralInhibition`, `AxonHillock`, `MushroomBodyOutput`).
 
 ### 연속 학습: 새 클래스를 계속 추가하는 분류기
 
@@ -136,11 +146,12 @@ model = nn.Sequential(
 차례로 배운다. 역전파가 없고, 데이터를 한 번만 보며, 새 클래스를 배워도 이전 클래스를 잊지 않는다.
 
 ```python
-ro = fd.AssocReadout(n_in=512, n_classes=100, per_class=10)     # 클래스마다 원형 10개
-ro.fit(feats_task1, y_task1)                                    # 과제 1의 클래스
-ro.fit(feats_task2, y_task2)                                    # 과제 2 — 과제 1을 잊지 않음
-pred = ro.predict(feats_test, classes=seen_classes)
+mbo = fd.MushroomBodyOutput(n_in=512, n_classes=100, per_class=10)   # 클래스마다 원형 10개 (torch 필요 없음)
+mbo.learn(feats_task1, y_task1)                                 # 과제 1의 클래스
+mbo.learn(feats_task2, y_task2)                                 # 과제 2 — 과제 1을 잊지 않음
+pred = mbo.predict(feats_test, classes=seen_classes)
 
+# torch 연동판: fd.AssocReadout (같은 계산), 버섯체 확장 fd.KCExpansion
 kc = fd.KCExpansion(fd.Circuit.from_flywire(side=None), n_in=512, projection="gaussian", k_frac=0.2)
 codes = kc(feats)                                               # 실제 버섯체 확장 (이 과제에서는 오히려 손해, ⑪ 참고)
 ```
@@ -234,12 +245,14 @@ layer = fd.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="r
 | 모듈 | 내용 |
 |---|---|
 | `circuit.py` | `Circuit`: 주석으로 뉴런 그룹을 골라 그 사이 연결만 남긴 회로, `shuffled()` 대조군, `summary()` |
+| `ganglion/` | **자체 엔진** (torch 없음): `signal.py` 신호·역행성 신호, `tissue.py` 조직, `physiology.py` 작용, `rules.py` 가소성 규칙, `backend.py` NumPy/CuPy |
+| `data.py` | 데이터 위치·다운로드·검증 |
+| `torch/` | torch 연동: `anatomy.py` (`torch.nn`처럼), `physiology.py` (`torch.nn.functional`처럼) |
+| 아래는 torch 연동 (0.1 기능) | |
 | `encoders.py` | `RateEncoder`: 텐서 → 입력 뉴런 발화율 |
 | `layers.py` | `ConnectomeLayer`: 배치 LIF 시뮬레이션 (희소행렬 곱, GPU). `input_mode="regular"`/`"poisson"` |
 | `readout.py` | `extract()`: 데이터 → 발화율 특징, `train_linear()`: 리드아웃 학습 |
 | `expansion.py` | `KCExpansion`: 실제 PN→KC 배선 앞먹임 확장 (상위 k만 남김, APL 억제처럼) |
-| `anatomy.py` | 구조물 (`torch.nn`에 해당): `Neuropil`, `LateralInhibition`, `AxonHillock`, `MushroomBodyOutput` |
-| `physiology.py` | 작용 (`torch.nn.functional`에 해당): `transmit`, `fire`, `inhibit`, `transduce`, `kenyon_code`, `recall`, `reinforce_` |
 
 ## 실험 ① 버섯체 저장소(reservoir) — MNIST
 

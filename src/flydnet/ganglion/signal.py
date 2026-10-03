@@ -1,0 +1,357 @@
+"""Signal: 신경 신호 = 배열 + 역행성 신호(기울기) 기록 (torch.Tensor에 해당)
+
+    s = Signal([[1., 2.]], plastic=True)     # plastic=True: 학습으로 바뀌는 신호 (requires_grad)
+    loss = (s * s).sum()
+    loss.retrograde()                         # 역행성 신호를 거슬러 보냄 (backward)
+    s.retro                                   # 도착한 역행성 신호 = d loss / d s (grad)
+    with quiescent(): ...                     # 휴지 상태: 학습 흔적을 남기지 않음 (no_grad)
+
+역행성 신호(retrograde signal): 실제 시냅스에서도 받는 쪽 뉴런이 보내는 쪽으로 거꾸로 보내는 신호가 있다
+(예: 내인성 카나비노이드). 여기서는 출력 오차를 입력 쪽으로 되돌려 보내는 기울기 계산을 그렇게 부른다.
+"""
+from __future__ import annotations
+
+import contextlib
+
+import numpy as np
+
+from . import backend as B
+
+_LEARNING = [True]                                     # quiescent()로 끌 수 있음
+
+
+@contextlib.contextmanager
+def quiescent():
+    """휴지 상태: 이 안의 연산은 역행성 신호 경로를 기록하지 않음 (torch.no_grad)"""
+    prev = _LEARNING[0]
+    _LEARNING[0] = False
+    try:
+        yield
+    finally:
+        _LEARNING[0] = prev
+
+
+def learning_enabled() -> bool:
+    return _LEARNING[0]
+
+
+def _unbroadcast(g, shape):
+    """브로드캐스트로 늘어난 차원을 원래 모양으로 합침"""
+    while g.ndim > len(shape):
+        g = g.sum(axis=0)
+    for i, n in enumerate(shape):
+        if n == 1 and g.shape[i] != 1:
+            g = g.sum(axis=i, keepdims=True)
+    return g
+
+
+class Signal:
+    """신경 신호. data = 배열 (CPU: numpy, GPU: cupy), plastic = 학습으로 바뀌는가, retro = 역행성 신호"""
+
+    __array_priority__ = 1000                          # numpy 배열 @ Signal 같은 연산을 Signal 쪽이 처리
+
+    def __init__(self, data, plastic: bool = False, device: str | None = None, dtype=None):
+        if isinstance(data, Signal):
+            data = data.data
+        if device is None:
+            device = B.device_of(data) if not isinstance(data, (list, tuple, float, int)) else "cpu"
+        xp = B.xp(device)
+        arr = B.to(data, device) if hasattr(data, "shape") else xp.asarray(data)
+        if dtype is not None:
+            arr = arr.astype(dtype, copy=False)
+        elif arr.dtype.kind in "fc" and arr.dtype != xp.float32 and arr.dtype != xp.float64:
+            arr = arr.astype(xp.float32)
+        elif arr.dtype.kind not in "fcbiu":
+            arr = arr.astype(xp.float32)
+        self.data = arr
+        self.plastic = bool(plastic)
+        self.retro = None
+        self._parents: tuple = ()
+        self._back = None                                  # g → 부모마다의 역행성 신호
+
+    # ─────────────── 기본 정보 ───────────────
+    @property
+    def shape(self):
+        return self.data.shape
+
+    @property
+    def ndim(self):
+        return self.data.ndim
+
+    @property
+    def dtype(self):
+        return self.data.dtype
+
+    @property
+    def device(self) -> str:
+        return B.device_of(self.data)
+
+    @property
+    def xp(self):
+        return B.xp(self.device)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __repr__(self):
+        tag = ", plastic" if self.plastic else ""
+        return f"Signal({B.numpy(self.data)!r}, device={self.device}{tag})"
+
+    def numpy(self) -> np.ndarray:
+        return B.numpy(self.data)
+
+    def item(self):
+        return self.data.item()
+
+    def to(self, device: str) -> "Signal":
+        """다른 장치로 옮긴 새 신호 (역행성 신호 경로는 이어짐)"""
+        if device == self.device:
+            return self
+        out = Signal(B.to(self.data, device))
+        src = self.device
+        return out._link((self,), lambda g: (B.to(g, src),))
+
+    def detach(self) -> "Signal":
+        return Signal(self.data)
+
+    # ─────────────── 연산 그래프 ───────────────
+    def _link(self, parents, back):
+        """parents에서 만들어진 신호로 기록 (학습 중이고 부모 중 하나라도 plastic이면)"""
+        if learning_enabled() and any(p.plastic for p in parents):
+            self.plastic = True
+            self._parents = parents
+            self._back = back
+        return self
+
+    def retrograde(self, retro=None):
+        """역행성 신호 보내기 (backward): 이 신호에서 plastic 잎(Synapse 등)까지 기울기를 계산해 .retro에 더함"""
+        if not self.plastic:
+            raise RuntimeError("plastic이 아닌 신호에서는 역행성 신호를 보낼 수 없음")
+        xp = self.xp
+        if retro is None:
+            if self.data.size != 1:
+                raise RuntimeError("값이 하나가 아닌 신호는 retro를 직접 줘야 함")
+            retro = xp.ones_like(self.data)
+        retro = retro.data if isinstance(retro, Signal) else xp.asarray(retro, dtype=self.data.dtype)
+
+        order, seen, stack = [], set(), [(self, False)]      # 위상 정렬 (재귀 없이)
+        while stack:
+            node, done = stack.pop()
+            if done:
+                order.append(node)
+                continue
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            stack.append((node, True))
+            for p in node._parents:
+                if p.plastic and id(p) not in seen:
+                    stack.append((p, False))
+        grads = {id(self): retro}
+        for node in reversed(order):
+            g = grads.pop(id(node), None)
+            if g is None:
+                continue
+            if node._back is None:                          # 잎: 기울기 쌓기
+                node.retro = g if node.retro is None else node.retro + g
+                continue
+            for p, pg in zip(node._parents, node._back(g)):
+                if pg is None or not p.plastic:
+                    continue
+                grads[id(p)] = pg if id(p) not in grads else grads[id(p)] + pg
+        for node in order:                                   # 경로 풀기 (메모리 해제)
+            if node._back is not None:
+                node._parents, node._back = (), None
+
+    # ─────────────── 산술 ───────────────
+    def _wrap(self, other) -> "Signal":
+        if isinstance(other, Signal):
+            if other.device != self.device:
+                raise RuntimeError(f"장치가 다름: {self.device} 와 {other.device}")
+            return other
+        return Signal(self.xp.asarray(other, dtype=self.data.dtype), device=self.device)
+
+    def __add__(self, o):
+        o = self._wrap(o)
+        a, b = self.shape, o.shape
+        return Signal(self.data + o.data)._link((self, o), lambda g: (_unbroadcast(g, a), _unbroadcast(g, b)))
+
+    __radd__ = __add__
+
+    def __sub__(self, o):
+        o = self._wrap(o)
+        a, b = self.shape, o.shape
+        return Signal(self.data - o.data)._link((self, o), lambda g: (_unbroadcast(g, a), _unbroadcast(-g, b)))
+
+    def __rsub__(self, o):
+        return self._wrap(o) - self
+
+    def __neg__(self):
+        return Signal(-self.data)._link((self,), lambda g: (-g,))
+
+    def __mul__(self, o):
+        o = self._wrap(o)
+        x, y = self.data, o.data
+        return Signal(x * y)._link((self, o), lambda g: (_unbroadcast(g * y, x.shape), _unbroadcast(g * x, y.shape)))
+
+    __rmul__ = __mul__
+
+    def __truediv__(self, o):
+        o = self._wrap(o)
+        x, y = self.data, o.data
+        return Signal(x / y)._link((self, o), lambda g: (_unbroadcast(g / y, x.shape),
+                                                        _unbroadcast(-g * x / (y * y), y.shape)))
+
+    def __rtruediv__(self, o):
+        return self._wrap(o) / self
+
+    def __pow__(self, p: float):
+        if isinstance(p, Signal):
+            raise TypeError("지수는 숫자만")
+        x = self.data
+        return Signal(x ** p)._link((self,), lambda g: (g * p * x ** (p - 1),))
+
+    def __matmul__(self, o):
+        o = self._wrap(o)
+        x, y = self.data, o.data
+        if x.ndim != 2 or y.ndim != 2:
+            raise ValueError("@는 2차원끼리만")
+        return Signal(x @ y)._link((self, o), lambda g: (g @ y.T, x.T @ g))
+
+    def __rmatmul__(self, o):
+        return self._wrap(o) @ self
+
+    # ─────────────── 비교 (기울기 없음) ───────────────
+    def __gt__(self, o):
+        return Signal(self.data > (o.data if isinstance(o, Signal) else o))
+
+    def __lt__(self, o):
+        return Signal(self.data < (o.data if isinstance(o, Signal) else o))
+
+    def __ge__(self, o):
+        return Signal(self.data >= (o.data if isinstance(o, Signal) else o))
+
+    def __le__(self, o):
+        return Signal(self.data <= (o.data if isinstance(o, Signal) else o))
+
+    # ─────────────── 원소별 함수 ───────────────
+    def exp(self):
+        out = self.xp.exp(self.data)
+        return Signal(out)._link((self,), lambda g: (g * out,))
+
+    def log(self):
+        x = self.data
+        return Signal(self.xp.log(x))._link((self,), lambda g: (g / x,))
+
+    def relu(self):
+        m = self.data > 0
+        return Signal(self.data * m)._link((self,), lambda g: (g * m,))
+
+    def tanh(self):
+        out = self.xp.tanh(self.data)
+        return Signal(out)._link((self,), lambda g: (g * (1 - out * out),))
+
+    def sigmoid(self):
+        out = 1 / (1 + self.xp.exp(-self.data))
+        return Signal(out)._link((self,), lambda g: (g * out * (1 - out),))
+
+    def abs(self):
+        s = self.xp.sign(self.data)
+        return Signal(self.xp.abs(self.data))._link((self,), lambda g: (g * s,))
+
+    def clip(self, lo=None, hi=None):
+        x = self.data
+        m = self.xp.ones_like(x, dtype=bool)
+        if lo is not None:
+            m &= x >= lo
+        if hi is not None:
+            m &= x <= hi
+        return Signal(self.xp.clip(x, lo, hi))._link((self,), lambda g: (g * m,))
+
+    # ─────────────── 모으기 ───────────────
+    def sum(self, axis=None, keepdims: bool = False):
+        shape = self.shape
+        xp = self.xp
+
+        def back(g):
+            if axis is not None and not keepdims:
+                g = xp.expand_dims(g, axis)
+            return (xp.broadcast_to(g, shape).copy(),)
+        return Signal(self.data.sum(axis=axis, keepdims=keepdims))._link((self,), back)
+
+    def mean(self, axis=None, keepdims: bool = False):
+        n = self.data.size if axis is None else int(np.prod([self.shape[a] for a in np.atleast_1d(axis)]))
+        return self.sum(axis, keepdims) * (1.0 / n)
+
+    def max(self, axis=None, keepdims: bool = False):
+        """최댓값 (같은 값이 여럿이면 기울기를 나눠 가짐)"""
+        x = self.data
+        out = x.max(axis=axis, keepdims=True)
+        m = (x == out)
+        m = m / m.sum(axis=axis, keepdims=True)
+        xp = self.xp
+        res = out if keepdims else (out.squeeze(axis) if axis is not None else out.reshape(()))
+
+        def back(g):
+            if not keepdims:
+                g = xp.expand_dims(g, axis) if axis is not None else g.reshape((1,) * x.ndim)
+            return (g * m,)
+        return Signal(res)._link((self,), back)
+
+    # ─────────────── 모양 ───────────────
+    def reshape(self, *shape):
+        shape = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list)) else shape
+        old = self.shape
+        return Signal(self.data.reshape(shape))._link((self,), lambda g: (g.reshape(old),))
+
+    def flatten(self, start: int = 1):
+        return self.reshape(*self.shape[:start], -1)
+
+    def transpose(self, *axes):
+        axes = axes or tuple(reversed(range(self.ndim)))
+        inv = np.argsort(axes)
+        return Signal(self.data.transpose(axes))._link((self,), lambda g: (g.transpose(inv),))
+
+    @property
+    def T(self):
+        return self.transpose()
+
+    def __getitem__(self, idx):
+        if isinstance(idx, Signal):
+            idx = idx.data
+        x = self.data
+        xp = self.xp
+
+        parts = idx if isinstance(idx, tuple) else (idx,)
+        advanced = any(hasattr(p, "shape") or isinstance(p, list) for p in parts)
+
+        def back(g):
+            out = xp.zeros_like(x)
+            if advanced:
+                B.scatter_add(out, idx, g)                     # 같은 칸을 여러 번 고른 경우도 더함
+            else:
+                out[idx] += g                                  # 슬라이스·정수: 칸이 겹치지 않음
+            return (out,)
+        return Signal(x[idx])._link((self,), back)
+
+
+def as_signal(x, device: str | None = None) -> Signal:
+    if isinstance(x, Signal):
+        return x if device is None else x.to(device)
+    return Signal(x, device=device)
+
+
+def concat(signals, axis: int = 0) -> Signal:
+    xp = signals[0].xp
+    sizes = [s.shape[axis] for s in signals]
+    cuts = np.cumsum(sizes)[:-1]
+    out = Signal(xp.concatenate([s.data for s in signals], axis=axis))
+    return out._link(tuple(signals), lambda g: tuple(xp.split(g, cuts, axis=axis)))
+
+
+def where(cond, a: Signal, b: Signal) -> Signal:
+    c = cond.data if isinstance(cond, Signal) else cond
+    a, b = as_signal(a), as_signal(b)
+    xp = a.xp
+    return Signal(xp.where(c, a.data, b.data))._link(
+        (a, b), lambda g: (_unbroadcast(xp.where(c, g, 0), a.shape), _unbroadcast(xp.where(c, 0, g), b.shape)))

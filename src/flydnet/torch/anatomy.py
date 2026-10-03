@@ -2,7 +2,7 @@
 
     import torch.nn as nn
     import flydnet as fd
-    from flydnet.anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
+    from flydnet.torch.anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
 
     mb = fd.Circuit.from_flywire()
     model = nn.Sequential(
@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 
 from . import physiology as P
-from .circuit import Circuit
+from ..circuit import Circuit
 
 
 class Neuropil(nn.Module):

@@ -1,6 +1,6 @@
 """생리학: 상태 없는 신경 작용 함수 (torch.nn.functional에 해당)
 
-    import flydnet.physiology as P
+    import flydnet.torch.physiology as P
     y = P.transmit(x, values, wiring)        # 시냅스 전달        (F.linear처럼, 연결은 커넥톰에 있는 것만)
     s = P.fire(v)                            # 발화 (대리 기울기)
     h = P.inhibit(x, frac=0.05)              # 측억제: 가장 강한 5%만 남김
@@ -9,7 +9,7 @@
     s = P.recall(a, prototypes)              # 기억 인출: 원형과의 코사인 유사도
     P.reinforce_(prototypes, count, a, y, per_class=10)   # 도파민 강화 (제자리 갱신)
 
-구조물(매개변수를 가진 모듈)은 flydnet.anatomy.
+구조물(매개변수를 가진 모듈)은 flydnet.torch.anatomy. torch 없는 기준 엔진은 flydnet.ganglion.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
-from .layers import SparsePropagate, SpikeFn
+from ..layers import SparsePropagate, SpikeFn
 
 
 # ─────────────── 시냅스 전달 ───────────────

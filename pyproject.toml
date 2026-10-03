@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flydnet"
 dynamic = ["version"]
-description = "Drosophila connectome (FlyWire v783) as PyTorch layers: spiking/graded networks with real fly wiring"
+description = "Drosophila connectome (FlyWire v783) as neural-network layers, with its own autograd engine on NumPy/CuPy (PyTorch optional)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ email = "icecx17@gmail.com" }]
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.23", "pandas>=1.5", "pyarrow>=10", "torch>=2.1"]
-keywords = ["connectome", "drosophila", "flywire", "spiking neural network", "pytorch", "neuroscience"]
+dependencies = ["numpy>=1.23", "scipy>=1.9", "pandas>=1.5", "pyarrow>=10"]
+keywords = ["connectome", "drosophila", "flywire", "spiking neural network", "autograd", "numpy", "cupy", "neuroscience"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
@@ -23,8 +23,11 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-examples = ["torchvision"]
-dev = ["pytest"]
+torch = ["torch>=2.1"]                   # torch 연동 (flydnet.torch, ConnectomeLayer 등 0.1.0 기능)
+gpu-cuda12 = ["cupy-cuda12x>=13"]        # GPU (CUDA 12.x 드라이버)
+gpu-cuda13 = ["cupy-cuda13x>=14"]        # GPU (CUDA 13.x 드라이버)
+examples = ["torch>=2.1", "torchvision"]
+dev = ["pytest", "torch>=2.1"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

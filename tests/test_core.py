@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-import torch
+torch = pytest.importorskip("torch")  # flydnet의 torch 연동 기능 테스트 (torch 없으면 건너뜀)
 
 import flydnet as fd
 
@@ -625,8 +625,8 @@ def test_kc_expansion_similar_inputs_share_codes():
 
 # ─────────────── anatomy (구조물) · physiology (작용) ───────────────
 import torch.nn as nn
-import flydnet.physiology as P
-from flydnet.anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
+import flydnet.torch.physiology as P
+from flydnet.torch.anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
 
 
 def _two_layer_circuit(n_a=6, n_b=9, n_c=4, seed=0):

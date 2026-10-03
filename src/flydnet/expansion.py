@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 
 from .circuit import Circuit
-from .physiology import kenyon_code
+from .torch.physiology import kenyon_code
 
 
 class KCExpansion(nn.Module):

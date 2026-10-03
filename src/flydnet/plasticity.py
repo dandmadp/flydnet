@@ -16,7 +16,7 @@ homeostasis=True: 출력 뉴런마다 시냅스 총량을 일정하게 맞춰 �
 """
 import torch
 
-from .physiology import recall, reinforce_
+from .torch.physiology import recall, reinforce_
 
 
 class _Saveable:
