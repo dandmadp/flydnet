@@ -31,7 +31,7 @@ class SpikeFn(torch.autograd.Function):
     def forward(ctx, x, slope):
         ctx.save_for_backward(x)
         ctx.slope = slope
-        return (x > 0).float()
+        return (x > 0).to(x.dtype)
 
     @staticmethod
     def backward(ctx, grad):
@@ -46,31 +46,35 @@ class SparsePropagate(torch.autograd.Function):
     (전체 뇌 13.9만 뉴런 → 77 GB). 여기서는 필요한 연결 칸만 계산:
       d values[e] = Σ_b grad[post_e, b] · spk[pre_e, b]   (sampled_addmm, 메모리 = 연결 수)
       d spk       = Wᵀ @ grad                              (미리 정렬해 둔 전치 CSR)
+    직사각도 가능: W는 (행 = len(crow) − 1) × (열 = len(crow_t) − 1)
     """
 
     @staticmethod
     def forward(ctx, values, spk, crow, col, crow_t, col_t, perm_t):
-        N = len(crow) - 1
+        shape = (len(crow) - 1, len(crow_t) - 1)
         ctx.save_for_backward(values, spk, crow, col, crow_t, col_t, perm_t)
-        return _csr(crow, col, values, N) @ spk
+        return _csr(crow, col, values, shape) @ spk
 
     @staticmethod
     def backward(ctx, grad):
         values, spk, crow, col, crow_t, col_t, perm_t = ctx.saved_tensors
-        N = len(crow) - 1
+        shape = (len(crow) - 1, len(crow_t) - 1)
         d_values = d_spk = None
         if ctx.needs_input_grad[0]:
-            pattern = _csr(crow, col, torch.zeros_like(values), N)
-            d_values = torch.sparse.sampled_addmm(pattern, grad, spk.T, beta=0.0, alpha=1.0).values()
+            pattern = _csr(crow, col, torch.zeros_like(values), shape)
+            d_values = torch.sparse.sampled_addmm(pattern, grad.contiguous(), spk.T.contiguous(),
+                                                  beta=0.0, alpha=1.0).values()
         if ctx.needs_input_grad[1]:
-            d_spk = _csr(crow_t, col_t, values[perm_t], N) @ grad
+            d_spk = _csr(crow_t, col_t, values[perm_t], shape[::-1]) @ grad
         return d_values, d_spk, None, None, None, None, None
 
 
-def _csr(crow, col, values, N):
+def _csr(crow, col, values, shape):
+    """shape: 정수 N이면 (N, N)"""
+    shape = (shape, shape) if isinstance(shape, int) else tuple(shape)
     with warnings.catch_warnings():                              # "CSR은 베타" 경고 숨김
         warnings.simplefilter("ignore", UserWarning)
-        return torch.sparse_csr_tensor(crow, col, values, (N, N), check_invariants=False)
+        return torch.sparse_csr_tensor(crow, col, values, shape, check_invariants=False)
 
 
 class ConnectomeLayer(nn.Module):

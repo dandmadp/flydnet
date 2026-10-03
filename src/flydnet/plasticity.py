@@ -16,6 +16,8 @@ homeostasis=True: 출력 뉴런마다 시냅스 총량을 일정하게 맞춰 �
 """
 import torch
 
+from .physiology import recall, reinforce_
+
 
 class _Saveable:
     """리드아웃 저장/불러오기 (설정 + 시냅스 텐서, torch.load(weights_only=True)로 읽힘)"""
@@ -168,8 +170,7 @@ class AssocReadout(_Saveable):
 
     def _proto_scores(self, a: torch.Tensor) -> torch.Tensor:
         """(B, C*k) 코사인 점수, 빈 출력은 −inf"""
-        s = a @ (self.W / self.W.norm(dim=1, keepdim=True).clamp_min(1e-8)).T
-        return s.masked_fill(self.count == 0, float("-inf"))
+        return recall(a, self.W, self.count)
 
     def scores(self, X: torch.Tensor) -> torch.Tensor:
         """(B, C) 클래스 점수"""
@@ -180,31 +181,7 @@ class AssocReadout(_Saveable):
 
     @torch.no_grad()
     def step(self, X: torch.Tensor, y: torch.Tensor, classes=None):
-        a = self.activity(X)
-        y = y.to(self.dev)
-        C, k = self.n_classes, self.k
-        # 1) 빈 출력 채우기: 묶음 안에서 클래스별 i번째 샘플 → 그 클래스의 i번째 빈 출력
-        onehot = torch.nn.functional.one_hot(y, C)
-        rank = (onehot.cumsum(0) * onehot).sum(1) - 1                      # 클래스 안 순번
-        empty = self.count.view(C, k) == 0
-        n_empty = empty.sum(1)
-        seed = rank < n_empty[y]
-        if seed.any():
-            order = torch.argsort((~empty).float(), dim=1, stable=True)     # 빈 출력 번호가 앞으로
-            idx = y[seed] * k + order[y[seed], rank[seed]]
-            self.W[idx] = a[seed]
-            self.count[idx] = 1
-        rest = ~seed
-        if not rest.any():
-            return
-        # 2) 나머지: 그 클래스 출력 중 가장 잘 맞는 하나에 보상 도파민 → 누적 평균
-        a, y = a[rest], y[rest]
-        own = self._proto_scores(a).view(len(a), C, k)[torch.arange(len(a)), y]
-        idx = y * k + own.argmax(1)
-        n = torch.zeros_like(self.count).index_add_(0, idx, torch.ones(len(a), device=self.dev))
-        s = torch.zeros_like(self.W).index_add_(0, idx, a)
-        self.count += n
-        hit = n > 0
-        self.W[hit] += (s[hit] - n[hit, None] * self.W[hit]) / self.count[hit, None]
+        """빈 출력은 클래스별 i번째 샘플로 채우고, 나머지는 가장 잘 맞는 출력 하나에 누적 평균 (physiology.reinforce_)"""
+        reinforce_(self.W, self.count, self.activity(X), y, self.k)
 
     fit = DopamineReadout.fit

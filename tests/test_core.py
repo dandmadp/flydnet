@@ -621,3 +621,156 @@ def test_kc_expansion_similar_inputs_share_codes():
     near, far = x + 0.02 * torch.randn(1, 100, generator=g), torch.rand(1, 100, generator=g)
     ov = lambda a, b: (kc(a) * kc(b)).sum().item() / kc.k
     assert ov(x, near) > 0.6 > 0.3 > ov(x, far)
+
+
+# ─────────────── anatomy (구조물) · physiology (작용) ───────────────
+import torch.nn as nn
+import flydnet.physiology as P
+from flydnet.anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
+
+
+def _two_layer_circuit(n_a=6, n_b=9, n_c=4, seed=0):
+    """A → B → C, 일부 억제, 같은 연결 중복 포함"""
+    rng = np.random.default_rng(seed)
+    pre = np.r_[rng.integers(0, n_a, 30), rng.integers(n_a, n_a + n_b, 20)]
+    post = np.r_[rng.integers(n_a, n_a + n_b, 30), rng.integers(n_a + n_b, n_a + n_b + n_c, 20)]
+    w = (rng.integers(1, 5, 50) * rng.choice([-1, 1], 50)).astype(np.float32)
+    N = n_a + n_b + n_c
+    return fd.Circuit(np.arange(N), {"A": np.arange(n_a), "B": np.arange(n_a, n_a + n_b),
+                                     "C": np.arange(n_a + n_b, N)}, pre, post, w)
+
+
+def test_transmit_rectangular_matches_dense_and_gradcheck():
+    rng = np.random.default_rng(1)
+    key = rng.choice(7 * 5, 15, replace=False)
+    post, pre = key // 5, key % 5
+    w, order = P.wiring(post, pre, 7, 5)
+    v = torch.randn(15, dtype=torch.double)[torch.tensor(order)].requires_grad_(True)
+    x = torch.randn(3, 2, 5, dtype=torch.double, requires_grad=True)          # 앞 차원 여러 개
+    dense = torch.zeros(7, 5, dtype=torch.double).index_put((torch.tensor(post[order]), torch.tensor(pre[order])), v)
+    assert P.transmit(x, v, w).shape == (3, 2, 7)
+    assert torch.allclose(P.transmit(x, v, w), x @ dense.T)
+    assert torch.autograd.gradcheck(lambda v, x: P.transmit(x, v, w), (v, x))
+    with pytest.raises(ValueError):
+        P.wiring([0, 0], [1, 1], 7, 5)                                        # 중복 연결
+    with pytest.raises(ValueError):
+        P.transmit(torch.randn(2, 4, dtype=torch.double), v, w)               # 입력 크기 다름
+
+
+def test_neuropil_matches_circuit_wiring():
+    c = _two_layer_circuit()
+    layer = Neuropil(c, "A", "B", train=None, init="counts", device="cpu")
+    W = np.zeros((9, 6))
+    m = np.isin(c.pre, c.groups["A"]) & np.isin(c.post, c.groups["B"])
+    np.add.at(W, (c.post[m] - 6, c.pre[m]), c.weight[m])                      # 중복은 합쳐짐
+    assert np.allclose(layer.dense().numpy(), W)
+    x = torch.randn(4, 6)
+    assert torch.allclose(layer(x), x @ torch.tensor(W, dtype=torch.float32).T, atol=1e-5)
+    assert layer.in_features == 6 and layer.out_features == 9 and layer.n_synapses == (W != 0).sum()
+    with pytest.raises(ValueError):
+        Neuropil(c, "C", "A", device="cpu")                                   # 연결 없음
+
+
+@pytest.mark.parametrize("train", ["pair", "edge", "free"])
+def test_neuropil_training_modes(train):
+    c = _two_layer_circuit()
+    layer = Neuropil(c, ["A", "B"], ["B", "C"], train=train, bias=True, device="cpu")
+    mask = layer.dense() != 0
+    sign = torch.sign(layer.dense())
+    opt = torch.optim.SGD(layer.parameters(), lr=0.5)
+    for _ in range(5):
+        loss = (layer(torch.randn(8, 15)) - 1).pow(2).mean()
+        opt.zero_grad(); loss.backward(); opt.step()
+    after = layer.dense()
+    assert ((after != 0) <= mask).all()                                       # 커넥톰에 없는 연결은 생기지 않음
+    if train != "free":
+        assert torch.equal(torch.sign(after), sign)                           # 부호 유지 (Dale)
+    n_param = sum(p.numel() for p in layer.parameters()) - 13                 # bias 제외
+    assert n_param == {"pair": len(layer.pairs), "edge": layer.n_synapses, "free": layer.n_synapses}[train]
+    if train == "pair":
+        assert set(layer.scale_of()) == set(layer.pairs)
+
+
+def test_neuropil_fan_in_keeps_signal_scale():
+    c = _pn_kc_circuit(n_pn=50, n_kc=400, per_kc=8)
+    layer = Neuropil(c, "PN", "KC", train=None, device="cpu")
+    y = layer(torch.randn(2000, 50))
+    assert 0.7 < y.std().item() < 1.3
+
+
+def test_lateral_inhibition_and_axon_hillock():
+    x = torch.tensor([[3.0, -1.0, 2.0, 0.5]], requires_grad=True)
+    y = LateralInhibition(k=2)(x)
+    assert torch.equal(y, torch.tensor([[3.0, 0.0, 2.0, 0.0]]))
+    y.sum().backward()
+    assert torch.equal(x.grad, torch.tensor([[1.0, 0.0, 1.0, 0.0]]))           # 기울기는 남은 것에만
+    assert LateralInhibition(frac=0.5)(x).ne(0).sum() == 2
+    with pytest.raises(ValueError):
+        LateralInhibition()
+    v = torch.tensor([-0.2, 0.0, 0.3], requires_grad=True)
+    s = AxonHillock(threshold=0.1)(v)
+    assert torch.equal(s, torch.tensor([0.0, 0.0, 1.0]))
+    s.sum().backward()
+    assert (v.grad > 0).all()                                                 # 대리 기울기
+
+
+def test_mushroom_body_output_matches_assoc_readout(tmp_path):
+    X, y = _toy(n=300, k=40, c=5)
+    ref = fd.AssocReadout(40, 5, per_class=3, device="cpu").fit(X, y, batch=50)
+    mbo = MushroomBodyOutput(40, 5, per_class=3)
+    g = torch.Generator().manual_seed(0)                                      # AssocReadout.fit과 같은 순서
+    perm = torch.randperm(len(X), generator=g)
+    mbo.learn(X[perm], y[perm], batch=50)
+    assert torch.allclose(mbo.prototypes, ref.W) and torch.equal(mbo.count, ref.count)
+    assert torch.equal(mbo.predict(X), ref.predict(X).cpu())
+    torch.save(mbo.state_dict(), tmp_path / "mbo.pt")
+    new = MushroomBodyOutput(40, 5, per_class=3)
+    new.load_state_dict(torch.load(tmp_path / "mbo.pt", weights_only=True))
+    assert torch.equal(new(X), mbo(X)) and new.learned_classes == list(range(5))
+    assert torch.isinf(MushroomBodyOutput(40, 5)(X)).all()                    # 아직 아무것도 안 배움
+
+
+def test_kenyon_code_matches_kc_expansion():
+    c = _pn_kc_circuit()
+    kc = fd.KCExpansion(c, n_in=50, k_frac=0.1, device="cpu")
+    x = torch.rand(6, 50)
+    assert torch.equal(kc(x), P.kenyon_code(x, kc.W, kc.k, kc.proj))
+
+
+def test_anatomy_in_sequential_learns_toy_problem():
+    c = _pn_kc_circuit(n_pn=20, n_kc=300, per_kc=6)
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), Neuropil(c, "PN", "KC", train="edge", device="cpu"),
+                          LateralInhibition(frac=0.1), nn.Linear(300, 3))
+    X = torch.randn(300, 10); y = (X[:, 0] > 0).long() + (X[:, 1] > 0).long()
+    opt = torch.optim.Adam(model.parameters(), lr=1e-2)
+    first = None
+    for _ in range(150):
+        loss = nn.functional.cross_entropy(model(X), y)
+        first = first or loss.item()
+        opt.zero_grad(); loss.backward(); opt.step()
+    assert loss.item() < 0.5 * first
+
+
+def test_neuropil_state_dict_checks_wiring():
+    c = _pn_kc_circuit()
+    a = Neuropil(c, "PN", "KC", device="cpu")
+    with torch.no_grad():
+        a.log_scale.normal_()
+    b = Neuropil(c, "PN", "KC", device="cpu")
+    b.load_state_dict(a.state_dict())                                         # 같은 회로 → 됨
+    x = torch.randn(3, 30)
+    assert torch.equal(a(x), b(x))
+    other = Neuropil(_pn_kc_circuit(seed=1), "PN", "KC", device="cpu")         # 다른 배선
+    with pytest.raises(RuntimeError, match="배선이 다름"):
+        other.load_state_dict(a.state_dict())
+
+
+def test_physiology_edge_cases():
+    x = torch.randn(2, 4)
+    assert torch.equal(P.inhibit(x, k=10), x)                                 # k가 원소 수보다 크면 전부
+    v = torch.randn(5, dtype=torch.double, requires_grad=True)
+    s = P.fire(v)
+    assert s.dtype == torch.double
+    s.sum().backward()
+    assert v.grad.dtype == torch.double

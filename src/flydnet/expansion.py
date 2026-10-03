@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 
 from .circuit import Circuit
+from .physiology import kenyon_code
 
 
 class KCExpansion(nn.Module):
@@ -73,14 +74,8 @@ class KCExpansion(nn.Module):
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor, batch: int = 4096) -> torch.Tensor:
-        out = []
-        for i in range(0, len(x), batch):
-            d = self.drive(x[i:i + batch])
-            top = d.topk(self.k, dim=1)
-            code = torch.zeros_like(d)
-            code.scatter_(1, top.indices, 1.0 if self.binary else top.values.clamp_min(0))
-            out.append(code)
-        return torch.cat(out)
+        return torch.cat([kenyon_code(x[i:i + batch].to(self.W.device), self.W, self.k, self.proj,
+                                      self.center, self.binary) for i in range(0, len(x), batch)])
 
     def extra_repr(self):
         return f"{self.name}: in {self.n_in} → PN {self.n_pn} → KC {self.n_out}, 켜짐 {self.k}개 ({self.k / self.n_out:.1%})"

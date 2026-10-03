@@ -10,6 +10,11 @@
 - `KCExpansion`: 실제 PN→KC 배선을 스파이크 시뮬레이션 없이 한 번에 계산하는 확장 층
   (고정 투영 `sparse`/`gaussian` → PN 평균 빼기 → 시냅스 수 → 상위 `k_frac`만 남김). 1만 샘플 0.14초
 - README에 연속 학습 사용법: 사전학습 특징 + `AssocReadout` (CIFAR-100 10과제 57.7%, 재생 버퍼 51.6%)
+- `flydnet.anatomy` (`torch.nn`에 해당): `Neuropil` (커넥톰 배선 희소 층, 학습 방식 edge/pair/free, 배선 지문으로
+  다른 회로의 state_dict 거부), `LateralInhibition`, `AxonHillock`, `MushroomBodyOutput`
+- `flydnet.physiology` (`torch.nn.functional`에 해당): `transmit`, `wiring`, `fire`, `inhibit`, `transduce`,
+  `kenyon_code`, `recall`, `reinforce_`. `AssocReadout`과 `KCExpansion`도 이 함수들을 씀 (결과 동일)
+- 희소 전파(`SparsePropagate`)가 직사각 행렬도 지원. 스파이크 출력이 입력과 같은 자료형
 
 ## [0.1.0] - 2026-10-03
 

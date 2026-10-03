@@ -21,6 +21,8 @@ synapse strengths and per-cell-type parameters can be trained with backprop. Doc
 - **도파민 연합 학습 리드아웃**: 역전파 없이 한 번 보고 학습, 연속 학습에 강함 — 사전학습 특징에 붙이면
   CIFAR-100 클래스 증가 10과제에서 57.7% (재생 버퍼 역전파 51.6%, 상한선 65.6%)
 - **빠른 버섯체 확장 층** (`KCExpansion`): 실제 PN→KC 배선을 시뮬레이션 없이 한 번에 계산
+- **`flydnet.anatomy` / `flydnet.physiology`**: `torch.nn` / `torch.nn.functional`처럼 쓰는 구조물·작용
+  (`Neuropil` = 커넥톰 배선 희소 층, `LateralInhibition`, `AxonHillock`, `MushroomBodyOutput` / `transmit`, `fire`, …)
 - **데이터 도우미**: `python -m flydnet download`로 FlyWire·DoOR 데이터를 받음 (패키지에는 데이터 없음)
 
 빠른 시작 (설치와 데이터 받기 후):
@@ -90,6 +92,43 @@ feats = fd.extract(layer, enc, images)            # (n, 2597) KC 발화율
 fd.train_linear(feats, y, feats_test, y_test)     # 로지스틱 회귀
 mb.shuffled(seed=0)                               # 무작위 배선 대조군 (연결 수·차수는 그대로)
 ```
+
+### 구조물(anatomy)과 작용(physiology): torch.nn처럼 쓰기
+
+`flydnet.anatomy`는 `torch.nn`, `flydnet.physiology`는 `torch.nn.functional`에 해당한다. 이름은 같은 일을 하는
+생물 구조에서 땄다. 시간 시뮬레이션 없이 한 번에 계산해서 일반 신경망처럼 빠르다.
+
+```python
+import torch.nn as nn
+from flydnet.anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
+import flydnet.physiology as P
+
+model = nn.Sequential(
+    nn.Linear(784, 344),                  # 픽셀 → PN 344개
+    Neuropil(mb, "PN", "KC"),             # 실제 PN→KC 배선 (연결 13,485개만, 학습 가능, 부호 유지)
+    LateralInhibition(frac=0.05),         # APL 억제: KC 5%만
+    nn.Linear(2597, 10),
+)                                         # MNIST 2에폭 96.7% (무작위 배선 96.4%), 약 1초
+```
+
+| 구조물 (`flydnet.anatomy`) | 생물 | torch에서 비슷한 것 |
+|---|---|---|
+| `Neuropil(circuit, pre, post, train="edge"/"pair"/"free"/None)` | 신경망 영역: 실제 커넥톰 배선으로 전달 | `nn.Linear` (희소) |
+| `LateralInhibition(k= 또는 frac=)` | 측억제 (APL): 가장 강한 k개만 | 활성화 함수 |
+| `AxonHillock(threshold, slope)` | 축삭 둔덕: 스파이크 (대리 기울기) | 활성화 함수 |
+| `MushroomBodyOutput(n_in, n_classes, per_class)` | 버섯체 출력 구역: 도파민 연합 학습 (`.learn`) | 분류기 헤드 |
+
+| 작용 (`flydnet.physiology`) | 생물 | torch에서 비슷한 것 |
+|---|---|---|
+| `transmit(x, values, wiring)` | 시냅스 전달 | `F.linear` |
+| `fire(v, threshold, slope)` | 발화 | 활성화 함수 |
+| `inhibit(x, k=, frac=)` | 측억제 | — |
+| `transduce(x, max_rate)` | 감각 변환 (값 → 발화율) | 정규화 |
+| `kenyon_code(x, w_pn_kc, k)` | KC 희소 부호화 | — |
+| `recall(a, prototypes)` / `reinforce_(...)` | 기억 인출 / 도파민 강화 | — |
+
+`Neuropil`은 전체 뇌(뉴런 13.9만, 연결 1,509만)도 한 층으로 만들 수 있다: 순전파+역전파 배치 64에 0.03초, 1.5 GB.
+다른 회로로 만든 `Neuropil`의 `state_dict`를 불러오면 배선이 다르다는 오류가 난다.
 
 ### 연속 학습: 새 클래스를 계속 추가하는 분류기
 
@@ -199,6 +238,8 @@ layer = fd.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="r
 | `layers.py` | `ConnectomeLayer`: 배치 LIF 시뮬레이션 (희소행렬 곱, GPU). `input_mode="regular"`/`"poisson"` |
 | `readout.py` | `extract()`: 데이터 → 발화율 특징, `train_linear()`: 리드아웃 학습 |
 | `expansion.py` | `KCExpansion`: 실제 PN→KC 배선 앞먹임 확장 (상위 k만 남김, APL 억제처럼) |
+| `anatomy.py` | 구조물 (`torch.nn`에 해당): `Neuropil`, `LateralInhibition`, `AxonHillock`, `MushroomBodyOutput` |
+| `physiology.py` | 작용 (`torch.nn.functional`에 해당): `transmit`, `fire`, `inhibit`, `transduce`, `kenyon_code`, `recall`, `reinforce_` |
 
 ## 실험 ① 버섯체 저장소(reservoir) — MNIST
 
