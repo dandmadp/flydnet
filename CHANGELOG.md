@@ -1,6 +1,6 @@
 # 변경 기록
 
-## [0.2.0] - 2026-10-03
+## [0.1.15] - 2026-10-03
 
 **기준 엔진이 torch에서 자체 엔진 `flydnet.ganglion`(NumPy = CPU, CuPy = GPU)으로 바뀜. torch는 선택.**
 
