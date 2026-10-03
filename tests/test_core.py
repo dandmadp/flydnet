@@ -68,7 +68,7 @@ def test_encoder_identity_requires_same_size():
 # ─────────────── ConnectomeLayer ───────────────
 @needs_data
 def test_layer_shape_and_zero_input(mb):
-    layer = fd.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=20)
+    layer = fd.torch.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=20)
     r = layer(torch.zeros(4, 344))
     assert r.shape == (4, 2597 + 48)
     assert (r == 0).all()
@@ -76,7 +76,7 @@ def test_layer_shape_and_zero_input(mb):
 
 @needs_data
 def test_layer_regular_is_deterministic(mb):
-    layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=30, gains={"PN>KC": 2.0}, input_mode="regular")
+    layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=30, gains={"PN>KC": 2.0}, input_mode="regular")
     x = fd.RateEncoder(784, 344)(torch.rand(4, 784))
     assert torch.equal(layer(x, seed=1), layer(x, seed=2))
     assert layer(x).sum() > 0
@@ -84,7 +84,7 @@ def test_layer_regular_is_deterministic(mb):
 
 @needs_data
 def test_layer_poisson_seed_reproducible(mb):
-    layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=30, gains={"PN>KC": 2.0})
+    layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=30, gains={"PN>KC": 2.0})
     x = torch.full((2, 344), 100.0)
     assert torch.equal(layer(x, seed=5), layer(x, seed=5))
 
@@ -219,7 +219,7 @@ def test_assoc_readout_uses_all_prototypes_in_one_batch():
 # ─────────────── 역전파 ───────────────
 @needs_data
 def test_trainable_layer_gradients_flow(mb):
-    layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=20, dt=0.5, gains={"PN>KC": 2.0},
+    layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=20, dt=0.5, gains={"PN>KC": 2.0},
                                input_mode="regular", trainable=True)
     assert layer.log_scale.numel() == layer.w_syn.numel()
     x = torch.full((4, 344), 80.0, requires_grad=True)
@@ -231,14 +231,14 @@ def test_trainable_layer_gradients_flow(mb):
 
 @needs_data
 def test_trainable_subset_and_sign_kept(mb):
-    layer = fd.ConnectomeLayer(mb, "PN", "MBON", trainable=["KC>MBON"])
+    layer = fd.torch.ConnectomeLayer(mb, "PN", "MBON", trainable=["KC>MBON"])
     assert set(layer.edge_key[layer.train_pos.cpu().numpy()]) == {"KC>MBON"}
     with torch.no_grad():
         layer.log_scale.normal_(0, 2)
     w0, w = layer.w_base, layer.weights()
     assert torch.equal(torch.sign(w), torch.sign(w0))       # 부호(흥분/억제)는 그대로
     with pytest.raises(ValueError):
-        fd.ConnectomeLayer(mb, "PN", "KC", trainable=["XX>YY"])
+        fd.torch.ConnectomeLayer(mb, "PN", "KC", trainable=["XX>YY"])
 
 
 @needs_data
@@ -246,8 +246,8 @@ def test_untrained_trainable_layer_matches_fixed(mb):
     kw = dict(t_ms=20, dt=0.5, gains={"PN>KC": 2.0}, input_mode="regular")
     x = fd.RateEncoder(784, 344)(torch.rand(4, 784))
     with torch.no_grad():
-        a = fd.ConnectomeLayer(mb, "PN", "KC", **kw)(x)
-        b = fd.ConnectomeLayer(mb, "PN", "KC", trainable=True, **kw)(x)
+        a = fd.torch.ConnectomeLayer(mb, "PN", "KC", **kw)(x)
+        b = fd.torch.ConnectomeLayer(mb, "PN", "KC", trainable=True, **kw)(x)
     assert torch.allclose(a, b)
 
 
@@ -289,26 +289,26 @@ def test_require_explains_missing_files(tmp_path):
 # ─────────────── 저장 / 불러오기 ───────────────
 @needs_data
 def test_layer_save_load_roundtrip(mb, tmp_path):
-    layer = fd.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=20, dt=0.5, gains={"PN>KC": 2.0},
+    layer = fd.torch.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=20, dt=0.5, gains={"PN>KC": 2.0},
                                input_mode="regular", trainable=["KC>MBON"])
     with torch.no_grad():
         layer.log_scale.normal_(0, 0.5)                     # '학습된' 상태 흉내
     layer.set_gain("PN>KC", 2.5)                            # 만든 뒤 바꾼 배율도 저장되는지
     layer.save(tmp_path / "layer.pt")
-    new = fd.ConnectomeLayer.load(tmp_path / "layer.pt")
+    new = fd.torch.ConnectomeLayer.load(tmp_path / "layer.pt")
     x = fd.RateEncoder(784, 344)(torch.rand(3, 784))
     with torch.no_grad():
         assert torch.equal(layer(x), new(x))
     assert torch.equal(new.weights(), layer.weights())
     assert new.gains == {"PN>KC": 2.5} and new.circuit.N == mb.N
     pd.testing.assert_frame_equal(new.circuit.meta.astype(str), mb.meta.astype(str))
-    cpu = fd.ConnectomeLayer.load(tmp_path / "layer.pt", device="cpu")
+    cpu = fd.torch.ConnectomeLayer.load(tmp_path / "layer.pt", device="cpu")
     assert cpu.log_scale.device.type == "cpu"
 
 
 @needs_data
 def test_model_state_dict_roundtrip(mb, tmp_path):
-    make = lambda: torch.nn.Sequential(fd.ConnectomeLayer(mb, "PN", "KC", t_ms=10, dt=0.5, trainable=True),
+    make = lambda: torch.nn.Sequential(fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=10, dt=0.5, trainable=True),
                                        torch.nn.Linear(2597, 3))
     a = make()
     with torch.no_grad():
@@ -336,7 +336,7 @@ def test_readout_save_load(cls, kw, tmp_path):
 @pytest.mark.parametrize("mode", ["regular", "poisson"])
 def test_checkpointing_gives_same_output_and_grads(mb, mode):
     def run(ce):
-        layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=15, dt=0.5, gains={"PN>KC": 2.0}, input_mode=mode,
+        layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=15, dt=0.5, gains={"PN>KC": 2.0}, input_mode=mode,
                                    trainable=True, checkpoint_every=ce)
         with torch.no_grad():
             layer.log_scale.copy_(torch.linspace(-0.3, 0.3, layer.log_scale.numel()))
@@ -365,7 +365,7 @@ def _tiny_circuit(n_in=5, n_out=12, n_edges=60, seed=0):
 def test_sparse_propagate_matches_dense_reference():
     from flydnet.layers import SparsePropagate
     c = _tiny_circuit()
-    layer = fd.ConnectomeLayer(c, "IN", "OUT", trainable=True, device="cpu")
+    layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", trainable=True, device="cpu")
     N = c.N
     v = (layer.w_base * torch.linspace(0.5, 2, layer.w_base.numel())).double().requires_grad_(True)
     s = torch.rand(N, 3, dtype=torch.double, requires_grad=True)
@@ -377,7 +377,7 @@ def test_sparse_propagate_matches_dense_reference():
 
 def test_tiny_circuit_layer_trains_without_flywire_data():
     c = _tiny_circuit(n_edges=120)
-    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
+    layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
                                device="cpu", gains={"IN>OUT": 30.0})
     x = torch.full((2, 5), 200.0)
     out = layer(x)
@@ -396,7 +396,7 @@ def test_with_sign_flips_only_selected_sender():
 
 def test_pair_sharing_has_one_scale_per_edge_type():
     c = _tiny_circuit(n_edges=120)
-    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
+    layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
                                share="pair", device="cpu", gains={"IN>OUT": 30.0})
     assert len(layer.log_scale) == len(set(layer.edge_key))
     layer(torch.full((2, 5), 200.0)).sum().backward()
@@ -411,9 +411,9 @@ def test_pair_sharing_has_one_scale_per_edge_type():
 def test_bias_makes_neurons_fire_without_input_and_trains():
     c = _tiny_circuit()
     x = torch.zeros(2, 5)
-    quiet = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=50, dt=0.5, device="cpu")
+    quiet = fd.torch.ConnectomeLayer(c, "IN", "OUT", t_ms=50, dt=0.5, device="cpu")
     assert quiet(x).sum() == 0
-    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=50, dt=0.5, device="cpu", bias={"OUT": 12.0},
+    layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", t_ms=50, dt=0.5, device="cpu", bias={"OUT": 12.0},
                                t_mbr={"OUT": 10.0}, train_neurons=True, v_init="random")
     out = layer(x)
     assert (out > 0).all()
@@ -428,14 +428,14 @@ def test_neutral_neuron_params_match_plain_layer():
     c = _tiny_circuit(n_edges=120)
     kw = dict(t_ms=30, dt=0.5, input_mode="regular", device="cpu", gains={"IN>OUT": 30.0})
     x = torch.full((2, 5), 150.0)
-    a = fd.ConnectomeLayer(c, "IN", "OUT", **kw)(x)
-    b = fd.ConnectomeLayer(c, "IN", "OUT", bias=0.0, **kw)(x)
+    a = fd.torch.ConnectomeLayer(c, "IN", "OUT", **kw)(x)
+    b = fd.torch.ConnectomeLayer(c, "IN", "OUT", bias=0.0, **kw)(x)
     assert torch.allclose(a, b)
 
 
 def test_time_varying_input_constant_matches_static():
     c = _tiny_circuit(n_edges=120)
-    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=30, dt=0.5, input_mode="regular", device="cpu",
+    layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", t_ms=30, dt=0.5, input_mode="regular", device="cpu",
                                gains={"IN>OUT": 30.0})
     x = torch.rand(3, 5) * 200
     assert torch.equal(layer(x), layer(x[:, None].expand(-1, 7, -1)))
@@ -447,22 +447,22 @@ def test_count_from_ms_counts_only_late_window():
     c = _tiny_circuit(n_edges=120)
     kw = dict(t_ms=40, dt=0.5, input_mode="regular", device="cpu", gains={"IN>OUT": 30.0})
     x = torch.full((1, 5), 200.0)
-    full = fd.ConnectomeLayer(c, "IN", "IN", **kw)(x)
-    late = fd.ConnectomeLayer(c, "IN", "IN", count_from_ms=20, **kw)(x)
+    full = fd.torch.ConnectomeLayer(c, "IN", "IN", **kw)(x)
+    late = fd.torch.ConnectomeLayer(c, "IN", "IN", count_from_ms=20, **kw)(x)
     assert torch.allclose(late, full, rtol=0.2)                         # 일정 입력이면 발화율(Hz)은 비슷
     with pytest.raises(ValueError):
-        fd.ConnectomeLayer(c, "IN", "OUT", count_from_ms=40, **kw)
+        fd.torch.ConnectomeLayer(c, "IN", "OUT", count_from_ms=40, **kw)
 
 
 def test_new_options_save_load_roundtrip(tmp_path):
     c = _tiny_circuit(n_edges=120)
-    layer = fd.ConnectomeLayer(c, ["IN"], "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
+    layer = fd.torch.ConnectomeLayer(c, ["IN"], "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True,
                                share="pair", bias={"OUT": 3.0}, train_neurons=True, v_init="random",
                                count_from_ms=5, device="cpu", gains={"IN>OUT": 30.0})
     with torch.no_grad():
         layer.log_scale.add_(0.3); layer.bias.add_(1.0)
     layer.save(tmp_path / "l.pt")
-    back = fd.ConnectomeLayer.load(tmp_path / "l.pt", device="cpu")
+    back = fd.torch.ConnectomeLayer.load(tmp_path / "l.pt", device="cpu")
     x = torch.full((2, 5), 150.0)
     assert torch.equal(layer(x), back(x))
 
@@ -496,7 +496,7 @@ def test_normalized_inputs_sum_to_one():
 
 def test_graded_neurons_respond_and_train():
     c = _tiny_circuit(n_edges=120).normalized()
-    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=30, dt=1.0, neuron="graded", params={"w_syn": 2.0},
+    layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", t_ms=30, dt=1.0, neuron="graded", params={"w_syn": 2.0},
                                trainable=True, share="pair", bias={"OUT": 0.2}, train_neurons=True, device="cpu")
     x = torch.rand(3, 5, requires_grad=True)
     out = layer(x)
@@ -511,8 +511,8 @@ def test_graded_neurons_respond_and_train():
 def test_graded_checkpoint_matches():
     c = _tiny_circuit(n_edges=120).normalized()
     kw = dict(t_ms=30, dt=1.0, neuron="graded", params={"w_syn": 2.0}, trainable=True, bias=0.2, device="cpu")
-    a = fd.ConnectomeLayer(c, "IN", "OUT", **kw)
-    b = fd.ConnectomeLayer(c, "IN", "OUT", checkpoint_every=7, **kw)
+    a = fd.torch.ConnectomeLayer(c, "IN", "OUT", **kw)
+    b = fd.torch.ConnectomeLayer(c, "IN", "OUT", checkpoint_every=7, **kw)
     x = torch.rand(2, 5)
     a(x).sum().backward(); b(x).sum().backward()
     assert torch.allclose(a(x), b(x)) and torch.allclose(a.log_scale.grad, b.log_scale.grad, atol=1e-6)
@@ -521,7 +521,7 @@ def test_graded_checkpoint_matches():
 @pytest.mark.parametrize("neuron", ["lif", "graded"])
 def test_record_returns_traces(neuron):
     c = _tiny_circuit(n_edges=120)
-    layer = fd.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, neuron=neuron, input_mode="regular",
+    layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, neuron=neuron, input_mode="regular",
                                device="cpu", gains={"IN>OUT": 30.0}, bias=0.2 if neuron == "graded" else None)
     with torch.no_grad():
         out, tr = layer(torch.full((2, 5), 0.8 if neuron == "graded" else 200.0), record=[5, 6, 0])

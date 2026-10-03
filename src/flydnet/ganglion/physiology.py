@@ -59,9 +59,10 @@ def wiring(post, pre, n_post: int, n_pre: int, device: str = "cpu") -> tuple[Wir
     return (w.to(device) if device != "cpu" else w), order
 
 
-def transmit(x, values: Signal, w: Wiring, edge_chunk: int = 1 << 26) -> Signal:
+def transmit(x, values: Signal, w: Wiring, edge_chunk: int = 1 << 26, matrix=None) -> Signal:
     """시냅스 전달: x (B, n_pre) → (B, n_post), out[:, post] = Σ_e values[e] · x[:, pre_e]
-    역전파: d x = g @ W,  d values[e] = Σ_b g[b, post_e] · x[b, pre_e]  (연결 칸만 계산, 밀집 행렬 없음)"""
+    역전파: d x = g @ W,  d values[e] = Σ_b g[b, post_e] · x[b, pre_e]  (연결 칸만 계산, 밀집 행렬 없음)
+    matrix: w.matrix(values.data)로 미리 만든 희소 행렬 (같은 values로 여러 번 전달할 때 다시 만들지 않게)"""
     x = as_signal(x)
     values = as_signal(values)
     if x.ndim != 2 or x.shape[1] != w.n_pre:
@@ -69,7 +70,7 @@ def transmit(x, values: Signal, w: Wiring, edge_chunk: int = 1 << 26) -> Signal:
     if x.device != w.device or values.device != w.device:
         raise RuntimeError(f"장치가 다름: 입력 {x.device}, 값 {values.device}, 배선 {w.device}")
     xp = x.xp
-    W = w.matrix(values.data)
+    W = w.matrix(values.data) if matrix is None else matrix
     xd = x.data
     out = (W @ xd.T).T                                           # (B, n_post)
     out = xp.ascontiguousarray(out)
@@ -86,6 +87,52 @@ def transmit(x, values: Signal, w: Wiring, edge_chunk: int = 1 << 26) -> Signal:
                 dv[s:s + step] = (g[:, q] * xd[:, p]).sum(axis=0)
         return (None if dx is None else xp.ascontiguousarray(dx), dv)
     return Signal(out)._link((x, values), back)
+
+
+# ─────────────── 자리 바꾸기 ───────────────
+def put(base, idx, values) -> Signal:
+    """base 배열(상수)의 idx 자리에 values를 넣은 신호. 역행성 신호는 values에만 (idx 자리 것)"""
+    values = as_signal(values)
+    xp = values.xp
+    out = xp.array(base, dtype=values.data.dtype, copy=True)
+    out[idx] = values.data
+    return Signal(out)._link((values,), lambda g: (g[idx],))
+
+
+def put_columns(x, cols, values) -> Signal:
+    """x (B, n)의 cols 열을 values (B, len(cols))로 바꾼 신호 (입력 뉴런 활동 고정 등)"""
+    x, values = as_signal(x), as_signal(values)
+    out = x.data.copy()
+    out[:, cols] = values.data
+
+    def back(g):
+        gx = g.copy()
+        gx[:, cols] = 0
+        return gx, g[:, cols]
+    return Signal(out)._link((x, values), back)
+
+
+def add_columns(x, cols, values) -> Signal:
+    """x (B, n)의 cols 열에 values (B, len(cols))를 더한 신호 (cols는 겹치지 않아야 함)"""
+    x, values = as_signal(x), as_signal(values)
+    out = x.data.copy()
+    out[:, cols] += values.data
+    return Signal(out)._link((x, values), lambda g: (g, g[:, cols]))
+
+
+# ─────────────── 난수 (상태 없음) ───────────────
+_M1, _M2 = np.uint64(0xBF58476D1CE4E5B9), np.uint64(0x94D049BB133111EB)
+
+
+def hash_uniform(xp, seed: int, step: int, shape) -> object:
+    """(시드, 스텝, 칸 번호) → [0, 1) 균등 난수. 상태가 없어서 다시 계산해도 같고, CPU·GPU 결과도 같음 (splitmix64)"""
+    n = int(np.prod(shape))
+    z = xp.arange(n, dtype=xp.uint64)
+    z += xp.uint64((int(seed) * 0x9E3779B97F4A7C15 + int(step) * 0xD1B54A32D192ED03) % (1 << 64))
+    z ^= z >> xp.uint64(30); z *= _M1
+    z ^= z >> xp.uint64(27); z *= _M2
+    z ^= z >> xp.uint64(31)
+    return ((z >> xp.uint64(40)).astype(xp.float32) * np.float32(1.0 / (1 << 24))).reshape(shape)
 
 
 # ─────────────── 발화 · 억제 ───────────────

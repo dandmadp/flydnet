@@ -37,7 +37,7 @@ N_TEST = 50
 mb = fd.Circuit.from_flywire()
 enc = fd.GlomerularEncoder(mb)
 G = enc.n_glomeruli
-mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
+mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
                                   input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
 print(f"{mb}\n사구체 {G}개 | 무작위 배선 {args.shuffles}개 | 과제 seed {args.task_seeds}개\n")

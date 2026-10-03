@@ -43,7 +43,7 @@ CONDITIONS = {
 mb = fd.Circuit.from_flywire()
 enc = fd.GlomerularEncoder(mb)
 G = enc.n_glomeruli
-mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
+mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
                                   input_mode="regular")
 layers = {("실제", 0): mk(mb)}
 for cname, kw in CONDITIONS.items():

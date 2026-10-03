@@ -215,6 +215,32 @@ class Circuit:
         gs = ", ".join(f"{k} {len(v)}" for k, v in self.groups.items())
         return f"<Circuit '{self.name}' | {self.N:,} neurons ({gs}) | {self.n_edges:,} edges>"
 
+    # 저장 (torch 없이): numpy 배열과 JSON 문자열만 → np.savez(allow_pickle=False)로 안전하게 읽힘
+    def to_arrays(self, prefix: str = "") -> dict:
+        import json
+        out = {prefix + "root_ids": self.root_ids, prefix + "pre": self.pre, prefix + "post": self.post,
+               prefix + "weight": self.weight}
+        info = dict(name=self.name, groups=list(self.groups))
+        if self.meta is not None:
+            info["meta"] = {c: [None if pd.isna(v) else str(v) for v in self.meta[c]] for c in self.meta.columns}
+        out[prefix + "info"] = np.array(json.dumps(info, ensure_ascii=False))
+        for i, g in enumerate(self.groups.values()):
+            out[f"{prefix}group{i}"] = g
+        if self.pos is not None:
+            out[prefix + "pos"] = self.pos
+        return out
+
+    @classmethod
+    def from_arrays(cls, d, prefix: str = "") -> "Circuit":
+        import json
+        info = json.loads(str(d[prefix + "info"]))
+        groups = {g: np.asarray(d[f"{prefix}group{i}"]) for i, g in enumerate(info["groups"])}
+        meta = pd.DataFrame(info["meta"]) if info.get("meta") is not None else None
+        pos = np.asarray(d[prefix + "pos"]) if prefix + "pos" in d else None
+        return cls(np.asarray(d[prefix + "root_ids"]), groups, np.asarray(d[prefix + "pre"]),
+                   np.asarray(d[prefix + "post"]), np.asarray(d[prefix + "weight"]), name=info["name"],
+                   meta=meta, pos=pos)
+
     # 저장: 텐서·문자열·리스트만 써서 torch.load(weights_only=True)로 안전하게 읽힘
     def to_dict(self) -> dict:
         import torch

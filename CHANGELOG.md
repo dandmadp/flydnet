@@ -15,6 +15,11 @@
   `RateEncoder`, 시각계 도구 등)은 처음 쓸 때 불러오고, torch가 없으면 설치 안내
 - 선택 설치: `flydnet[torch]`, `flydnet[gpu-cuda12]`, `flydnet[gpu-cuda13]`
 - `fd.Neuropil` 등 최상위 이름은 자체 엔진 것. torch판은 `flydnet.torch.anatomy`, `flydnet.torch.physiology`
+- **`fd.ConnectomeLayer`도 자체 엔진** (`flydnet.ganglion.ConnectomeLayer`): 스파이킹 LIF·연속값, 시간 역전파,
+  체크포인팅(`fd.checkpoint`), 세포 유형 매개변수, 연결 종류 공유, 시간 변화 입력, 기록, 저장(np.savez).
+  torch판과 출력이 같고(버섯체 스파이크 100% 일치) 기울기도 같음. 포아송 난수는 상태 없는 해시 난수 (CPU·GPU 같음).
+  **0.1의 torch판은 `fd.torch.ConnectomeLayer`** (이전 코드는 이 이름으로 바꾸면 됨)
+- `fd.ganglion.limit_gpu_memory(fraction)`: GPU 메모리 상한, `Circuit.to_arrays()`/`from_arrays()`: torch 없는 저장
 
 아래는 배포하지 않은 0.1.1의 변경 (모두 0.2.0에 포함):
 

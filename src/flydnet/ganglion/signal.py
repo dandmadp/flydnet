@@ -53,6 +53,8 @@ class Signal:
     def __init__(self, data, plastic: bool = False, device: str | None = None, dtype=None):
         if isinstance(data, Signal):
             data = data.data
+        elif hasattr(data, "detach") and hasattr(data, "cpu"):    # torch 텐서 → numpy (torch 연동)
+            data = data.detach().cpu().numpy()
         if device is None:
             device = B.device_of(data) if not isinstance(data, (list, tuple, float, int)) else "cpu"
         xp = B.xp(device)
@@ -100,6 +102,13 @@ class Signal:
     def numpy(self) -> np.ndarray:
         return B.numpy(self.data)
 
+    def to_torch(self):
+        """torch 텐서로 (torch 연동, 값만 복사 — 역행성 신호 경로는 이어지지 않음)"""
+        import torch
+        if self.device == "gpu":
+            return torch.from_dlpack(self.data).clone()
+        return torch.from_numpy(np.ascontiguousarray(self.data).copy())
+
     def item(self):
         return self.data.item()
 
@@ -123,8 +132,9 @@ class Signal:
             self._back = back
         return self
 
-    def retrograde(self, retro=None):
-        """역행성 신호 보내기 (backward): 이 신호에서 plastic 잎(Synapse 등)까지 기울기를 계산해 .retro에 더함"""
+    def retrograde(self, retro=None, keep: bool = False):
+        """역행성 신호 보내기 (backward): 이 신호에서 plastic 잎(Synapse 등)까지 기울기를 계산해 .retro에 더함.
+        keep=True면 경로를 풀지 않음 (같은 경로로 다시 보낼 때, retain_graph)"""
         if not self.plastic:
             raise RuntimeError("plastic이 아닌 신호에서는 역행성 신호를 보낼 수 없음")
         xp = self.xp
@@ -159,9 +169,10 @@ class Signal:
                 if pg is None or not p.plastic:
                     continue
                 grads[id(p)] = pg if id(p) not in grads else grads[id(p)] + pg
-        for node in order:                                   # 경로 풀기 (메모리 해제)
-            if node._back is not None:
-                node._parents, node._back = (), None
+        if not keep:
+            for node in order:                               # 경로 풀기 (메모리 해제)
+                if node._back is not None:
+                    node._parents, node._back = (), None
 
     # ─────────────── 산술 ───────────────
     def _wrap(self, other) -> "Signal":
@@ -335,6 +346,56 @@ class Signal:
         return Signal(x[idx])._link((self,), back)
 
 
+class _Packed:
+    """여러 출력의 역행성 신호를 한 묶음으로 (checkpoint의 허브 노드용). 더하면 칸끼리 더함"""
+
+    def __init__(self, n, k=None, g=None):
+        self.parts = [None] * n
+        if k is not None:
+            self.parts[k] = g
+
+    def __add__(self, other):
+        out = _Packed(len(self.parts))
+        out.parts = [b if a is None else a if b is None else a + b for a, b in zip(self.parts, other.parts)]
+        return out
+
+
+def checkpoint(fn, *inputs):
+    """구간 다시 계산 (torch.utils.checkpoint): 순전파 때는 fn의 중간 신호를 버리고 출력만 남김.
+    역전파 때 fn을 다시 계산해서 역행성 신호를 보냄 → 메모리는 구간 하나만큼.
+    fn(*Signal) → Signal 튜플. fn은 같은 입력에 같은 결과여야 함 (난수는 시드·스텝으로 정할 것).
+    fn 밖에서 만든 plastic 신호(예: 학습되는 연결 세기)를 fn이 써도 그쪽으로 역행성 신호가 감."""
+    inputs = [as_signal(i) for i in inputs]
+    if not learning_enabled():
+        return fn(*inputs)
+    with quiescent():
+        outs = fn(*[Signal(i.data) for i in inputs])
+    n = len(outs)
+
+    def back(packed):
+        fresh = [Signal(i.data, plastic=i.plastic) for i in inputs]
+        outs2 = fn(*fresh)
+        total = None
+        for o, g in zip(outs2, packed.parts):
+            if g is not None and o.plastic:
+                term = (o * Signal(g)).sum()
+                total = term if total is None else total + term
+        if total is not None:
+            total.retrograde(keep=True)                      # fn 밖에서 온 신호의 경로는 다음 구간도 써야 함
+        return tuple(f.retro if f.plastic else None for f in fresh)
+
+    hub = Signal(inputs[0].xp.zeros(()))
+    hub.plastic = True                                     # 입력이 plastic이 아니어도 fn 안의 Synapse로 보내야 함
+    hub._parents, hub._back = tuple(inputs), back
+    result = []
+    for k, o in enumerate(outs):
+        s = Signal(o.data)
+        s.plastic, s._parents = True, (hub,)
+        s._back = (lambda k: (lambda g: (_Packed(n, k, g),)))(k)
+        result.append(s)
+    return tuple(result)
+
+
 def as_signal(x, device: str | None = None) -> Signal:
     if isinstance(x, Signal):
         return x if device is None else x.to(device)
@@ -349,9 +410,14 @@ def concat(signals, axis: int = 0) -> Signal:
     return out._link(tuple(signals), lambda g: tuple(xp.split(g, cuts, axis=axis)))
 
 
-def where(cond, a: Signal, b: Signal) -> Signal:
+def where(cond, a, b) -> Signal:
+    """cond가 참인 칸은 a, 아니면 b. a·b 중 하나는 숫자여도 됨 (상대 신호의 장치·자료형을 따름)"""
     c = cond.data if isinstance(cond, Signal) else cond
-    a, b = as_signal(a), as_signal(b)
-    xp = a.xp
+    ref = a if isinstance(a, Signal) else b if isinstance(b, Signal) else None
+    if ref is None:
+        ref = Signal(B.xp(B.device_of(c)).zeros((), dtype=np.float32))
+    cast = lambda v: v if isinstance(v, Signal) else Signal(ref.xp.asarray(v, dtype=ref.dtype))
+    a, b = cast(a), cast(b)
+    xp = ref.xp
     return Signal(xp.where(c, a.data, b.data))._link(
         (a, b), lambda g: (_unbroadcast(xp.where(c, g, 0), a.shape), _unbroadcast(xp.where(c, 0, g), b.shape)))

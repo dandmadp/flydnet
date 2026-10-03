@@ -40,7 +40,7 @@ X0, classes = door["X"], np.asarray(door["classes"])
 print(f"{mb}\nDoOR 냄새 {len(X0)}개 | 사구체 {enc.n_glomeruli}개 중 측정 {int(door['measured'].any(0).sum())}개 | "
       f"냄새당 켜진 사구체 {(X0 > 0.05).sum(1).float().mean():.1f}개\n")
 
-mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
+mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
 
 

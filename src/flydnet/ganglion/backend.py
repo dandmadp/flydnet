@@ -80,3 +80,20 @@ def labels(y) -> np.ndarray:
     elif hasattr(y, "detach"):                                  # torch 텐서
         y = y.detach().cpu().numpy()
     return np.asarray(y, dtype=np.int64)
+
+
+def limit_gpu_memory(fraction: float = 0.75):
+    """GPU 메모리 상한 (전체의 비율). 넘치면 바로 오류 → Windows 가상 메모리(C 드라이브)로 흘러가지 않음"""
+    if not gpu_available():
+        return
+    _cp.get_default_memory_pool().set_limit(fraction=fraction)
+
+
+def gpu_memory_peak_reset():
+    if gpu_available():
+        _cp.get_default_memory_pool().free_all_blocks()
+
+
+def gpu_memory_used() -> int:
+    """CuPy 메모리 풀이 지금 쓰고 있는 바이트"""
+    return int(_cp.get_default_memory_pool().total_bytes()) if gpu_available() else 0

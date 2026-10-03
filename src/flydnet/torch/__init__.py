@@ -6,3 +6,4 @@ flydnet의 기준 엔진은 flydnet.ganglion (NumPy·CuPy). 이 패키지는 같
 """
 from . import anatomy, physiology
 from .anatomy import Neuropil, LateralInhibition, AxonHillock, MushroomBodyOutput
+from ..layers import ConnectomeLayer, SpikeFn, SparsePropagate, DEFAULT_PARAMS   # 0.1의 torch판 시간 시뮬레이션

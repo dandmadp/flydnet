@@ -9,7 +9,8 @@ train synapse strengths with backprop or with dopamine-like associative learning
 
 초파리 커넥톰(FlyWire v783)의 실제 배선을 신경망 층으로 쓰는 라이브러리. **0.2부터 기준 엔진은 flydnet 자체 엔진
 `flydnet.ganglion`**(신경절)이다: 자동 미분을 직접 구현했고, CPU에서는 NumPy, GPU에서는 CuPy로 돈다. torch는
-선택 설치이며, 0.1의 torch 기반 기능(스파이크 시뮬레이션 `ConnectomeLayer` 등)은 torch가 있으면 그대로 쓸 수 있다.
+선택 설치이며, 시간에 따른 스파이크 시뮬레이션(`ConnectomeLayer`)도 자체 엔진으로 돈다. 0.1의 torch판 기능은
+torch가 있으면 `flydnet.torch`로 그대로 쓸 수 있다.
 
 - **회로 고르기**: 주석(세포 유형·계열)으로 뉴런을 골라 그 사이 연결만 남김 — 버섯체, 시각계, 전체 뇌(13.9만 뉴런)
 - **자체 엔진** (`flydnet.ganglion`): 신호·역행성 신호(자동 미분)·조직·가소성 규칙. 이름은 같은 일을 하는 생물 구조에서 땀
@@ -17,7 +18,9 @@ train synapse strengths with backprop or with dopamine-like associative learning
 - **도파민 연합 학습** (`MushroomBodyOutput`): 역전파 없이 한 번 보고 학습, 연속 학습에 강함 — 사전학습 특징에 붙이면
   CIFAR-100 클래스 증가 10과제에서 57.7% (재생 버퍼 역전파 51.6%, 상한선 65.6%)
 - **대조군**: 연결 수·차수를 유지한 무작위 배선, 시야 위치를 유지한 국소 무작위 배선
-- **torch 연동** (선택): 스파이킹 LIF·연속값 시간 시뮬레이션 `ConnectomeLayer`, `flydnet.torch.anatomy` 등
+- **시간 시뮬레이션** (`ConnectomeLayer`): 스파이킹 LIF(Shiu et al. 2024 매개변수)·연속값 뉴런, 시간 역전파, 체크포인팅.
+  전체 뇌(13.9만 뉴런)도 일반 GPU에서 학습
+- **torch 연동** (선택): `flydnet.torch` — 0.1의 torch판 기능, `nn.Sequential`에 넣는 구조물
 - **데이터 도우미**: `python -m flydnet download`로 FlyWire·DoOR 데이터를 받음 (패키지에는 데이터 없음, 버전 고정·SHA-256 확인)
 
 빠른 시작 (설치와 데이터 받기 후, torch 필요 없음):
@@ -46,7 +49,7 @@ MNIST에서 2에폭 96.2% (GPU 약 6초, CPU 약 9초, `examples/ganglion_mnist.
 pip install flydnet                  # CPU (NumPy·SciPy). torch 없음
 pip install "flydnet[gpu-cuda12]"    # + GPU: CUDA 12.x 드라이버 (CuPy)
 pip install "flydnet[gpu-cuda13]"    # + GPU: CUDA 13.x 드라이버
-pip install "flydnet[torch]"         # + torch 연동 (ConnectomeLayer 등). GPU torch는 pytorch.org 명령으로 먼저 설치
+pip install "flydnet[torch]"         # + torch 연동 (flydnet.torch, AssocReadout 등). GPU torch는 pytorch.org 명령으로 먼저 설치
 
 python -m flydnet download           # 데이터 받기: FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130MB)
 python -m flydnet                    # 데이터 상태 확인
@@ -121,17 +124,49 @@ layer.to("cpu"); layer.save("pn_kc.npz")           # 다른 회로로 만든 Neu
 
 - 검증: 연산마다 수치 미분과 비교, torch와 출력·기울기·Adam 결과 비교, CPU와 GPU 결과 비교 (`tests/test_ganglion.py`)
 - `Neuropil`: 전체 뇌(연결 1,509만)를 한 층으로 만들 수 있다 (torch판 기준 순전파+역전파 배치 64에 0.03초, 1.5 GB)
-- 아직 자체 엔진에 없는 것: 시간에 따른 스파이크 시뮬레이션(`ConnectomeLayer`), 시각계 도구 — torch 연동으로 사용
+- 아직 자체 엔진에 없는 것 (torch 연동으로 사용): 시각계 도구(`visual_circuit` 등), `KCExpansion`, `AssocReadout`
+  (`AssocReadout`은 `MushroomBodyOutput`이 같은 계산)
+
+### 시간 시뮬레이션: ConnectomeLayer
+
+회로 전체를 시간에 따라 시뮬레이션한다 (스파이킹 LIF 또는 연속값 뉴런). 인자는 0.1의 torch판과 같다.
+
+```python
+mb = fd.Circuit.from_flywire()
+layer = fd.ConnectomeLayer(mb, "PN", ("KC", "MBON"), t_ms=50, dt=0.5, gains={"PN>KC": 2.0},
+                           input_mode="regular", trainable=["KC>MBON"], checkpoint_every=20)
+rates = layer(x_hz)                          # (B, 344) Hz → (B, 2645) Hz, Signal
+loss = fd.surprise(head(rates), y); loss.retrograde()   # 대리 기울기로 시간 역전파
+layer.save("mb.npz"); fd.ConnectomeLayer.load("mb.npz") # 배선 포함 한 파일, FlyWire 데이터 없이 다시 만듦
+with fd.quiescent():
+    out, trace = layer(x_hz, record=[0, 1, 2])          # 스텝별 스파이크 기록 (B, 스텝, 3)
+```
+
+- torch판과 같은 입력이면 **출력이 같다** (버섯체 regular 입력: 스파이크 단위로 100% 일치, CPU·GPU 모두).
+  기울기도 같다 (스파이킹 대리 기울기, 연속값, 세포 유형 매개변수, 시각계 실제 회로에서 상대 차이 2e-5 안).
+- 포아송 입력 난수는 (시드, 스텝, 칸)으로 정하는 해시 난수다. 체크포인팅으로 다시 계산해도 같고, CPU·GPU 결과도 같다
+  (torch판과 같은 시드여도 난수 자체는 다름).
+- 속도 (RTX 5070, 학습 1스텝 = 순전파+역전파+Adam):
+
+| 회로 | 설정 | torch판 | 자체 엔진 |
+|---|---|---|---|
+| 시각계 운동 경로 (2.4만 뉴런, 43만 연결) | 연속값, 300 ms, 배치 16 | 0.17초 | 0.19초 |
+| 전체 뇌 (13.9만 뉴런, 1,509만 연결) | LIF, 50 ms, 배치 8 | 2.2초, 2.2 GB | 1.65초, 3.5 GB |
+| 전체 뇌 | LIF, 50 ms, 배치 32 | 2.6초, 3.7 GB | 5.8초, 7.5 GB |
+
+  배치가 크면 아직 torch판보다 느리고 메모리를 더 쓴다 (연결 기울기 계산과 중간 값 저장을 더 다듬어야 함).
+  큰 회로는 `fd.ganglion.limit_gpu_memory(0.75)`로 GPU 메모리 상한을 걸어 두면 넘칠 때 바로 오류가 난다.
 
 ## torch 연동 (선택)
 
 `pip install "flydnet[torch]"`. 0.1의 torch 기반 기능은 이름 그대로 쓸 수 있다(처음 쓸 때 불러옴).
+시간 시뮬레이션의 torch판은 `fd.torch.ConnectomeLayer` (0.1의 `fd.ConnectomeLayer`, 같은 인자).
 
 ```python
 import flydnet as fd
 mb = fd.Circuit.from_flywire()
 enc = fd.RateEncoder(784, len(mb.groups["PN"]))   # 픽셀 → PN 발화율 (고정 무작위 희소 투영)
-layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=100, gains={"PN>KC": 2.0}, input_mode="regular")
+layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=100, gains={"PN>KC": 2.0}, input_mode="regular")
 feats = fd.extract(layer, enc, images)            # (n, 2597) KC 발화율 (스파이킹 LIF 시뮬레이션)
 fd.train_linear(feats, y, feats_test, y_test)     # 로지스틱 회귀
 mb.shuffled(seed=0)                               # 무작위 배선 대조군 (연결 수·차수는 그대로)
@@ -156,7 +191,7 @@ kc = fd.KCExpansion(fd.Circuit.from_flywire(side=None), n_in=512, projection="ga
 codes = kc(feats)                                               # 실제 버섯체 확장 (이 과제에서는 오히려 손해, ⑪ 참고)
 ```
 
-### PyTorch 층처럼 역전파로 학습
+### (torch 연동) PyTorch 층처럼 역전파로 학습
 
 `trainable=`을 주면 배선은 고정하고 연결별 세기를 `nn.Parameter`로 학습한다. 스파이크는 대리 기울기
 (순전파는 진짜 스파이크, 역전파는 빠른 시그모이드 기울기)로, 입력 스파이크는 straight-through로 미분되어
@@ -167,8 +202,8 @@ import torch, torch.nn as nn
 import flydnet as fd
 
 mb = fd.Circuit.from_flywire()
-layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 2.0},
-                           input_mode="regular", trainable=True)      # 또는 trainable=["KC>MBON"]
+layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 2.0},
+                                 input_mode="regular", trainable=True)  # 또는 trainable=["KC>MBON"]
 model = nn.Sequential(fd.RateEncoder(784, 344), layer,
                       nn.BatchNorm1d(layer.n_out),                    # 발화율(Hz)은 크기가 커서 정규화 필요
                       nn.Linear(layer.n_out, 10)).cuda()
@@ -196,26 +231,27 @@ fd.data_status()                      # 어디서 무엇을 찾았는지
 → `~/.flydnet/config.json` → `~/.flydnet/data/<flywire|door>`. 받은 파일은 크기로 온전한지 확인한다.
 출처: FlyWire v783 연결 파일(Shiu et al. 2024, MIT), 세포 주석(Schlegel et al. 2024), DoOR 2.0(CC BY-SA 4.0).
 
-### 저장 / 불러오기
+### (torch 연동) 저장 / 불러오기
 
 ```python
 layer.save("mb.pt")                           # 배선 + 설정 + 학습한 연결 세기, 파일 하나 (버섯체 약 10 MB)
-layer = fd.ConnectomeLayer.load("mb.pt")      # FlyWire 데이터 없이도 다시 만들어짐
+layer = fd.torch.ConnectomeLayer.load("mb.pt")   # FlyWire 데이터 없이도 다시 만들어짐
 torch.save(model.state_dict(), "m.pt")        # 표준 PyTorch 방식도 그대로
 readout.save("r.pt"); fd.AssocReadout.load("r.pt")
 ```
 모두 `torch.load(weights_only=True)`로 읽힌다 (텐서·기본 자료형만 저장).
 
-### 메모리 절약: 그래디언트 체크포인팅
+### (torch 연동) 메모리 절약: 그래디언트 체크포인팅
 
 ```python
-layer = fd.ConnectomeLayer(..., trainable=True, checkpoint_every=20)   # 20스텝 구간마다 다시 계산
+layer = fd.torch.ConnectomeLayer(..., trainable=True, checkpoint_every=20)   # 20스텝 구간마다 다시 계산
+# 자체 엔진도 같은 인자 (fd.ConnectomeLayer(..., checkpoint_every=20), 구현은 fd.checkpoint)
 ```
 역전파 때 구간의 중간 상태를 다시 계산해 시간 방향 메모리를 줄인다. 출력은 완전히 같고, 기울기는 GPU 합산
 순서 오차(상대 1e-7) 안에서 같다. 버섯체, 100 ms(200스텝): 배치 64에서 0.74 → 0.18 GB, 배치 256에서
 1.97 → 0.51 GB, 계산은 1.3~2배.
 
-### 큰 회로 학습: 연결 단위 역전파
+### (torch 연동) 큰 회로 학습: 연결 단위 역전파
 
 `torch.sparse.mm`의 역전파는 연결 기울기를 뉴런 수 × 뉴런 수 크기로 만든다 (전체 뇌면 77 GB).
 `SparsePropagate`는 필요한 연결 칸만 계산한다 (`torch.sparse.sampled_addmm`, 메모리 = 연결 수).
@@ -225,8 +261,8 @@ layer = fd.ConnectomeLayer(..., trainable=True, checkpoint_every=20)   # 20스�
 others = ["optic", "central", "visual_projection", "ascending", "descending",
           "sensory_ascending", "visual_centrifugal", "motor", "endocrine"]
 brain = fd.Circuit.from_flywire({"SENS": ("super_class", "sensory"), "REST": ("super_class", others)}, side=None)
-layer = fd.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="regular",
-                           trainable=True, checkpoint_every=10)
+layer = fd.torch.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="regular",
+                                 trainable=True, checkpoint_every=10)
 ```
 
 학습 1스텝 (순전파 + 역전파 + Adam, 50 ms = 100스텝, RTX 5070):
@@ -245,12 +281,12 @@ layer = fd.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="r
 | 모듈 | 내용 |
 |---|---|
 | `circuit.py` | `Circuit`: 주석으로 뉴런 그룹을 골라 그 사이 연결만 남긴 회로, `shuffled()` 대조군, `summary()` |
-| `ganglion/` | **자체 엔진** (torch 없음): `signal.py` 신호·역행성 신호, `tissue.py` 조직, `physiology.py` 작용, `rules.py` 가소성 규칙, `backend.py` NumPy/CuPy |
+| `ganglion/` | **자체 엔진** (torch 없음): `signal.py` 신호·역행성 신호·체크포인팅, `tissue.py` 조직, `circuitry.py` 시간 시뮬레이션(`ConnectomeLayer`), `physiology.py` 작용, `rules.py` 가소성 규칙, `backend.py` NumPy/CuPy |
 | `data.py` | 데이터 위치·다운로드·검증 |
 | `torch/` | torch 연동: `anatomy.py` (`torch.nn`처럼), `physiology.py` (`torch.nn.functional`처럼) |
 | 아래는 torch 연동 (0.1 기능) | |
 | `encoders.py` | `RateEncoder`: 텐서 → 입력 뉴런 발화율 |
-| `layers.py` | `ConnectomeLayer`: 배치 LIF 시뮬레이션 (희소행렬 곱, GPU). `input_mode="regular"`/`"poisson"` |
+| `layers.py` | `ConnectomeLayer`의 torch판 (`fd.torch.ConnectomeLayer`). 자체 엔진판은 `ganglion/circuitry.py` |
 | `readout.py` | `extract()`: 데이터 → 발화율 특징, `train_linear()`: 리드아웃 학습 |
 | `expansion.py` | `KCExpansion`: 실제 PN→KC 배선 앞먹임 확장 (상위 k만 남김, APL 억제처럼) |
 

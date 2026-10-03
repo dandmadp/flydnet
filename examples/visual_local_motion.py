@@ -80,7 +80,7 @@ else:
 circ = circ.normalized()
 OUT = [f"T{k}{d}" for k in "45" for d in "abcd"]
 train = not args.freeze_circuit
-layer = fd.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, neuron="graded",
+layer = fd.torch.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, neuron="graded",
                            params={"w_syn": args.w_syn},
                            bias={g: (0.0 if g in fd.PHOTORECEPTORS else args.bias) for g in circ.groups},
                            count_from_ms=args.count_from, trainable=train, share="pair",

@@ -52,7 +52,7 @@ for name, circ in circuits:
     if cache.exists():
         Ftr, Fte = torch.load(cache)
     else:
-        layer = fd.ConnectomeLayer(circ, "PN", ("KC", "MBON"), t_ms=args.t_ms,
+        layer = fd.torch.ConnectomeLayer(circ, "PN", ("KC", "MBON"), t_ms=args.t_ms,
                                    gains={"PN>KC": args.pn_kc_gain}, input_mode=args.input_mode)
         t = time.time()
         Ftr = fd.extract(layer, enc, Xtr, batch=args.batch, seed=0)

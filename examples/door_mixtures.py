@@ -41,7 +41,7 @@ mb = fd.Circuit.from_flywire()
 enc = fd.GlomerularEncoder(mb)
 X0 = fd.door_odors(enc.glomeruli, args.data)["X"]
 ok = np.nonzero(((X0 > 0.05).sum(1) >= 3).numpy())[0]             # 사구체 3개 이상 켜는 냄새만
-mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
+mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
 print(f"{mb}")
 print(f"후보 냄새 {len(ok)}개, 냄새 4개 묶음 {args.sets}개 × seed {args.seeds}개, 무작위 배선 {args.shuffles}개\n")

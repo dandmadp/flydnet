@@ -70,7 +70,7 @@ circ = vc if args.circuit == "real" else vc.shuffled(seed=args.shuffle_seed)
 if G:
     circ = circ.normalized()
 OUT = [f"T{k}{d}" for k in "45" for d in "abcd"] if args.readout == "t4t5" else [g for g in fd.LPTC if g in vc.groups]
-layer = fd.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, input_mode="regular",
+layer = fd.torch.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, input_mode="regular",
                            neuron=args.neuron,
                            params={"w_syn": args.w_syn} if G else {"w_syn": args.w_syn, "f_poi": 250 * 0.275 / args.w_syn},
                            bias={g: (0.0 if g in fd.PHOTORECEPTORS else args.bias) for g in circ.groups},

@@ -310,8 +310,12 @@ def test_flydnet_works_without_torch():
         m = fd.Pathway(fd.Neuropil(c, "A", "B", device="cpu"), fd.Projection(3, 2, device="cpu"))
         loss = fd.surprise(m(np.ones((4, 3), np.float32)), [0, 1, 0, 1]); loss.retrograde()
         assert all(s.retro is not None for s in m.synapses())
+        layer = fd.ConnectomeLayer(c, "A", "B", t_ms=10, dt=0.5, gains={"A>B": 30.0}, trainable=True, device="cpu")
+        out = layer(np.full((2, 3), 150.0, np.float32), seed=0)
+        (out * out).sum().retrograde()                       # 시간 시뮬레이션도 torch 없이 학습
+        assert layer.log_scale.retro is not None
         try:
-            fd.ConnectomeLayer
+            fd.AssocReadout
             raise SystemExit("torch 기능이 불러와짐")
         except ImportError as e:
             assert "flydnet[torch]" in str(e)
@@ -319,3 +323,120 @@ def test_flydnet_works_without_torch():
     """)
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr
+
+
+# ─────────────── ConnectomeLayer (시간 시뮬레이션) ───────────────
+def _tiny(n_in=5, n_out=12, n_edges=120, seed=0):
+    rng = np.random.default_rng(seed)
+    N = n_in + n_out
+    key = rng.choice(N * N, n_edges, replace=False)
+    pre, post = key // N, key % N
+    keep = pre != post
+    w = rng.integers(1, 6, keep.sum()) * rng.choice([-1, 1], keep.sum())
+    return fd.Circuit(np.arange(N), {"IN": np.arange(n_in), "OUT": np.arange(n_in, N)},
+                      pre[keep], post[keep], w.astype(np.float32))
+
+
+@needs_torch
+@pytest.mark.parametrize("neuron,kw", [
+    ("lif", dict(gains={"IN>OUT": 30.0}, input_mode="regular", dt=0.5)),
+    ("lif", dict(gains={"IN>OUT": 30.0}, input_mode="regular", dt=0.5, bias={"OUT": 3.0}, train_neurons=True,
+                 v_init="random", count_from_ms=5, share="pair")),
+    ("graded", dict(params={"w_syn": 0.3}, bias={"OUT": 0.2}, train_neurons=True, dt=1.0)),
+])
+def test_connectome_layer_matches_torch(neuron, kw):
+    from flydnet.layers import ConnectomeLayer as TL
+    c = _tiny()
+    tl = TL(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", **kw)
+    gl = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", **kw)
+    gl.phase0 = tl.phase0.numpy().ravel().copy()
+    gl.v_frac = tl.v_frac.numpy().ravel().copy()
+    x = (np.random.default_rng(3).random((4, 5)) * (200 if neuron == "lif" else 1)).astype(np.float32)
+    t_out = tl(torch.tensor(x))
+    g_out = gl(x)
+    np.testing.assert_allclose(g_out.numpy(), t_out.detach().numpy(), atol=1e-4)
+    w = np.random.default_rng(4).normal(size=g_out.shape).astype(np.float32)
+    (t_out * torch.tensor(w)).sum().backward()
+    (g_out * w).sum().retrograde()
+    np.testing.assert_allclose(gl.log_scale.retro, tl.log_scale.grad.numpy(), rtol=1e-3, atol=1e-4)
+    if "train_neurons" in kw:
+        np.testing.assert_allclose(gl.bias.retro, tl.bias.grad.numpy(), rtol=1e-3, atol=1e-4)
+        np.testing.assert_allclose(gl.log_t_mbr.retro, tl.log_t_mbr.grad.numpy(), rtol=1e-3, atol=1e-4)
+
+
+@pytest.mark.parametrize("neuron,mode", [("lif", "poisson"), ("lif", "regular"), ("graded", "regular")])
+def test_connectome_layer_checkpoint_same_output_and_retro(neuron, mode):
+    c = _tiny()
+    kw = dict(t_ms=20, dt=0.5, neuron=neuron, input_mode=mode, trainable=True, device="cpu",
+              gains={"IN>OUT": 30.0}, bias={"OUT": 0.2} if neuron == "graded" else None)
+    x = np.random.default_rng(5).random((3, 5)).astype(np.float32) * (200 if neuron == "lif" else 1)
+    res = []
+    for ce in (None, 7):
+        layer = G.ConnectomeLayer(c, "IN", "OUT", checkpoint_every=ce, **kw)
+        xs = G.Signal(x, plastic=True)
+        out = layer(xs, seed=11)
+        (out * out).sum().retrograde()
+        res.append((out.numpy(), layer.log_scale.retro.copy(), xs.retro.copy()))
+    for a, b in zip(*res):
+        np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-6)
+
+
+def test_connectome_layer_poisson_seed_and_options():
+    c = _tiny()
+    layer = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, dt=0.5, gains={"IN>OUT": 30.0}, device="cpu")
+    x = np.full((2, 5), 150.0, np.float32)
+    with G.quiescent():
+        a, b, d = layer(x, seed=1).numpy(), layer(x, seed=1).numpy(), layer(x, seed=2).numpy()
+        assert np.array_equal(a, b) and not np.array_equal(a, d)
+        assert np.array_equal(layer(x[:, None].repeat(4, 1), seed=1).numpy(), a)   # 시간 고정 입력 = (B, T, n)
+        out, tr = layer(x, seed=1, record=[5, 6])
+        assert tr.shape == (2, 60, 2) and np.array_equal(out.numpy(), a)
+        assert layer(np.zeros((2, 5), np.float32)).numpy().sum() == 0
+    with pytest.raises(ValueError):
+        G.ConnectomeLayer(c, "IN", "OUT", t_ms=10, count_from_ms=10, device="cpu")
+    with pytest.raises(ValueError):
+        G.ConnectomeLayer(c, "IN", "OUT", trainable=["IN>NOPE"], device="cpu")
+
+
+def test_connectome_layer_save_load(tmp_path):
+    c = _tiny()
+    layer = G.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, input_mode="regular", trainable=True, share="pair",
+                              bias={"OUT": 2.0}, train_neurons=True, gains={"IN>OUT": 30.0}, device="cpu")
+    layer.log_scale.data += 0.3; layer.bias.data += 1.0
+    layer.save(tmp_path / "l.npz")
+    back = G.ConnectomeLayer.load(tmp_path / "l.npz", device="cpu")
+    x = np.full((2, 5), 150.0, np.float32)
+    with G.quiescent():
+        assert np.array_equal(layer(x).numpy(), back(x).numpy())
+    assert set(back.scale_of()) == set(layer.scale_of())
+
+
+@needs_gpu
+def test_connectome_layer_gpu_matches_cpu():
+    c = _tiny()
+    x = np.random.default_rng(6).random((3, 5)).astype(np.float32) * 200
+    res = {}
+    for dev in ("cpu", "gpu"):
+        layer = G.ConnectomeLayer(c, "IN", "OUT", t_ms=20, dt=0.5, trainable=True, gains={"IN>OUT": 30.0},
+                                  device=dev, checkpoint_every=10)
+        out = layer(x, seed=3)                                                     # 포아송: 해시 난수 → 같음
+        (out * out).sum().retrograde()
+        res[dev] = (out.numpy(), B.numpy(layer.log_scale.retro))
+    np.testing.assert_allclose(res["cpu"][0], res["gpu"][0], atol=1e-4)
+    np.testing.assert_allclose(res["cpu"][1], res["gpu"][1], rtol=1e-3, atol=1e-4)
+
+
+@needs_torch
+def test_pair_order_matches_torch_with_unsorted_group_names():
+    """그룹 이름이 알파벳순이 아닐 때도 연결 종류 순서가 torch판과 같아야 함 (실제 데이터에서 잡힌 버그)"""
+    from flydnet.layers import ConnectomeLayer as TL
+    c = _tiny()
+    c = fd.Circuit(c.root_ids, {"Zin": c.groups["IN"], "Aout": c.groups["OUT"]}, c.pre, c.post, c.weight)
+    kw = dict(t_ms=20, dt=1.0, neuron="graded", params={"w_syn": 0.3}, bias=0.2, trainable=True, share="pair")
+    tl = TL(c, "Zin", "Aout", device="cpu", **kw)
+    gl = G.ConnectomeLayer(c, "Zin", "Aout", device="cpu", **kw)
+    assert gl.train_pairs == list(tl.train_pairs)
+    x = np.random.default_rng(0).random((2, 5)).astype(np.float32)
+    tl(torch.tensor(x)).sum().backward()
+    gl(x).sum().retrograde()
+    np.testing.assert_allclose(gl.log_scale.retro, tl.log_scale.grad.numpy(), rtol=1e-3, atol=1e-5)

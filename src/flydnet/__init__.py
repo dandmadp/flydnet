@@ -8,8 +8,9 @@
                        fd.LateralInhibition(frac=0.05), fd.Projection(2597, 10))
     loss = fd.surprise(model(x), y); loss.retrograde()   # 역행성 신호 (자동 미분)
 
-torch 연동 (pip install flydnet[torch]): flydnet.torch.anatomy / flydnet.torch.physiology,
-그리고 0.1.0의 torch 기반 기능 (ConnectomeLayer, AssocReadout, KCExpansion, RateEncoder 등)은 처음 쓸 때 불러옴.
+시간 시뮬레이션 (스파이킹 LIF·연속값)도 자체 엔진: fd.ConnectomeLayer.
+torch 연동 (pip install flydnet[torch]): flydnet.torch (ConnectomeLayer의 torch판, anatomy, physiology),
+그리고 0.1의 torch 기반 기능 (AssocReadout, KCExpansion, RateEncoder, 시각계 도구 등)은 처음 쓸 때 불러옴.
 """
 import importlib as _importlib
 
@@ -19,14 +20,14 @@ from .circuit import Circuit, MUSHROOM_BODY
 from . import ganglion
 from .ganglion import (Signal, Synapse, Tissue, Pathway, Projection, Neuropil, LateralInhibition, AxonHillock,
                        Activation, MushroomBodyOutput, Plasticity, AdaptivePlasticity, quiescent, surprise,
-                       transmit, fire, inhibit)
+                       transmit, fire, inhibit, ConnectomeLayer, DEFAULT_PARAMS, checkpoint)
 
 __version__ = "0.2.0"
 
 # torch가 필요한 기능: 처음 쓸 때 불러옴 (torch 없이도 import flydnet은 됨)
 _TORCH_ATTRS = {
     "RateEncoder": "encoders", "GlomerularEncoder": "encoders",
-    "ConnectomeLayer": "layers", "SpikeFn": "layers", "DEFAULT_PARAMS": "layers",
+    "SpikeFn": "layers",
     "extract": "readout", "train_linear": "readout",
     "DopamineReadout": "plasticity", "AssocReadout": "plasticity",
     "synthetic_odors": "datasets", "door_odors": "datasets", "biconditional_mixtures": "datasets",

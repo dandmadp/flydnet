@@ -38,7 +38,7 @@ mb = fd.Circuit.from_flywire()
 enc = fd.GlomerularEncoder(mb)
 X0 = fd.door_odors(enc.glomeruli, args.data)["X"]
 ok = np.nonzero(((X0 > 0.05).sum(1) >= 3).numpy())[0]
-mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
+mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"KC 실제": mk(mb), "KC 무작위": mk(mb.shuffled(seed=0))}
 
 

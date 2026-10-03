@@ -26,9 +26,11 @@
 | "cuda"                   | "gpu"                            |
 """
 from . import backend
-from .backend import gpu_available, default_device
+from .backend import gpu_available, default_device, limit_gpu_memory
 from .signal import Signal, quiescent, learning_enabled, as_signal, concat, where
 from .physiology import Wiring, wiring, transmit, fire, inhibit, log_softmax, surprise
 from .tissue import (Synapse, Tissue, Pathway, Projection, Neuropil, LateralInhibition, AxonHillock, Activation,
                      MushroomBodyOutput)
 from .rules import Plasticity, AdaptivePlasticity
+from .circuitry import ConnectomeLayer, DEFAULT_PARAMS
+from .signal import checkpoint
