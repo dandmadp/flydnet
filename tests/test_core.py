@@ -558,3 +558,35 @@ def test_cli_status_and_unknown_command(capsys):
     from flydnet.__main__ import main
     assert main(["status"]) == 0 and "flydnet" in capsys.readouterr().out
     assert main(["bogus"]) == 1
+
+
+# ─────────────── 데이터 버전 고정 ───────────────
+def test_data_sources_are_pinned_with_checksums():
+    for kind, files in fd.data.SOURCES.items():
+        for name, (url, size, sha) in files.items():
+            assert "/main/" not in url and "/master/" not in url, url     # 커밋 해시로 고정
+            assert size > 0 and len(sha) == 64
+
+
+def test_download_checks_content(tmp_path, monkeypatch):
+    good = b"hello flydnet"
+    import hashlib
+    monkeypatch.setitem(fd.data.SOURCES, "door",
+                        {"a.csv": ("http://x/a.csv", len(good), hashlib.sha256(good).hexdigest())})
+    payload = {"data": b"tampered!!!!!"}                                   # 크기는 같고 내용만 다름
+    monkeypatch.setattr(fd.data, "_fetch", lambda url, dest, quiet: Path(dest).write_bytes(payload["data"]))
+    with pytest.raises(IOError):
+        fd.download("door", tmp_path, quiet=True)
+    assert not (tmp_path / "a.csv").exists() and not (tmp_path / "a.csv.part").exists()
+    payload["data"] = good
+    fd.download("door", tmp_path, quiet=True)
+    assert fd.data.verify("door", tmp_path) == {"a.csv": "ok"}
+    (tmp_path / "a.csv").write_bytes(b"old version!!")                     # 예전 버전 파일 → 다시 받음
+    assert fd.data.verify("door", tmp_path) == {"a.csv": "sha256"}
+    fd.download("door", tmp_path, quiet=True)
+    assert (tmp_path / "a.csv").read_bytes() == good
+
+
+@needs_data
+def test_local_data_matches_pinned_version():
+    assert set(fd.data.verify("flywire").values()) == {"ok"}

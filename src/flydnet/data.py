@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.request
@@ -25,20 +26,29 @@ from pathlib import Path
 CONFIG = Path.home() / ".flydnet" / "config.json"
 DEFAULT_ROOT = Path.home() / ".flydnet" / "data"
 
-# 파일 이름 → (URL, 바이트 크기). 크기로 다운로드가 온전한지 확인
+# 원본 저장소의 특정 커밋에 고정한 주소 → 원본이 나중에 바뀌거나 main이 움직여도 항상 같은 파일.
+# 받은 뒤 크기와 SHA-256으로 내용까지 확인. 데이터 버전을 올릴 때는 커밋·크기·해시를 함께 바꿀 것
+_GH = "https://raw.githubusercontent.com"
+_SHIU = f"{_GH}/philshiu/Drosophila_brain_model/91bdd1e7dcf193f3e7ca5a8933497fcef63b7960"
+_ANN = f"{_GH}/flyconnectome/flywire_annotations/a83b2776d60d5764cef36b927f5f9679c16c47a2"
+_DOOR = f"{_GH}/ropensci/DoOR.data/db323a496577c4b4a72b5c2fcd1859e07521ffb5/data"
+# 파일 이름 → (URL, 바이트 크기, SHA-256)
 SOURCES = {
     "flywire": {
-        "Connectivity_783.parquet":
-            ("https://github.com/philshiu/Drosophila_brain_model/raw/main/Connectivity_783.parquet", 100804642),
-        "Completeness_783.csv":
-            ("https://github.com/philshiu/Drosophila_brain_model/raw/main/Completeness_783.csv", 3327347),
-        "flywire_annotations.tsv":
-            ("https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/"
-             "Supplemental_file1_neuron_annotations.tsv", 31720298),
+        "Connectivity_783.parquet": (f"{_SHIU}/Connectivity_783.parquet", 100804642,
+                                     "efeb23fb99098e9c390f6869969b2a121a2ee92c833cfc45ecb2c1d8e1af0347"),
+        "Completeness_783.csv": (f"{_SHIU}/Completeness_783.csv", 3327347,
+                                 "bbb847a4cc2caaa7a16349722d220c087317b946d148d4d592d94d250617a311"),
+        "flywire_annotations.tsv": (f"{_ANN}/supplemental_files/Supplemental_file1_neuron_annotations.tsv", 31720298,
+                                    "b214970b55d2fbe0853bba536fdcb9e28730f4eb7ab06f600491df795da683cd"),
     },
     "door": {
-        name: (f"https://raw.githubusercontent.com/ropensci/DoOR.data/master/data/{name}", None)
-        for name in ("door_response_matrix.csv", "door_mappings.csv", "odor.csv")
+        "door_response_matrix.csv": (f"{_DOOR}/door_response_matrix.csv", 295852,
+                                     "bc2aa5414ff54d3a1399f5fe171e154bcadc754bcf323a3c27711a54f70848e2"),
+        "door_mappings.csv": (f"{_DOOR}/door_mappings.csv", 12824,
+                              "1197c492e769b1b587c907c5b750ffa2507d7e6c9fe9dfcb2ee8603871e00912"),
+        "odor.csv": (f"{_DOOR}/odor.csv", 155880,
+                     "a31d1841cf90ce23ec149760a5efa38eae02de7820bb2300c3a7dba221745940"),
     },
 }
 CITATIONS = {
@@ -98,27 +108,50 @@ def require(kind: str = "flywire", path=None) -> Path:
     return d
 
 
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify(kind: str = "flywire", path=None) -> dict:
+    """파일마다 'ok' / 'missing' / 'size' (크기 다름) / 'sha256' (내용 다름)"""
+    d = data_dir(kind, path)
+    out = {}
+    for name, (_, size, sha) in SOURCES[kind].items():
+        f = d / name
+        out[name] = ("missing" if not f.exists() else "size" if f.stat().st_size != size else
+                     "sha256" if _sha256(f) != sha else "ok")
+    return out
+
+
 def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quiet: bool = False) -> dict:
-    """없는 파일만 받음. 반환: {묶음: 폴더}"""
+    """없거나 내용이 다른 파일만 받음. 받은 파일은 크기와 SHA-256으로 확인. 반환: {묶음: 폴더}"""
     kinds = [kinds] if isinstance(kinds, str) else list(kinds)
     out = {}
     for kind in kinds:
         d = data_dir(kind, path if len(kinds) == 1 else None)
         d.mkdir(parents=True, exist_ok=True)
-        for name, (url, size) in SOURCES[kind].items():
+        state = verify(kind, d)
+        for name, (url, size, sha) in SOURCES[kind].items():
             f = d / name
-            if f.exists() and not overwrite and (size is None or f.stat().st_size == size):
+            if state[name] == "ok" and not overwrite:
                 if not quiet:
                     print(f"  있음  {f}")
                 continue
+            if state[name] in ("size", "sha256") and not quiet:
+                print(f"  {name}: 기대한 버전과 내용이 달라 다시 받음")
             tmp = f.with_suffix(f.suffix + ".part")
             if not quiet:
-                print(f"  받는 중 {name} ← {url}", flush=True)
+                print(f"  받는 중 {name}", flush=True)
             _fetch(url, tmp, quiet)
-            if size is not None and tmp.stat().st_size != size:
-                got = tmp.stat().st_size
+            got = tmp.stat().st_size
+            if got != size or _sha256(tmp) != sha:
                 tmp.unlink()
-                raise IOError(f"{name} 크기가 다름 (받은 {got:,} B, 기대 {size:,} B) — 다시 시도")
+                raise IOError(f"{name}: 받은 파일이 기대와 다름 (크기 {got:,} B, 기대 {size:,} B). "
+                              f"네트워크 문제일 수 있으니 다시 시도. 계속되면 원본 주소 확인: {url}")
             tmp.replace(f)
         if not quiet:
             print(f"[{kind}] {d}\n  출처: {CITATIONS[kind]}")
@@ -127,14 +160,19 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
 
 
 def _fetch(url: str, dest: Path, quiet: bool):
+    """진행률은 한 줄에서 숫자만 바뀌게 (터미널·Colab 모두)"""
     with urllib.request.urlopen(url, timeout=60) as r, open(dest, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
-        done, step = 0, max(total // 10, 1)
+        done, shown = 0, -1
         while chunk := r.read(1 << 20):
             f.write(chunk)
             done += len(chunk)
-            if not quiet and total and done // step != (done - len(chunk)) // step:
-                print(f"    {done / total * 100:3.0f}%", flush=True)
+            pct = int(done / total * 100) if total else -1
+            if not quiet and total and pct != shown and (pct % 5 == 0 or done == total):
+                print(f"\r    {pct:3d}%  {done / 1e6:6.1f} / {total / 1e6:.1f} MB", end="", flush=True)
+                shown = pct
+        if not quiet and total:
+            print()
 
 
 def data_status() -> dict:

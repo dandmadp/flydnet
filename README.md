@@ -84,7 +84,9 @@ import flydnet as fd
 mb = fd.Circuit.from_flywire()
 layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 2.0},
                            input_mode="regular", trainable=True)      # 또는 trainable=["KC>MBON"]
-model = nn.Sequential(fd.RateEncoder(784, 344), layer, nn.Linear(layer.n_out, 10)).cuda()
+model = nn.Sequential(fd.RateEncoder(784, 344), layer,
+                      nn.BatchNorm1d(layer.n_out),                    # 발화율(Hz)은 크기가 커서 정규화 필요
+                      nn.Linear(layer.n_out, 10)).cuda()
 
 opt = torch.optim.Adam([
     {"params": [layer.log_scale], "lr": 3e-2},                        # 커넥톰 연결 세기 (log 배율)
