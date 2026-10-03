@@ -46,8 +46,10 @@ ap.add_argument("--bias", type=float, default=0.2)
 ap.add_argument("--lr", type=float, default=3e-2)
 ap.add_argument("--lr-bias", type=float, default=0.01)
 ap.add_argument("--lr-readout", type=float, default=1e-2)
+ap.add_argument("--clip", type=float, default=1.0, help="회로 매개변수 기울기 노름 상한")
+ap.add_argument("--warmup", type=int, default=50, help="학습률을 0에서 올리는 스텝 수 (이후 코사인으로 감소)")
 ap.add_argument("--checkpoint-every", type=int, default=50)
-ap.add_argument("--eval-every", type=int, default=100)
+ap.add_argument("--eval-every", type=int, default=50)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--out", default="data/visual_local_motion")
 args = ap.parse_args()
@@ -125,16 +127,19 @@ def features(x):
     return (pool @ layer(x).T).T.reshape(len(x), len(cells), len(OUT))       # (B, 칸, 8)
 
 
-def evaluate(n=64):
-    g = torch.Generator().manual_seed(12345)
+def evaluate(n=64, seed=12345):
+    """seed 12345 = 검증 세트 (가장 좋은 시점 고르기), 최종 평가는 다른 seed (고른 시점에 유리한 편향 없게)"""
+    g = torch.Generator().manual_seed(seed)
     F, Y = [], []
     with torch.no_grad():
         for _ in range(n // args.batch):
             x, y = sample(args.batch, g)
             F.append(features(x)); Y.append(y)
         F, Y = torch.cat(F), torch.cat(Y)
-        pred = readout(norm(F)).argmax(-1).cpu()
-    return (pred == Y).float().mean().item(), (pred == (Y + DIRS // 2) % DIRS).float().mean().item()
+        logit = readout(norm(F)).cpu()
+    pred = logit.argmax(-1)
+    loss = nn.functional.cross_entropy(logit.reshape(-1, DIRS), Y.reshape(-1)).item()
+    return (pred == Y).float().mean().item(), (pred == (Y + DIRS // 2) % DIRS).float().mean().item(), loss
 
 
 def neuron_dsi(reps=4):
@@ -164,8 +169,17 @@ if train:
     params += [{"params": [layer.log_scale, layer.log_t_mbr], "lr": args.lr},
                {"params": [layer.bias], "lr": args.lr_bias}]
 opt = torch.optim.Adam(params)
+circuit_params = [layer.log_scale, layer.log_t_mbr, layer.bias] if train else []
+sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup) *
+                                          0.5 * (1 + np.cos(np.pi * min(s, args.steps) / args.steps)))
 gen = torch.Generator().manual_seed(args.seed)
 hist = []
+best = dict(loss=float("inf"), step=0)
+
+
+def snapshot():
+    return dict(layer={k: v.detach().clone() for k, v in layer.state_dict().items()},
+                readout={k: v.detach().clone() for k, v in readout.state_dict().items()})
 t0 = time.time()
 for step in range(1, args.steps + 1):
     x, y = sample(args.batch, gen)
@@ -173,9 +187,10 @@ for step in range(1, args.steps + 1):
     loss = nn.functional.cross_entropy(logit.reshape(-1, DIRS), y.reshape(-1).to(dev))
     opt.zero_grad(); loss.backward()
     if train:
-        for p in (layer.log_scale, layer.log_t_mbr, layer.bias):
+        for p in circuit_params:
             torch.nan_to_num_(p.grad, 0.0)
-    opt.step()
+        torch.nn.utils.clip_grad_norm_(circuit_params, args.clip)   # 한 번에 크게 망가지지 않게
+    opt.step(); sched.step()
     if train:
         with torch.no_grad():
             layer.log_t_mbr.clamp_(np.log(1.0), np.log(100.0))
@@ -184,20 +199,28 @@ for step in range(1, args.steps + 1):
         mem = torch.cuda.max_memory_allocated() / 1e9 if dev == "cuda" else 0
         print(f"step {step}: loss {loss.item():.3f}, {(time.time() - t0) / step:.1f}s/step, GPU {mem:.2f}GB", flush=True)
     if step % args.eval_every == 0 or step == args.steps:
-        acc, opp = evaluate()
-        print(f"  eval step {step}: acc {acc * 100:.1f}% (정반대 {opp * 100:.1f}%)", flush=True)
-        hist.append(dict(step=step, acc=acc, opp=opp, loss=loss.item()))
+        acc, opp, vloss = evaluate()
+        mark = ""
+        if vloss < best["loss"]:
+            best = dict(loss=vloss, step=step, state=snapshot()); mark = " *"
+        print(f"  eval step {step}: acc {acc * 100:.1f}% (정반대 {opp * 100:.1f}%) 검증 손실 {vloss:.3f}{mark}", flush=True)
+        hist.append(dict(step=step, acc=acc, opp=opp, loss=loss.item(), val_loss=vloss))
+
+layer.load_state_dict(best["state"]["layer"]); readout.load_state_dict(best["state"]["readout"])
+layer._build()
+print(f"검증 손실이 가장 낮았던 step {best['step']} ({best['loss']:.3f})의 모델로 최종 평가", flush=True)
 
 out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 tag = (f"{args.circuit}{args.shuffle_seed if args.circuit == 'shuffled' else ''}"
        f"{'_frozen' if args.freeze_circuit else ''}_{args.pathway}_r{args.region:g}_s{args.seed}")
-acc, opp = evaluate(256)
+acc, opp, test_loss = evaluate(256, seed=54321)
 nd = neuron_dsi()
 print(f"\n최종 ({tag}, 256개 × 칸 {len(cells)}개): acc {acc * 100:.1f}%, 정반대 방향 오답 {opp * 100:.1f}%", flush=True)
 print("뉴런별 방향 선택 지수 (중앙값/상위10%/선호방향 일치/선호방향):",
       " ".join(f"{k}:{v['median']:.3f}/{v['p90']:.3f}/{v['agree']:.2f}/{v['pref']:.0f}°" for k, v in nd.items()),
       flush=True)
-json.dump(dict(args=vars(args), hist=hist, final=dict(acc=acc, opp=opp, neuron_dsi=nd, n_cells=len(cells))),
+json.dump(dict(args=vars(args), hist=hist, final=dict(acc=acc, opp=opp, test_loss=test_loss, best_step=best["step"],
+                                                       neuron_dsi=nd, n_cells=len(cells))),
           open(out / f"{tag}.json", "w"), ensure_ascii=False, indent=1)
 if train:
     layer.save(out / f"{tag}_layer.pt")
