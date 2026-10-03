@@ -368,13 +368,14 @@ class ConnectomeLayer(Tissue):
                   "config": np.array(json.dumps(cfg, ensure_ascii=False))}
         arrays.update(self.circuit.to_arrays("circuit."))
         arrays.update({"state." + k: v for k, v in self.state().items()})
-        np.savez(path, **arrays)
+        from .._archive import write
+        return write(path, "ConnectomeLayer", arrays)
 
     @classmethod
     def load(cls, path, device: str | None = None) -> "ConnectomeLayer":
         from ..circuit import Circuit
-        with np.load(path, allow_pickle=False) as f:
-            d = {k: f[k] for k in f.files}
+        from .._archive import read
+        d, _ = read(path, "ConnectomeLayer")
         if str(d.get("format")) != cls.FORMAT:
             raise ValueError(f"flydnet ganglion ConnectomeLayer 파일이 아님 (format={d.get('format')})")
         layer = cls(Circuit.from_arrays(d, "circuit."), device=device, **json.loads(str(d["config"])))

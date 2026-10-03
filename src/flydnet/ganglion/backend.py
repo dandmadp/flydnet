@@ -1,6 +1,8 @@
 """계산 장치: CPU = NumPy/SciPy, GPU = CuPy. 같은 코드가 양쪽에서 돌도록 배열 모듈(xp)을 고름"""
 from __future__ import annotations
 
+import contextlib
+
 import numpy as np
 
 try:
@@ -118,6 +120,30 @@ def gpu_memory_peak_reset():
 def gpu_memory_used() -> int:
     """CuPy 메모리 풀이 지금 쓰고 있는 바이트"""
     return int(_cp.get_default_memory_pool().total_bytes()) if gpu_available() else 0
+
+
+class GPUMemoryError(MemoryError):
+    """GPU 메모리 부족 (CuPy OutOfMemoryError에 해결 방법을 붙인 것)"""
+
+
+@contextlib.contextmanager
+def oom_hint(what: str):
+    """GPU 메모리가 모자라면 해결 방법을 붙여 GPUMemoryError로 (원래 오류는 __cause__)"""
+    try:
+        yield
+    except GPUMemoryError:
+        raise
+    except Exception as e:
+        if _cp is None or not isinstance(e, _cp.cuda.memory.OutOfMemoryError):
+            raise
+        pool = _cp.get_default_memory_pool()
+        limit = pool.get_limit()
+        free, total = _cp.cuda.runtime.memGetInfo()
+        raise GPUMemoryError(
+            f"{what} 중 GPU 메모리 부족 (flydnet 사용 {pool.used_bytes() / 2**30:.2f} GB"
+            f"{f', 상한 {limit / 2**30:.2f} GB' if limit else ''}, GPU 전체 {total / 2**30:.1f} GB 중 남음 {free / 2**30:.2f} GB). "
+            "해결: 배치 줄이기 / ConnectomeLayer(checkpoint_every=10 같은 값)로 중간 상태를 다시 계산 / t_ms 줄이기 / "
+            "다른 프로그램(torch 등)이 GPU 메모리를 쥐고 있지 않은지 확인 / FLYDNET_DEVICE=cpu") from e
 
 
 def check_labels(y, n_classes: int, what: str = "라벨") -> np.ndarray:

@@ -160,15 +160,18 @@ class Tissue:
         return self
 
     def save(self, path):
-        np.savez(path, **self.state())
+        """state()를 파일 하나에 (np.savez, 형식 버전 포함, 저장 도중 멈춰도 예전 파일 유지)"""
+        from .._archive import write
+        return write(path, type(self).__name__, self.state())
 
     def load(self, path):
-        with np.load(path, allow_pickle=False) as f:
-            return self.load_state({k: f[k] for k in f.files})
+        from .._archive import read
+        return self.load_state(read(path, type(self).__name__)[0])
 
     # ─────────────── 호출 ───────────────
     def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
+        with B.oom_hint(f"{type(self).__name__} 순전파"):
+            return self.forward(*args, **kwargs)
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError

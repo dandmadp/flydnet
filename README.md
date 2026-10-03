@@ -43,7 +43,7 @@ model = fd.Pathway(
     fd.LateralInhibition(frac=0.05),                 # APL 억제: KC 5%만
     fd.Projection(2597, 10),
 )
-rule = fd.AdaptivePlasticity(model.synapses(), rate=1e-3)
+rule = fd.AdaptivePlasticity(model.named_synapses(), rate=1e-3, clip=1.0)   # clip: 기울기 크기 제한
 loss = fd.surprise(model(x), y)                      # 놀람 = 교차 엔트로피
 rule.clear(); loss.retrograde(); rule.step()         # 역행성 신호(자동 미분) → 가소성
 ```

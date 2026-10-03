@@ -141,6 +141,10 @@ class Signal:
         if retro is None:
             if self.data.size != 1:
                 raise RuntimeError("값이 하나가 아닌 신호는 retro를 직접 줘야 함")
+            if not bool(xp.isfinite(self.data).all()):
+                raise FloatingPointError(
+                    f"손실이 {float(self.data.reshape(-1)[0])} - 역행성 신호를 보내지 않음. 학습이 발산했거나 입력에 "
+                    "NaN·무한대가 있음: 학습률을 낮추거나 가소성 규칙에 clip=1.0, 입력 확인")
             retro = xp.ones_like(self.data)
         retro = retro.data if isinstance(retro, Signal) else xp.asarray(retro, dtype=self.data.dtype)
 
@@ -157,6 +161,14 @@ class Signal:
             for p in node._parents:
                 if p.plastic and id(p) not in seen:
                     stack.append((p, False))
+        with B.oom_hint("역행성 신호(역전파)"):
+            self._send(order, retro)
+        if not keep:
+            for node in order:                               # 경로 풀기 (메모리 해제)
+                if node._back is not None:
+                    node._parents, node._back = (), None
+
+    def _send(self, order, retro):
         grads = {id(self): retro}
         for node in reversed(order):
             g = grads.pop(id(node), None)
@@ -169,10 +181,6 @@ class Signal:
                 if pg is None or not p.plastic:
                     continue
                 grads[id(p)] = pg if id(p) not in grads else grads[id(p)] + pg
-        if not keep:
-            for node in order:                               # 경로 풀기 (메모리 해제)
-                if node._back is not None:
-                    node._parents, node._back = (), None
 
     # ─────────────── 산술 ───────────────
     def _wrap(self, other) -> "Signal":

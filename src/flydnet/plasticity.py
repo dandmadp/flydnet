@@ -43,12 +43,13 @@ class _Saveable:
                 **{k: B.numpy(getattr(self, k)) for k in self._ARRAYS}}
 
     def save(self, path):
-        np.savez(path, **self.state())
+        from ._archive import write
+        return write(path, type(self).__name__, self.state())
 
     @classmethod
     def load(cls, path, device: str | None = None):
-        with np.load(path, allow_pickle=False) as f:
-            d = {k: f[k] for k in f.files}
+        from ._archive import read
+        d, _ = read(path, cls.__name__)
         if str(d.get("format")) != cls.__name__:
             raise ValueError(f"{cls.__name__} 파일이 아님 (format={d.get('format')})")
         obj = cls(**json.loads(str(d["config"])), device=device)
