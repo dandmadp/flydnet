@@ -59,6 +59,24 @@ python -m venv .venv
 ```
 `examples/`의 스크립트는 설치하지 않아도 `src/`를 직접 불러와서 실행된다.
 
+### 새 버전 배포
+
+```bash
+.venv\Scripts\python scripts\release.py bump patch    # 버전 올리기 (0.1.1 → 0.1.2), CHANGELOG.md에 항목 틀 추가
+# CHANGELOG.md에 바뀐 점을 적고 커밋
+.venv\Scripts\python scripts\release.py check          # 검사 + 빌드만 (커밋·CHANGELOG·PyPI 중복·테스트·wheel 설치·태그)
+.venv\Scripts\python scripts\release.py check --upload # 검사 통과하면 PyPI에 업로드
+```
+같은 버전 번호는 PyPI에서 지워도 다시 쓸 수 없어서, `check`는 이미 올린 번호면 빌드 전에 멈춘다.
+업로드 때마다 토큰을 붙여 넣지 않으려면, PyPI에서 **flydnet 프로젝트 전용 토큰**을 만들어
+`%USERPROFILE%\.pypirc`에 저장한다 (이 파일은 비밀번호와 같으니 저장소에 넣지 말 것):
+
+```ini
+[pypi]
+username = __token__
+password = pypi-여기에_프로젝트_전용_토큰
+```
+
 ## 사용
 
 ```python
