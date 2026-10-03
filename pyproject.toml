@@ -31,7 +31,9 @@ dev = ["pytest", "torch>=2.1"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["flydnet"]
+
+[tool.setuptools.packages.find]
+where = ["src"]                                  # flydnet과 하위 패키지(ganglion, torch)를 모두 포함
 
 [tool.setuptools.dynamic]
 version = { attr = "flydnet.__version__" }      # 버전은 src/flydnet/__init__.py 한 곳에서만
