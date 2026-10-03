@@ -368,7 +368,7 @@ def test_connectome_layer_matches_torch(neuron, kw):
     from flydnet.torch.layers import ConnectomeLayer as TL
     c = _tiny()
     tl = TL(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", **kw)
-    gl = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", **kw)
+    gl = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", timing="legacy", **kw)  # torch판 = legacy
     gl.phase0 = tl.phase0.numpy().ravel().copy()
     gl.v_frac = tl.v_frac.numpy().ravel().copy()
     x = (np.random.default_rng(3).random((4, 5)) * (200 if neuron == "lif" else 1)).astype(np.float32)
@@ -515,3 +515,80 @@ def test_device_env_override_and_check():
     assert r.stdout.strip() == "cpu"
     with pytest.raises(ValueError):
         B.check("cuda")                                                        # torch식 이름은 안내 오류
+
+
+# ─────────────── timing="brian": Shiu et al. 2024 Brian2 모델과 같은 한 스텝 ───────────────
+def test_brian_timing_matches_brian2_spike_times():
+    """원본 Brian2 모델(model.py, 같은 식·매개변수)에서 기록한 입력 5개 → 표적 1개: 표적 스파이크 시각이 스텝 단위로 같음.
+    tests/data/brian2_toy_trace.npz = Brian2 2.9.0, 300 ms, 입력 각 100 Hz 포아송, 시냅스 40개씩"""
+    from pathlib import Path
+    d = np.load(Path(__file__).parent / "data" / "brian2_toy_trace.npz")
+    steps, dt = int(d["steps"]), 0.1
+    x = np.zeros((1, steps, 5), np.float32)
+    x[0, d["in_step"] - 1, d["in_neu"]] = 1000.0 / dt                  # 자극 다음 스텝에 입력 뉴런이 발화
+    c = fd.Circuit(np.arange(6), {"IN": np.arange(5), "T": np.array([5])}, np.arange(5), np.full(5, 5),
+                   np.full(5, float(d["W"]), np.float32))
+    L = G.ConnectomeLayer(c, "IN", "T", t_ms=steps * dt, device="cpu")
+    with G.quiescent():
+        _, rec = L(x, seed=0, record=[0, 1, 2, 3, 4, 5])
+    np.testing.assert_array_equal(np.sort(np.nonzero(rec[0, :, :5])[0]), np.sort(d["in_step"]))
+    np.testing.assert_array_equal(np.nonzero(rec[0, :, 5])[0], d["tgt"])
+    legacy = G.ConnectomeLayer(c, "IN", "T", t_ms=steps * dt, device="cpu", timing="legacy")
+    with G.quiescent():
+        _, rec_l = legacy(x, seed=0, record=[5])
+    assert not np.array_equal(np.nonzero(rec_l[0, :, 0])[0], d["tgt"])  # 예전 방식은 다름 (이 테스트가 의미 있음)
+
+
+def test_lif_step_brian_gradients_match_composite():
+    """합친 연산 lif_step_brian의 손 유도 역전파 = 기본 연산으로 조립한 같은 계산의 자동 미분"""
+    from flydnet.ganglion import kernels as K
+    from flydnet.ganglion.physiology import fire
+    from flydnet.ganglion.signal import where
+    rng = np.random.default_rng(0)
+    N, Bn = 7, 3
+    V0 = rng.uniform(-53, -44, (N, Bn)).astype(np.float32)
+    G0 = rng.uniform(0, 6, (N, Bn)).astype(np.float32)
+    I0 = rng.uniform(0, 3, (N, Bn)).astype(np.float32)
+    act = rng.random((N, Bn)) > 0.3
+    in_idx = np.array([0, 2])
+    spikes = np.array([[1, 0, 1], [0, 1, 0]], np.float32)
+    coefs = [rng.uniform(-53, -51, (N, 1)), rng.uniform(0.98, 0.999, (N, 1)), rng.uniform(0.003, 0.006, (N, 1))]
+    r = [rng.standard_normal((N, Bn)).astype(np.float32) for _ in range(3)]
+    kw = dict(gd=0.98, poi_w=68.75, v_th=-45.0, v_rst=-52.0, scale=7.0, slope=10.0)
+
+    def leaves():
+        return [fd.Signal(a.astype(np.float32), plastic=True) for a in (V0, G0, I0, *coefs)]
+
+    V, Gs, I, ve, ev, eg = leaves()
+    p_in = fd.Signal(np.zeros((2, Bn), np.float32))
+    V3, G3, spk = K.lif_step_brian(V, Gs, I, p_in, spikes, act, in_idx, ve, ev, eg, **kw)
+    ((V3 * r[0]).sum() + (G3 * r[1]).sum() + (spk * r[2]).sum()).retrograde()
+    fused = [s.retro for s in (V, Gs, I, ve, ev, eg)]
+
+    V, Gs, I, ve, ev, eg = leaves()
+    V1 = where(act, ve + ev * (V - ve) + eg * Gs, V)
+    G1 = where(act, Gs * kw["gd"], Gs)
+    u = (V1 - kw["v_th"]) * (1.0 / kw["scale"])
+    s = fire(u, 0.0, kw["slope"])
+    G2 = where(act, G1 + I, G1)
+    kick = np.zeros((N, Bn), np.float32); kick[in_idx] = spikes * kw["poi_w"]
+    V2 = V1 + kick
+    fired = s.data > 0
+    V3c = where(fired, np.float32(kw["v_rst"]), V2)
+    G3c = where(fired, np.float32(0), G2)
+    np.testing.assert_allclose(V3c.numpy(), V3.numpy(), atol=1e-5)
+    np.testing.assert_allclose(G3c.numpy(), G3.numpy(), atol=1e-5)
+    ((V3c * r[0]).sum() + (G3c * r[1]).sum() + (s * r[2]).sum()).retrograde()
+    for a, b in zip(fused, [s_.retro for s_ in (V, Gs, I, ve, ev, eg)]):
+        np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
+
+
+def test_brian_timing_trains_neuron_params():
+    """timing="brian"에서도 세포 유형별 t_mbr·휴지 전위가 학습됨 (정확한 적분 계수를 통해 역전파)"""
+    c = _tiny()
+    L = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, train_neurons=True, trainable=True, device="cpu")
+    x = fd.Signal(np.full((2, 5), 150.0, np.float32))
+    out = L(x, seed=0)
+    out.sum().retrograde()
+    assert np.abs(L.log_t_mbr.retro).sum() > 0 and np.abs(L.bias.retro).sum() > 0
+    assert np.isfinite(L.log_t_mbr.retro).all()

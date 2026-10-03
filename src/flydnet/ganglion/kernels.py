@@ -206,6 +206,54 @@ def lif_step(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx,
     return multi_output(parents, [V3, G3, spk], back)
 
 
+def lif_step_brian(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx, v_eq, e_v, e_g, gd: float,
+                   poi_w: float, v_th: float, v_rst: float, scale: float, slope: float):
+    """LIF 한 스텝, Shiu et al. 2024 Brian2 모델과 같은 순서·적분 (ConnectomeLayer timing="brian")
+      V1 = act ? v_eq + e_v·(V - v_eq) + e_g·G : V;  G1 = act ? G·gd : G      (정확한 선형 적분 = Brian 'linear')
+      spk = (V1 - v_th)/scale > 0
+      G2 = act ? G1 + I : G1          불응기 중에 도착한 시냅스 입력은 버림 (Brian2와 같음)
+      V2 = V1 + 입력 스파이크·poi_w    발화 판정 뒤에 더함 → 다음 스텝에 발화, 발화한 스텝에 온 것은 리셋으로 사라짐
+      V3 = spk ? v_rst : V2;  G3 = spk ? 0 : G2
+    v_eq, e_v, e_g: 숫자 또는 (N, 1) Signal (세포 유형별 매개변수 - 역전파 됨)"""
+    xp = B.xp(B.device_of(V.data))
+    val = lambda s: s.data if isinstance(s, Signal) else s
+    ve, ev, eg = val(v_eq), val(e_v), val(e_g)
+    Vd, Gd = V.data, G.data
+    V1 = xp.where(act, ve + ev * (Vd - ve) + eg * Gd, Vd)
+    G1 = xp.where(act, Gd * gd, Gd)
+    u = (V1 - v_th) * (1.0 / scale)
+    fired = u > 0
+    spk = fired.astype(Vd.dtype)
+    G2 = xp.where(act, G1 + I.data, G1)
+    V1[in_idx] += spikes * poi_w                                     # V1은 새 배열 (u는 이미 계산)
+    V3 = xp.where(fired, Vd.dtype.type(v_rst), V1)
+    G3 = xp.where(fired, Vd.dtype.type(0), G2)
+    coef = [s for s in (v_eq, e_v, e_g) if isinstance(s, Signal)]
+    parents = [V, G, I, p_in] + coef
+
+    # 남기는 것: Vd, Gd, u (실수 3개) + act, fired
+    def back(gs):
+        gV3, gG3, gspk = gs
+        z = lambda: xp.zeros_like(Vd)
+        gV2 = xp.where(fired, 0, gV3) if gV3 is not None else z()
+        gG2 = xp.where(fired, 0, gG3) if gG3 is not None else z()
+        g_pin = gV2[in_idx] * poi_w if p_in.plastic else None
+        gI = xp.where(act, gG2, 0)
+        gV1 = gV2 if gspk is None else gV2 + gspk * ((1.0 / scale) / (1 + slope * xp.abs(u)) ** 2)
+        gV1a = xp.where(act, gV1, 0)                                 # 적분이 일어난 칸만
+        gV = xp.where(act, gV1 * ev, gV1)
+        gG = xp.where(act, gV1 * eg + gG2 * gd, gG2)
+        out = [gV, gG, gI, g_pin]
+        if isinstance(v_eq, Signal):
+            out.append(_reduce_to(gV1a * (1 - ev), v_eq))
+        if isinstance(e_v, Signal):
+            out.append(_reduce_to(gV1a * (Vd - ve), e_v))
+        if isinstance(e_g, Signal):
+            out.append(_reduce_to(gV1a * Gd, e_g))
+        return tuple(out)
+    return multi_output(parents, [V3, G3, spk], back)
+
+
 def graded_step(V: Signal, I: Signal, x_in: Signal, in_idx, b, a, r_max: float):
     """연속값 뉴런 한 스텝. 반환 (V', r):  V' = V + (b - V + I)·a,  r = clip(V', 0, r_max), 입력 뉴런 행은 r = x_in"""
     xp = B.xp(B.device_of(V.data))

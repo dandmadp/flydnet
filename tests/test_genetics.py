@@ -94,13 +94,13 @@ def test_silence_and_block():
 
 
 def test_activate_drives_at_rate_without_inputs():
-    """입력 그룹 없이 활성화만: 활성화한 뉴런이 대략 hz로 발화 (불응기 때문에 조금 낮음), 나머지는 회로를 따라"""
+    """입력 그룹 없이 활성화만: 활성화한 뉴런이 hz로 발화 (불응기 없음, 자극 하나 = 스파이크 하나), 나머지는 회로를 따라"""
     c = _chain()
     L = _layer(c, inputs=None, outputs=("A", "H", "O"), t_ms=1000)
     assert L.n_in == 0 and (L(None, seed=0, batch=3).numpy() == 0).all()
     with activate(L, driver(c, group="A"), hz=100):
         r = L(None, seed=0, batch=3).numpy()
-    assert 85 < r[:, :6].mean() < 101
+    assert 90 < r[:, :6].mean() < 110
     assert r[:, 6:].mean() > 5
     with activate(L, driver(c, group="A"), hz=40):
         r40 = L(None, seed=0, batch=3).numpy()
@@ -128,7 +128,7 @@ def test_activate_graded_clamps_level():
 
 
 def test_effects_with_checkpointing_and_gradients():
-    """활성화 대기 상태(pend)가 체크포인팅 구간을 넘어 이어지고, 효과기를 켜도 역전파가 됨"""
+    """효과기를 켜도 체크포인팅 결과가 같고 역전파가 됨"""
     c = _chain()
     x = fd.Signal(np.full((2, 6), 120.0, np.float32), plastic=True)
     outs = []
@@ -176,3 +176,26 @@ def test_screen_table():
     assert list(df.line) and set(df.columns) >= {"line", "n", "baseline", "manipulated", "change", "p"}
     assert (df.change < 0).all()                                          # 중간 뉴런을 끄면 출력 감소
     assert df.change.abs().is_monotonic_decreasing
+
+
+def test_screen_warns_and_corrects():
+    c = _chain()
+    L = _layer(c, outputs=("O",), t_ms=60)
+    x = np.full((1, 6), 150.0, np.float32)
+    m = lambda layer, s: float(layer(x, seed=s).numpy().mean())
+    with pytest.warns(UserWarning, match="seed 3개로는 p가 0.25"):
+        df = screen(m, L, lines(c, "cell_type", within=driver(c, group="H")), seeds=3, verbose=False)
+    assert df.attrs["min_p"] == 0.25 and (df.p_holm >= df.p).all()
+    with silence(L, driver(c, cell_type="h1")):
+        with pytest.warns(UserWarning, match="이미 켜진 효과기"):
+            screen(m, L, {"h2": driver(c, cell_type="h2")}, seeds=6, verbose=False)
+
+
+def test_active_effects_visible_and_clearable():
+    c = _chain()
+    L = _layer(c)
+    silence(L, driver(c, cell_type="h1"))                                  # with 없이 켜 둠
+    block(L, driver(c, cell_type="h2"))
+    assert "켜진 효과기" in repr(L) and "silence" in repr(L) and len(fd.genetics.active(L)) == 2
+    fd.genetics.clear(L)
+    assert not fd.genetics.active(L) and "켜진 효과기" not in repr(L)

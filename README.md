@@ -110,14 +110,15 @@ with G.activate(layer, sugar, hz=100):                            # CsChrimson: 
 - `screen(measure, layer, lines)`: 집단마다 효과기를 발현해 측정값 변화와 짝지은 p값을 표로 (유전자 스크린).
 - 효과기는 `with` 블록 안에서만 (또는 `.remove()`까지), 학습 중에도 쓸 수 있다 (역전파 됨).
 
-**검증 - Shiu et al. 2024 재현** (`examples/genetics_sugar.py`, 같은 뉴런 ID·매개변수, 1초 x 30시행):
+**검증 - 원본 Shiu et al. 2024 Brian2 모델과 비교** (같은 뉴런 ID·매개변수, 1초 x 30시행, `validation/shiu2024/`):
 
-| 자극 | 무자극 | 당 25 Hz | 당 50 Hz | 당 100 Hz | 당 200 Hz | 쓴맛 100 Hz | 당 + 쓴맛 100 Hz |
+| MN9 발화율 (Hz) | 무자극 | 단맛 25 | 단맛 50 | 단맛 100 | 단맛 200 | 쓴맛 100 | 단맛 + 쓴맛 |
 |---|---|---|---|---|---|---|---|
-| MN9 (Hz) | 0 | 0 | 17 | 72 | 114 | 0 | 1 |
+| 원본 Brian2 | 0 | 0 | 12.6 | 61.8 | 88.8 | 0 | 2.2 |
+| flydnet | 0 | 0.1 | 13.9 | 61.4 | 90.6 | 0 | 1.8 |
 
-당 GRN 자극의 세기에 따라 섭식 운동 뉴런 MN9가 발화하고, 쓴맛은 MN9를 켜지 않으며 당 반응을 거의 없앤다
-(원 논문과 같은 방향. 원본 Brian2 모델과의 수치 비교는 아직).
+모든 조건에서 차이는 시행 간 잡음 안 (p > 0.17). 반응한 뉴런 329개의 발화율 상관 0.9985.
+같은 입력 스파이크면 스파이크 시각까지 같다 (테스트로 고정). 시행당 약 17배 빠름 (GPU).
 
 ## 구성 요소
 
@@ -125,7 +126,7 @@ with G.activate(layer, sugar, hz=100):                            # CsChrimson: 
 |---|---|
 | 회로 고르기·대조군 | `Circuit.from_flywire(groups, side)`, `.shuffled()`, `.randomized()`, `.shuffled_weights()`, `.subset()` |
 | 커넥톰 배선 층 (시간 없음) | `Neuropil` (학습: `"edge"` / `"pair"` / `"free"` / 고정), `LateralInhibition`, `AxonHillock` |
-| 시간 시뮬레이션 | `ConnectomeLayer` — 스파이킹 LIF(Shiu et al. 2024 매개변수)·연속값 뉴런, 시간 역전파, 체크포인팅 |
+| 시간 시뮬레이션 | `ConnectomeLayer` — 스파이킹 LIF(Shiu et al. 2024 Brian2 모델과 같은 한 스텝)·연속값 뉴런, 시간 역전파, 체크포인팅 |
 | 역전파 없는 학습 | `MushroomBodyOutput`, `AssocReadout`, `DopamineReadout` (도파민 국소 규칙) |
 | 인코더·리드아웃 | `RateEncoder`, `GlomerularEncoder`, `KCExpansion`, `extract`, `train_linear` |
 | 데이터 | `synthetic_odors`, `door_odors` (DoOR 2.0), `biconditional_mixtures` |

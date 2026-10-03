@@ -6,11 +6,14 @@
 
 효과기 - ConnectomeLayer에 발현. with 블록 안에서만, 또는 .remove()를 부를 때까지:
   silence(layer, line)              Kir2.1: 발화하지 않음 (내보내는 신호·발화율 모두 0)
-  block(layer, line)                Shibire-ts: 발화는 하지만 시냅스 전달이 막힘 (발화율은 그대로 보임)
-  activate(layer, line, hz=100)     CsChrimson·P2X2: 포아송 자극 (Shiu et al. 2024와 같은 방식, 불응기 지킴).
+  block(layer, line)                Shibire-ts: 발화는 하지만 시냅스 전달이 막힘 (발화율은 그대로 보임).
+                                    Shiu et al. 2024의 "silence"(나가는 시냅스 세기 0)가 이것
+  activate(layer, line, hz=100)     CsChrimson·P2X2: 포아송 자극. Shiu et al. 2024와 같은 방식 (자극 하나 = 전위
+                                    w_syn·f_poi 더하기, 자극받는 뉴런은 불응기 없음).
                                     연속값 뉴런(neuron="graded")은 level로 활동을 고정
   ablate(circuit, line)             세포 제거: 그 뉴런들의 연결을 모두 뺀 새 회로 (학습 비교용 - fd.compare와 함께)
 
+  active(layer), clear(layer)       지금 켜져 있는 효과기 / 모두 끄기 (print(layer)에도 보임)
   lines(circuit, by="cell_type")    주석 값마다 드라이버 (GAL4 모음)
   screen(measure, layer, lines)     유전자 스크린: 집단마다 효과기를 발현해 측정값 변화·짝지은 p값 표
 
@@ -171,18 +174,28 @@ class Expression:
         return f"<{self.kind} {self.line.name} ({len(self.line)}개{extra})>"
 
 
+def active(layer) -> list:
+    """층에 지금 켜져 있는 효과기 목록"""
+    return list(getattr(layer, "_effects", ()))
+
+
+def clear(layer):
+    """층의 효과기를 모두 끔"""
+    layer._effects.clear()
+
+
 def silence(layer, line: Line) -> Expression:
     """Kir2.1: 발화하지 않음 - 내보내는 신호와 발화율 모두 0 (입력 그룹도 끌 수 있음)"""
     return Expression(layer, "silence", line)
 
 
 def block(layer, line: Line) -> Expression:
-    """Shibire-ts: 발화는 그대로(발화율에 보임), 시냅스 전달만 막힘"""
+    """Shibire-ts: 발화는 그대로(발화율에 보임), 시냅스 전달만 막힘. Shiu et al. 2024 모델의 silence와 같음"""
     return Expression(layer, "block", line)
 
 
 def activate(layer, line: Line, hz: float = 100.0, level: float | None = None) -> Expression:
-    """CsChrimson·P2X2: 스파이킹 뉴런에 hz의 포아송 자극 (자극 하나 = 입력 스파이크 하나, Shiu et al. 2024).
+    """CsChrimson·P2X2: 스파이킹 뉴런에 hz의 포아송 자극 (자극 하나 = 입력 스파이크 하나, 불응기 없음 - Shiu et al. 2024).
     연속값 뉴런(graded)은 활동을 level로 고정 (기본 1.0)"""
     if hz <= 0:
         raise ValueError("hz는 양수")
@@ -232,16 +245,26 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     measure(layer, seed) -> float   예: lambda L, s: L(None, seed=s, return_all=True)[:, mn9.idx].mean()
     lines_:   {이름: Line} (lines(...)의 결과 등)
     effector: "silence" / "block" / "activate"
-    반환 표: 집단, 뉴런 수, 기준 평균, 조작 평균, 변화, 변화 비율, p (부호 뒤집기 순열 검정), 변화가 큰 순"""
+    반환 표: 집단, 뉴런 수, 기준 평균, 조작 평균, 변화, 변화 비율, p (부호 뒤집기 순열 검정),
+            p_holm (집단 수만큼 여러 번 시험한 것을 보정), 변화가 큰 순. seed 6개 미만이면 p < 0.05가 불가능해 경고"""
     from ._console import say
     from .controls import sign_flip_p
     make = {"silence": silence, "block": block, "activate": lambda L, l: activate(L, l, hz=hz)}
     if effector not in make:
         raise ValueError(f"effector는 {list(make)} 중 하나")
+    import warnings
     seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    min_p = 2 / 2 ** len(seeds)                                     # 부호 뒤집기 검정이 낼 수 있는 가장 작은 p
+    if min_p > 0.05:
+        warnings.warn(f"seed {len(seeds)}개로는 p가 {min_p:.3g} 아래로 내려갈 수 없음 - 효과가 커도 유의하지 않게 나옴. "
+                      "seeds=6 이상 (p < 0.05가 가능한 최소)", stacklevel=2)
+    if active(layer):
+        warnings.warn(f"층에 이미 켜진 효과기가 있음 ({active(layer)}) - 기준·조작 모두에 적용됨", stacklevel=2)
     base = np.array([float(measure(layer, s)) for s in seeds])
     if not np.isfinite(base).all():
         raise ValueError("기준 측정값에 NaN·무한대")
+    if len(seeds) > 1 and np.ptp(base) == 0 and base[0] == 0:
+        warnings.warn("기준 측정값이 모두 0 - 줄이는 조작의 효과는 볼 수 없음 (자극이 충분한지 확인)", stacklevel=2)
     rows = []
     for i, (name, line) in enumerate(lines_.items()):
         with make[effector](layer, line):
@@ -253,4 +276,19 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
         if verbose:
             say(f"  [{i + 1}/{len(lines_)}] {name} ({len(line)}개): {base.mean():.3g} → {val.mean():.3g}", flush=True)
     df = pd.DataFrame(rows)
-    return df.reindex(df.change.abs().sort_values(ascending=False).index).reset_index(drop=True)
+    df = df.reindex(df.change.abs().sort_values(ascending=False).index).reset_index(drop=True)
+    df.attrs["min_p"] = min_p
+    if len(df) > 1:                                                 # 여러 집단을 시험하면 우연히 작은 p가 나옴
+        df["p_holm"] = _holm(df.p.to_numpy())
+    return df
+
+
+def _holm(p: np.ndarray) -> np.ndarray:
+    """Holm 보정 (여러 집단을 한꺼번에 시험할 때의 p)"""
+    order = np.argsort(p)
+    adj = np.empty_like(p, dtype=float)
+    run = 0.0
+    for k, i in enumerate(order):
+        run = max(run, min(1.0, (len(p) - k) * p[i]))
+        adj[i] = run
+    return adj

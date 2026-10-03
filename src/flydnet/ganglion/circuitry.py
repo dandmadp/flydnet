@@ -51,6 +51,9 @@ class ConnectomeLayer(Tissue):
     count_from_ms: 이 시각부터 스파이크(또는 활동)를 셈
     neuron:     "lif" (기본) / "graded"
     inputs=None: 입력 그룹 없이 (fd.genetics.activate로만 자극할 때). 그때 layer(None, batch=시행 수)
+    timing:     "brian" (기본, 0.1.16~) = Shiu et al. 2024 Brian2 모델과 같은 한 스텝 (정확한 선형 적분, 불응기 중 도착한
+                시냅스 입력은 버림, 입력 스파이크는 발화 판정 뒤, 불응기 2.2 ms = 22스텝). 같은 입력이면 스파이크 시각까지 같음
+                "legacy" = 0.1.15까지 (오일러 적분, 불응기 중 입력을 쌓아 둠, torch판과 같음). 0.1.15 저장 파일은 legacy로 읽힘
     """
 
     FORMAT = "flydnet.ganglion.ConnectomeLayer/1"
@@ -59,7 +62,7 @@ class ConnectomeLayer(Tissue):
                  gains: dict | None = None, device: str | None = None, input_mode: str = "poisson",
                  trainable=False, dt: float | None = None, slope: float = 10.0, checkpoint_every: int | None = None,
                  share: str = "edge", bias=None, t_mbr=None, train_neurons: bool = False, v_init: str = "rest",
-                 count_from_ms: float = 0.0, neuron: str = "lif"):
+                 count_from_ms: float = 0.0, neuron: str = "lif", timing: str = "brian"):
         super().__init__()
         listify = lambda x: x if (x is None or isinstance(x, str)) else list(x)
         self.config = dict(inputs=listify(inputs), outputs=listify(outputs), t_ms=t_ms, params=dict(params or {}),
@@ -68,9 +71,13 @@ class ConnectomeLayer(Tissue):
                            dt=dt, slope=slope, checkpoint_every=checkpoint_every, share=share,
                            bias=dict(bias) if isinstance(bias, dict) else bias,
                            t_mbr=dict(t_mbr) if isinstance(t_mbr, dict) else t_mbr,
-                           train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms, neuron=neuron)
+                           train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms, neuron=neuron,
+                           timing=timing)
         if neuron not in ("lif", "graded"):
             raise ValueError(neuron)
+        if timing not in ("brian", "legacy"):
+            raise ValueError(f"timing은 'brian' 또는 'legacy': {timing}")
+        self.timing = timing
         if input_mode not in ("poisson", "regular"):
             raise ValueError(input_mode)
         if v_init not in ("rest", "random"):
@@ -275,6 +282,17 @@ class ConnectomeLayer(Tissue):
             v_eq, a = (b + p["v_0"]).reshape(-1, 1), a.reshape(-1, 1)
         else:
             v_eq, a = p["v_0"], dt / p["t_mbr"]
+        brian = self.timing == "brian"
+        if brian:                                   # 정확한 선형 적분 계수 (a = dt/t_mbr). t_mbr = tau면 극한값
+            tau = p["tau"]
+            if isinstance(a, Signal):
+                e_v = (-a).exp()
+                den = a * tau - dt
+                den = where(den.data >= 0, den + 1e-6, den - 1e-6)
+                e_g = (a * tau / den) * (e_v * -1.0 + gd)
+            else:
+                e_v = float(np.exp(-a))
+                e_g = float(a * np.exp(-a)) if abs(a * tau - dt) < 1e-9 else float(a * tau / (a * tau - dt) * (gd - e_v))
         frame = self._frames(x * (dt / 1000.0))                            # 스텝당 입력 스파이크 확률 (n_in, B)
         s_cnt = int(round(self.count_from_ms / dt))
         rfc_vec = xp.full((N, 1), float(rfc), dtype=xp.float32); rfc_vec[self.in_idx] = 0
@@ -290,12 +308,16 @@ class ConnectomeLayer(Tissue):
         fx = genetics_effects(self)
         quiet, blocked, act_idx = fx.get("silence"), fx.get("block"), fx.get("act_idx")
         n_act = 0 if act_idx is None else len(act_idx)
-        if n_act:                                                          # 활성화 = 포아송 자극을 입력처럼 전위에 직접
+        if n_act:                                   # 활성화 = 포아송 자극을 입력처럼 전위에 직접, 불응기 없음 (Shiu et al.과 같음)
             idx_all = xp.concatenate([in_idx, act_idx])
+            rfc_vec[act_idx] = 0
             p_act = Signal(xp.broadcast_to(fx["act_hz"] * np.float32(dt / 1000.0), (n_act, Bn)).copy())
             act_seed = (int(seed) * 0x2545F4914F6CDD1D + 0x5EED) % (1 << 63)   # 입력 난수와 따로
 
-        def run(s0, s1, V, G, refr, counts, phase, pend, *buf):
+        # 발화한 스텝 뒤 적분이 멈추는 스텝 수: brian = rfc (Brian2: t - 마지막 발화 >= 2.2 ms면 다시 적분), legacy = rfc + 1
+        rfc_set = rfc_vec - 1 if brian else rfc_vec
+
+        def run(s0, s1, V, G, refr, counts, phase, *buf):
             buf = list(buf)
             for s in range(s0, s1):
                 ps = frame(s, steps)
@@ -308,13 +330,13 @@ class ConnectomeLayer(Tissue):
                     spikes = (P.hash_uniform(xp, seed, s, ps.shape[::-1]).T < ps.data).astype(ps.data.dtype)
                 idx = in_idx
                 if n_act:
-                    # 불응기 중에 온 자극은 불응기가 끝날 때 적용 (Brian2: 불응기에는 문턱을 넘어도 발화하지 않음)
-                    kick = (pend.data > 0) | (P.hash_uniform(xp, act_seed, s, (Bn, n_act)).T < p_act.data)
-                    go = kick & act[act_idx]
-                    pend = Signal((kick & ~go).astype(xp.float32))
-                    spikes = xp.concatenate([spikes, go.astype(spikes.dtype)])
+                    kick = P.hash_uniform(xp, act_seed, s, (Bn, n_act)).T < p_act.data
+                    spikes = xp.concatenate([spikes, kick.astype(spikes.dtype)])
                     ps, idx = concat([ps, p_act]), idx_all
-                V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, idx, v_eq, a, **consts)
+                if brian:
+                    V, G, spk = K.lif_step_brian(V, G, buf[s % R], ps, spikes, act, idx, v_eq, e_v, e_g, **consts)
+                else:
+                    V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, idx, v_eq, a, **consts)
                 if quiet is not None:                                      # Kir2.1: 발화 없음
                     spk = spk * quiet
                 fired = spk.data > 0
@@ -322,10 +344,10 @@ class ConnectomeLayer(Tissue):
                     counts = counts + spk
                 if rec is not None:
                     rec.append(spk.data[rec_idx].T.copy())
-                refr = Signal(xp.where(fired, rfc_vec, refr.data - 1))
+                refr = Signal(xp.where(fired, rfc_set, refr.data - 1))
                 sent = spk if blocked is None else spk * blocked           # Shibire: 발화는 하지만 전달 없음
                 buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
-            return (V, G, refr, counts, phase, pend, *buf)
+            return (V, G, refr, counts, phase, *buf)
 
         z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))
         if self.v_init == "random":
@@ -333,8 +355,7 @@ class ConnectomeLayer(Tissue):
         else:
             V0 = Signal(xp.full((N, Bn), p["v_0"], dtype=xp.float32))
         phase0 = Signal(xp.broadcast_to(self.phase0[:, None], (self.n_in, Bn)).copy())
-        pend0 = Signal(xp.zeros((n_act, Bn), dtype=xp.float32))
-        state = (V0, z(), z(), z(), phase0, pend0, *[z() for _ in range(R)])
+        state = (V0, z(), z(), z(), phase0, *[z() for _ in range(R)])
         state = self._run(run, state, steps, x, record)
         rate = state[3].T * (1000.0 / (self.t_ms - s_cnt * dt))            # (B, N) Hz
         out = rate if return_all else rate[:, self.out_idx]
@@ -417,7 +438,9 @@ class ConnectomeLayer(Tissue):
         d, _ = read(path, "ConnectomeLayer")
         if str(d.get("format")) != cls.FORMAT:
             raise ValueError(f"flydnet ganglion ConnectomeLayer 파일이 아님 (format={d.get('format')})")
-        layer = cls(Circuit.from_arrays(d, "circuit."), device=device, **json.loads(str(d["config"])))
+        cfg = json.loads(str(d["config"]))
+        cfg.setdefault("timing", "legacy")                                 # 0.1.15 이전 파일은 그때 방식으로
+        layer = cls(Circuit.from_arrays(d, "circuit."), device=device, **cfg)
         layer.load_state({k[6:]: v for k, v in d.items() if k.startswith("state.")})
         layer._build()
         return layer
@@ -430,6 +453,10 @@ class ConnectomeLayer(Tissue):
             tr += f" (종류 {len(self.log_scale.data):,}개가 배율 공유)"
         if self.neuron_params:
             tr += f", 뉴런 매개변수 그룹 {len(self.group_names)}개{' 학습' if isinstance(self.bias, Synapse) else ''}"
+        if self._effects:
+            tr += f", 켜진 효과기: {', '.join(map(repr, self._effects))}"
+        if self.neuron == "lif" and self.timing != "brian":
+            tr += f", timing {self.timing}"
         return (f"{self.circuit.name}: in {self.n_in} ({'+'.join(self.in_names)}) → out {self.n_out} "
                 f"({'+'.join(self.out_names)}), {self.t_ms} ms, dt {self.p['dt']} ms, 입력 {self.input_mode}, "
                 f"장치 {self.device}{tr}")
