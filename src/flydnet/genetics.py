@@ -1,0 +1,256 @@
+"""가상 유전학: 초파리 실험실의 방법 그대로 뉴런 집단을 골라(드라이버) 끄고·켜고·막고·없앤다
+
+  line = fd.genetics.driver(brain, cell_type="MBON01")      # GAL4 드라이버: 주석으로 뉴런 집단 고르기
+  line = fd.genetics.driver(brain, root_ids=[...])           # 뉴런 ID로 / group="KC" 회로 그룹으로
+  a & b   (split-GAL4: 두 드라이버 모두에서 켜진 뉴런만),  a | b,  a - b
+
+효과기 - ConnectomeLayer에 발현. with 블록 안에서만, 또는 .remove()를 부를 때까지:
+  silence(layer, line)              Kir2.1: 발화하지 않음 (내보내는 신호·발화율 모두 0)
+  block(layer, line)                Shibire-ts: 발화는 하지만 시냅스 전달이 막힘 (발화율은 그대로 보임)
+  activate(layer, line, hz=100)     CsChrimson·P2X2: 포아송 자극 (Shiu et al. 2024와 같은 방식, 불응기 지킴).
+                                    연속값 뉴런(neuron="graded")은 level로 활동을 고정
+  ablate(circuit, line)             세포 제거: 그 뉴런들의 연결을 모두 뺀 새 회로 (학습 비교용 - fd.compare와 함께)
+
+  lines(circuit, by="cell_type")    주석 값마다 드라이버 (GAL4 모음)
+  screen(measure, layer, lines)     유전자 스크린: 집단마다 효과기를 발현해 측정값 변화·짝지은 p값 표
+
+효과기는 시뮬레이션에만 적용되고 저장되지 않는다 (layer.save는 배선·학습값만).
+"""
+from __future__ import annotations
+
+import re
+
+import numpy as np
+import pandas as pd
+
+from .ganglion import backend as B
+
+
+# ─────────────── 드라이버 (뉴런 집단) ───────────────
+class Line:
+    """회로 안의 뉴런 집단 (회로 번호 idx). 드라이버 계통처럼 &, |, - 로 조합"""
+
+    def __init__(self, circuit, idx, name: str):
+        self.circuit = circuit
+        self.idx = np.unique(np.asarray(idx, dtype=np.int64))
+        self.name = name
+        if len(self.idx) and (self.idx[0] < 0 or self.idx[-1] >= circuit.N):
+            raise ValueError(f"{name}: 회로 밖 번호")
+
+    def __len__(self):
+        return len(self.idx)
+
+    @property
+    def root_ids(self) -> np.ndarray:
+        return self.circuit.root_ids[self.idx]
+
+    def _same(self, other: "Line"):
+        if not isinstance(other, Line):
+            return NotImplemented
+        if not _same_circuit(self.circuit, other.circuit):
+            raise ValueError("다른 회로의 드라이버끼리는 조합할 수 없음")
+
+    def __and__(self, other):
+        self._same(other)
+        return Line(self.circuit, np.intersect1d(self.idx, other.idx), f"({self.name} ∩ {other.name})")
+
+    def __or__(self, other):
+        self._same(other)
+        return Line(self.circuit, np.union1d(self.idx, other.idx), f"({self.name} ∪ {other.name})")
+
+    def __sub__(self, other):
+        self._same(other)
+        return Line(self.circuit, np.setdiff1d(self.idx, other.idx), f"({self.name} - {other.name})")
+
+    def __repr__(self):
+        return f"<Line {self.name}: 뉴런 {len(self)}개>"
+
+
+def _same_circuit(a, b) -> bool:
+    return a is b or (a.N == b.N and np.array_equal(a.root_ids, b.root_ids))
+
+
+def _match(values: pd.Series, want) -> np.ndarray:
+    """주석 값 비교: 문자열·목록은 정확히 같은 값, re.compile(...)이면 정규식 전체 일치"""
+    s = values.astype("string")
+    if isinstance(want, re.Pattern):
+        return s.str.fullmatch(want).fillna(False).to_numpy(bool)
+    wants = [want] if isinstance(want, str) else list(want)
+    return s.isin(wants).fillna(False).to_numpy(bool)
+
+
+def driver(circuit, group: str | None = None, root_ids=None, name: str | None = None, missing: str = "error",
+           **annotation) -> Line:
+    """뉴런 집단 고르기 (조건을 여러 개 주면 모두 만족하는 뉴런 = 교집합)
+
+    group:      회로 그룹 이름 (예: "KC")
+    root_ids:   FlyWire 뉴런 ID 목록. 회로에 없는 ID는 missing = "error" / "warn" / "ignore"
+    annotation: 주석 열=값 (예: cell_type="MBON01", cell_sub_class=["sugar", "sugar/low_salt"], side="left").
+                값이 re.compile("MBON.*")이면 정규식"""
+    if group is None and root_ids is None and not annotation:
+        raise ValueError("group, root_ids, 주석 조건 중 하나는 필요")
+    keep = np.ones(circuit.N, bool)
+    parts = []
+    if group is not None:
+        if group not in circuit.groups:
+            raise KeyError(f"회로에 없는 그룹: {group} (있는 것: {list(circuit.groups)[:20]})")
+        m = np.zeros(circuit.N, bool); m[circuit.groups[group]] = True
+        keep &= m; parts.append(group)
+    if root_ids is not None:
+        ids = np.asarray(root_ids, dtype=np.int64)
+        found = pd.Index(circuit.root_ids).isin(ids)
+        lost = np.setdiff1d(ids, circuit.root_ids)
+        if len(lost):
+            msg = f"회로에 없는 뉴런 ID {len(lost)}개 (예: {lost[:3].tolist()}) - 다른 FlyWire 버전의 ID일 수 있음"
+            if missing == "error":
+                raise KeyError(msg + " (missing='warn'이면 빼고 진행)")
+            if missing == "warn":
+                import warnings
+                warnings.warn(msg)
+        keep &= found; parts.append(f"ID {len(ids) - len(lost)}개")
+    if annotation:
+        if circuit.meta is None:
+            raise ValueError("주석이 없는 회로 (Circuit.from_flywire / whole_brain으로 만든 회로에서)")
+        for col, want in annotation.items():
+            if col not in circuit.meta.columns:
+                raise KeyError(f"주석 열이 없음: {col} (있는 것: {list(circuit.meta.columns)})")
+            keep &= _match(circuit.meta[col], want)
+            parts.append(f"{col}={want.pattern if isinstance(want, re.Pattern) else want}")
+    line = Line(circuit, np.nonzero(keep)[0], name or " & ".join(map(str, parts)))
+    if not len(line):
+        raise ValueError(f"조건에 맞는 뉴런이 없음: {line.name}")
+    return line
+
+
+def lines(circuit, by: str = "cell_type", min_size: int = 1, within: Line | None = None) -> dict[str, Line]:
+    """주석 열 by의 값마다 드라이버 (GAL4 모음). within을 주면 그 집단 안에서만"""
+    if circuit.meta is None or by not in circuit.meta.columns:
+        raise KeyError(f"주석 열이 없음: {by}")
+    vals = circuit.meta[by].astype("string")
+    if within is not None:
+        mask = np.zeros(circuit.N, bool); mask[within.idx] = True
+        vals = vals.where(mask)
+    out = {}
+    for v, idx in vals.dropna().groupby(vals.dropna()).groups.items():
+        if len(idx) >= min_size:
+            out[str(v)] = Line(circuit, np.asarray(idx), str(v))
+    return out
+
+
+# ─────────────── 효과기 ───────────────
+class Expression:
+    """층에 발현된 효과기 하나. with 블록이 끝나거나 remove()를 부르면 사라짐"""
+
+    def __init__(self, layer, kind: str, line: Line, hz: float | None = None, level: float | None = None):
+        if not _same_circuit(layer.circuit, line.circuit):
+            raise ValueError(f"{line.name}: 층의 회로와 다른 회로에서 고른 드라이버")
+        if not len(line):
+            raise ValueError(f"{line.name}: 뉴런이 없음")
+        self.layer, self.kind, self.line, self.hz, self.level = layer, kind, line, hz, level
+        if kind == "activate":
+            ins = np.intersect1d(line.idx, B.numpy(layer.in_idx))
+            if len(ins):
+                raise ValueError(f"{line.name}: 입력 그룹 뉴런 {len(ins)}개는 활성화 대신 입력 발화율로 조절")
+            for e in layer._effects:
+                if e.kind == "activate" and len(np.intersect1d(e.line.idx, line.idx)):
+                    raise ValueError(f"{line.name}: 이미 활성화한 뉴런과 겹침 ({e.line.name})")
+        layer._effects.append(self)
+
+    def remove(self):
+        if self in self.layer._effects:
+            self.layer._effects.remove(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.remove()
+
+    def __repr__(self):
+        extra = f", {self.hz} Hz" if self.hz is not None else (f", level {self.level}" if self.level is not None else "")
+        return f"<{self.kind} {self.line.name} ({len(self.line)}개{extra})>"
+
+
+def silence(layer, line: Line) -> Expression:
+    """Kir2.1: 발화하지 않음 - 내보내는 신호와 발화율 모두 0 (입력 그룹도 끌 수 있음)"""
+    return Expression(layer, "silence", line)
+
+
+def block(layer, line: Line) -> Expression:
+    """Shibire-ts: 발화는 그대로(발화율에 보임), 시냅스 전달만 막힘"""
+    return Expression(layer, "block", line)
+
+
+def activate(layer, line: Line, hz: float = 100.0, level: float | None = None) -> Expression:
+    """CsChrimson·P2X2: 스파이킹 뉴런에 hz의 포아송 자극 (자극 하나 = 입력 스파이크 하나, Shiu et al. 2024).
+    연속값 뉴런(graded)은 활동을 level로 고정 (기본 1.0)"""
+    if hz <= 0:
+        raise ValueError("hz는 양수")
+    if layer.neuron == "graded":
+        level = 1.0 if level is None else level
+    return Expression(layer, "activate", line, hz=float(hz), level=level)
+
+
+def ablate(circuit, line: Line):
+    """세포 제거: line 뉴런이 주고받는 연결을 모두 뺀 새 회로 (뉴런 번호·그룹은 그대로 → 같은 층 설정으로 비교)"""
+    if not _same_circuit(circuit, line.circuit):
+        raise ValueError("다른 회로에서 고른 드라이버")
+    gone = np.zeros(circuit.N, bool); gone[line.idx] = True
+    keep = ~(gone[circuit.pre] | gone[circuit.post])
+    from .circuit import Circuit
+    return Circuit(circuit.root_ids, circuit.groups, circuit.pre[keep], circuit.post[keep], circuit.weight[keep],
+                   name=f"{circuit.name} [제거: {line.name}]", meta=circuit.meta, pos=circuit.pos)
+
+
+def effects(layer) -> dict:
+    """forward가 쓰는 효과기 요약 (내부용): 뉴런별 발화 마스크·전달 마스크, 활성화 뉴런·확률·수준"""
+    eff = list(getattr(layer, "_effects", ()))
+    if not eff:
+        return {}
+    N = layer.circuit.N
+    out = {}
+    for kind in ("silence", "block"):
+        idx = [e.line.idx for e in eff if e.kind == kind]
+        if idx:
+            m = np.ones((N, 1), np.float32); m[np.concatenate(idx)] = 0
+            out[kind] = B.to(m, layer.device)
+    acts = [e for e in eff if e.kind == "activate"]
+    if acts:
+        idx = np.concatenate([e.line.idx for e in acts])
+        out["act_idx"] = B.to(idx, layer.device)
+        out["act_hz"] = B.to(np.concatenate([np.full(len(e.line), e.hz, np.float32) for e in acts])[:, None], layer.device)
+        out["act_level"] = B.to(np.concatenate([np.full(len(e.line), e.level if e.level is not None else 1.0, np.float32)
+                                                for e in acts])[:, None], layer.device)
+    return out
+
+
+# ─────────────── 유전자 스크린 ───────────────
+def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz: float = 100.0,
+           verbose: bool = True) -> pd.DataFrame:
+    """집단마다 효과기를 발현하고 측정값이 얼마나 바뀌는지 (같은 seed끼리 짝지음)
+
+    measure(layer, seed) -> float   예: lambda L, s: L(None, seed=s, return_all=True)[:, mn9.idx].mean()
+    lines_:   {이름: Line} (lines(...)의 결과 등)
+    effector: "silence" / "block" / "activate"
+    반환 표: 집단, 뉴런 수, 기준 평균, 조작 평균, 변화, 변화 비율, p (부호 뒤집기 순열 검정), 변화가 큰 순"""
+    from ._console import say
+    from .controls import sign_flip_p
+    make = {"silence": silence, "block": block, "activate": lambda L, l: activate(L, l, hz=hz)}
+    if effector not in make:
+        raise ValueError(f"effector는 {list(make)} 중 하나")
+    seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    base = np.array([float(measure(layer, s)) for s in seeds])
+    if not np.isfinite(base).all():
+        raise ValueError("기준 측정값에 NaN·무한대")
+    rows = []
+    for i, (name, line) in enumerate(lines_.items()):
+        with make[effector](layer, line):
+            val = np.array([float(measure(layer, s)) for s in seeds])
+        d = val - base
+        rows.append(dict(line=name, n=len(line), baseline=base.mean(), manipulated=val.mean(), change=d.mean(),
+                         rel_change=d.mean() / base.mean() if base.mean() else np.nan,
+                         p=sign_flip_p(d) if len(seeds) > 1 else np.nan))
+        if verbose:
+            say(f"  [{i + 1}/{len(lines_)}] {name} ({len(line)}개): {base.mean():.3g} → {val.mean():.3g}", flush=True)
+    df = pd.DataFrame(rows)
+    return df.reindex(df.change.abs().sort_values(ascending=False).index).reset_index(drop=True)

@@ -85,6 +85,40 @@ shuffled_weights             0.7736     [0.755, 0.7922]    +0.006944   0.73   0.
 - 함정을 경고한다: seed가 적어 p가 0.05 아래로 내려갈 수 없음, 상한 근처라 차이가 가려짐, 찍기 수준,
   같은 seed인데 결과가 다름, 큰 구조 때문에만 이김, 효과는 큰데 비유의.
 
+## 가상 유전학: fd.genetics
+
+초파리 실험실의 방법 그대로: 드라이버로 뉴런 집단을 고르고, 효과기로 끄고·켜고·막는다.
+
+```python
+brain = fd.Circuit.whole_brain()                                  # 138,639개 뉴런 (Shiu et al. 2024 모델과 같은 순서)
+G = fd.genetics
+sugar = G.driver(brain, cell_sub_class="sugar")                   # GAL4: 주석 조건으로 (root_ids=, group=도 가능)
+mn9 = G.driver(brain, root_ids=[720575940660219265])
+layer = fd.ConnectomeLayer(brain, inputs=None, outputs="motor", t_ms=1000)
+with G.activate(layer, sugar, hz=100):                            # CsChrimson: 포아송 자극
+    r = layer(None, batch=30, return_all=True)                    # 30번 시행, 모든 뉴런 발화율
+```
+
+| 효과기 | 실험실 도구 | 효과 |
+|---|---|---|
+| `activate(layer, line, hz)` | CsChrimson, P2X2 | 포아송 자극 (연속값 뉴런은 `level`로 고정) |
+| `silence(layer, line)` | Kir2.1 | 발화 없음 |
+| `block(layer, line)` | Shibire-ts | 발화는 하지만 시냅스 전달 차단 |
+| `ablate(circuit, line)` | 세포 제거 | 연결을 뺀 새 회로 (`fd.compare`로 학습 비교) |
+
+- 드라이버 조합: `a & b` (split-GAL4), `a | b`, `a - b`. `lines(circuit, by="cell_type")`는 세포 유형마다 드라이버.
+- `screen(measure, layer, lines)`: 집단마다 효과기를 발현해 측정값 변화와 짝지은 p값을 표로 (유전자 스크린).
+- 효과기는 `with` 블록 안에서만 (또는 `.remove()`까지), 학습 중에도 쓸 수 있다 (역전파 됨).
+
+**검증 - Shiu et al. 2024 재현** (`examples/genetics_sugar.py`, 같은 뉴런 ID·매개변수, 1초 x 30시행):
+
+| 자극 | 무자극 | 당 25 Hz | 당 50 Hz | 당 100 Hz | 당 200 Hz | 쓴맛 100 Hz | 당 + 쓴맛 100 Hz |
+|---|---|---|---|---|---|---|---|
+| MN9 (Hz) | 0 | 0 | 17 | 72 | 114 | 0 | 1 |
+
+당 GRN 자극의 세기에 따라 섭식 운동 뉴런 MN9가 발화하고, 쓴맛은 MN9를 켜지 않으며 당 반응을 거의 없앤다
+(원 논문과 같은 방향. 원본 Brian2 모델과의 수치 비교는 아직).
+
 ## 구성 요소
 
 | 무엇 | 이름 |

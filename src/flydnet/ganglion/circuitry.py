@@ -18,8 +18,13 @@ import numpy as np
 from . import backend as B
 from . import kernels as K
 from . import physiology as P
-from .signal import Signal, as_signal, checkpoint, learning_enabled, quiescent, where
+from .signal import Signal, as_signal, checkpoint, concat, learning_enabled, quiescent, where
 from .tissue import Synapse, Tissue
+
+
+def genetics_effects(layer) -> dict:
+    from ..genetics import effects
+    return effects(layer)
 
 DEFAULT_PARAMS = dict(
     v_0=-52.0, v_rst=-52.0, v_th=-45.0,   # mV
@@ -45,6 +50,7 @@ class ConnectomeLayer(Tissue):
     v_init:     "rest" / "random" (리셋~문턱 사이 고정된 무작위 값)
     count_from_ms: 이 시각부터 스파이크(또는 활동)를 셈
     neuron:     "lif" (기본) / "graded"
+    inputs=None: 입력 그룹 없이 (fd.genetics.activate로만 자극할 때). 그때 layer(None, batch=시행 수)
     """
 
     FORMAT = "flydnet.ganglion.ConnectomeLayer/1"
@@ -55,7 +61,7 @@ class ConnectomeLayer(Tissue):
                  share: str = "edge", bias=None, t_mbr=None, train_neurons: bool = False, v_init: str = "rest",
                  count_from_ms: float = 0.0, neuron: str = "lif"):
         super().__init__()
-        listify = lambda x: x if isinstance(x, str) else list(x)
+        listify = lambda x: x if (x is None or isinstance(x, str)) else list(x)
         self.config = dict(inputs=listify(inputs), outputs=listify(outputs), t_ms=t_ms, params=dict(params or {}),
                            input_mode=input_mode,
                            trainable=trainable if isinstance(trainable, bool) else list(trainable),
@@ -82,11 +88,11 @@ class ConnectomeLayer(Tissue):
         if dt is not None:
             self.p["dt"] = dt
         self.t_ms, self.slope, self.checkpoint_every, self.count_from_ms = t_ms, slope, checkpoint_every, count_from_ms
-        inputs = [inputs] if isinstance(inputs, str) else list(inputs)
+        inputs = [] if inputs is None else [inputs] if isinstance(inputs, str) else list(inputs)
         outputs = [outputs] if isinstance(outputs, str) else list(outputs)
         self.in_names, self.out_names = inputs, outputs
         N = circuit.N
-        in_idx = np.concatenate([circuit.groups[i] for i in inputs])
+        in_idx = np.concatenate([circuit.groups[i] for i in inputs]) if inputs else np.array([], np.int64)
         out_idx = np.concatenate([circuit.groups[o] for o in outputs])
         self.n_in, self.n_out = len(in_idx), len(out_idx)
 
@@ -136,6 +142,7 @@ class ConnectomeLayer(Tissue):
         self.log_scale = Synapse(np.zeros(int(which.max()) + 1 if len(pos) else 0, np.float32), device=dev) \
             if len(pos) else None
         self.gains = dict(gains or {})
+        self._effects = []                                         # fd.genetics 효과기 (저장 안 됨)
 
         self.neuron_params = bias is not None or t_mbr is not None or train_neurons
         if self.neuron_params:
@@ -243,8 +250,11 @@ class ConnectomeLayer(Tissue):
 
     # ─────────────── 순전파 ───────────────
     # 내부 신호 배치는 (뉴런 N, 배치 B). 한 스텝은 kernels.lif_step / graded_step 한 번 (필요한 값만 저장)
-    def forward(self, rates, seed: int | None = None, return_all: bool = False, record=None):
-        """record: 회로 뉴런 번호 목록이면 스텝별 활동도 → (출력, (B, steps, k) numpy). 체크포인팅과 같이 쓰지 않음"""
+    def forward(self, rates=None, seed: int | None = None, return_all: bool = False, record=None, batch: int = 1):
+        """record: 회로 뉴런 번호 목록이면 스텝별 활동도 → (출력, (B, steps, k) numpy). 체크포인팅과 같이 쓰지 않음
+        rates=None: 입력 없음 (모두 0), batch개 시행 - fd.genetics.activate로만 자극할 때"""
+        if rates is None:
+            rates = np.zeros((batch, self.n_in), np.float32)
         x = as_signal(rates, self.device)
         if x.data.dtype != np.float32 and x.data.dtype.kind == "f" and not x.plastic:
             x = Signal(x.data.astype(np.float32))
@@ -277,8 +287,15 @@ class ConnectomeLayer(Tissue):
                       scale=p["v_th"] - p["v_rst"], slope=self.slope)
         rec = [] if record is not None else None
         rec_idx = B.to(np.asarray(record), self.device) if record is not None else None
+        fx = genetics_effects(self)
+        quiet, blocked, act_idx = fx.get("silence"), fx.get("block"), fx.get("act_idx")
+        n_act = 0 if act_idx is None else len(act_idx)
+        if n_act:                                                          # 활성화 = 포아송 자극을 입력처럼 전위에 직접
+            idx_all = xp.concatenate([in_idx, act_idx])
+            p_act = Signal(xp.broadcast_to(fx["act_hz"] * np.float32(dt / 1000.0), (n_act, Bn)).copy())
+            act_seed = (int(seed) * 0x2545F4914F6CDD1D + 0x5EED) % (1 << 63)   # 입력 난수와 따로
 
-        def run(s0, s1, V, G, refr, counts, phase, *buf):
+        def run(s0, s1, V, G, refr, counts, phase, pend, *buf):
             buf = list(buf)
             for s in range(s0, s1):
                 ps = frame(s, steps)
@@ -289,15 +306,26 @@ class ConnectomeLayer(Tissue):
                     phase = Signal(ph - spikes)
                 else:
                     spikes = (P.hash_uniform(xp, seed, s, ps.shape[::-1]).T < ps.data).astype(ps.data.dtype)
-                V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, in_idx, v_eq, a, **consts)
+                idx = in_idx
+                if n_act:
+                    # 불응기 중에 온 자극은 불응기가 끝날 때 적용 (Brian2: 불응기에는 문턱을 넘어도 발화하지 않음)
+                    kick = (pend.data > 0) | (P.hash_uniform(xp, act_seed, s, (Bn, n_act)).T < p_act.data)
+                    go = kick & act[act_idx]
+                    pend = Signal((kick & ~go).astype(xp.float32))
+                    spikes = xp.concatenate([spikes, go.astype(spikes.dtype)])
+                    ps, idx = concat([ps, p_act]), idx_all
+                V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, idx, v_eq, a, **consts)
+                if quiet is not None:                                      # Kir2.1: 발화 없음
+                    spk = spk * quiet
                 fired = spk.data > 0
                 if s >= s_cnt:
                     counts = counts + spk
                 if rec is not None:
                     rec.append(spk.data[rec_idx].T.copy())
                 refr = Signal(xp.where(fired, rfc_vec, refr.data - 1))
-                buf[(s + dly) % R] = K.propagate(spk, values, M, MT, self.wiring)
-            return (V, G, refr, counts, phase, *buf)
+                sent = spk if blocked is None else spk * blocked           # Shibire: 발화는 하지만 전달 없음
+                buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
+            return (V, G, refr, counts, phase, pend, *buf)
 
         z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))
         if self.v_init == "random":
@@ -305,7 +333,8 @@ class ConnectomeLayer(Tissue):
         else:
             V0 = Signal(xp.full((N, Bn), p["v_0"], dtype=xp.float32))
         phase0 = Signal(xp.broadcast_to(self.phase0[:, None], (self.n_in, Bn)).copy())
-        state = (V0, z(), z(), z(), phase0, *[z() for _ in range(R)])
+        pend0 = Signal(xp.zeros((n_act, Bn), dtype=xp.float32))
+        state = (V0, z(), z(), z(), phase0, pend0, *[z() for _ in range(R)])
         state = self._run(run, state, steps, x, record)
         rate = state[3].T * (1000.0 / (self.t_ms - s_cnt * dt))            # (B, N) Hz
         out = rate if return_all else rate[:, self.out_idx]
@@ -342,11 +371,21 @@ class ConnectomeLayer(Tissue):
         in_idx = self.in_idx
         rec = [] if record is not None else None
         rec_idx = B.to(np.asarray(record), self.device) if record is not None else None
+        fx = genetics_effects(self)
+        quiet, blocked, act_idx = fx.get("silence"), fx.get("block"), fx.get("act_idx")
+        if act_idx is not None:                                            # 활성화 = 활동을 level로 고정 (입력 뉴런처럼)
+            in_idx = xp.concatenate([in_idx, act_idx])
+            level = Signal(xp.broadcast_to(fx["act_level"], (len(act_idx), Bn)).copy())
 
         def run(s0, s1, V, r, acc):
             for s in range(s0, s1):
-                I = K.propagate(r, values, M, MT, self.wiring)
-                V, r = K.graded_step(V, I, frame(s, steps), in_idx, b, a, r_max)
+                I = K.propagate(r if blocked is None else r * blocked, values, M, MT, self.wiring)
+                x_in = frame(s, steps)
+                if act_idx is not None:
+                    x_in = concat([x_in, level])
+                V, r = K.graded_step(V, I, x_in, in_idx, b, a, r_max)
+                if quiet is not None:
+                    r = r * quiet
                 if s >= s_cnt:
                     acc = acc + r
                 if rec is not None:

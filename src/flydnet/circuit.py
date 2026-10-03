@@ -107,9 +107,31 @@ class Circuit:
         keep = (pre >= 0) & (post >= 0)
         w = (df.Connectivity.values * df.Excitatory.values)[keep]
         a = ann.set_index("root_id").loc[ids]
-        meta = a[["super_class", "cell_class", "cell_sub_class", "cell_type"]].reset_index()
+        meta = a[["super_class", "cell_class", "cell_sub_class", "cell_type", "side"]].reset_index()
         return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})",
                    meta=meta, pos=a[["pos_x", "pos_y", "pos_z"]].values)
+
+    @classmethod
+    def whole_brain(cls, data_dir: str | Path | None = None, group_by: str = "super_class",
+                    annotations: str = "flywire_annotations.tsv", connectivity: str = "Connectivity_783.parquet",
+                    completeness: str = "Completeness_783.csv") -> "Circuit":
+        """전체 뇌 (FlyWire v783 138,639개 뉴런, Shiu et al. 2024 모델과 같은 뉴런·순서). 그룹 = 주석 group_by 값
+        (주석이 없는 뉴런은 "unannotated"). fd.genetics.driver로 주석 조건이나 뉴런 ID로 집단을 고름"""
+        from .data import require
+        d = require("flywire", data_dir)
+        ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
+        cols = ["super_class", "cell_class", "cell_sub_class", "cell_type", "side"]
+        ann = pd.read_csv(d / annotations, sep="\t", low_memory=False, usecols=["root_id", *cols, "pos_x", "pos_y", "pos_z"])
+        a = ann.drop_duplicates("root_id").set_index("root_id").reindex(ids)
+        key = a[group_by].astype("string").fillna("unannotated").to_numpy()
+        names, inv = np.unique(key, return_inverse=True)
+        groups = {str(n): np.nonzero(inv == i)[0] for i, n in enumerate(names)}
+        df = pd.read_parquet(d / connectivity, columns=["Presynaptic_Index", "Postsynaptic_Index",
+                                                         "Connectivity", "Excitatory"])
+        w = (df.Connectivity.values * df.Excitatory.values).astype(np.float32)
+        meta = a[cols].reset_index().rename(columns={"index": "root_id"})
+        return cls(ids, groups, df.Presynaptic_Index.values, df.Postsynaptic_Index.values, w,
+                   name="FlyWire 전체 뇌", meta=meta, pos=a[["pos_x", "pos_y", "pos_z"]].to_numpy(np.float32))
 
     def shuffled(self, seed: int = 0, pairs=None, exclude=None, local=None, merge=None) -> "Circuit":
         """무작위 배선 대조군: (보내는 그룹, 받는 그룹) 쌍마다 받는 뉴런을 섞음.
