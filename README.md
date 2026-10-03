@@ -18,7 +18,9 @@ synapse strengths and per-cell-type parameters can be trained with backprop. Doc
 - **뉴런 모델**: 스파이킹 LIF(Shiu et al. 2024 매개변수) 또는 연속값(graded) 뉴런
 - **역전파 학습**: 연결별 또는 연결 종류별 세기, 세포 유형별 bias·막 시간 상수. 전체 뇌도 12GB GPU에서 학습
 - **대조군**: 연결 수·차수를 유지한 무작위 배선, 시야 위치를 유지한 국소 무작위 배선
-- **도파민 연합 학습 리드아웃**: 역전파 없이 한 번 보고 학습, 연속 학습에 강함
+- **도파민 연합 학습 리드아웃**: 역전파 없이 한 번 보고 학습, 연속 학습에 강함 — 사전학습 특징에 붙이면
+  CIFAR-100 클래스 증가 10과제에서 57.7% (재생 버퍼 역전파 51.6%, 상한선 65.6%)
+- **빠른 버섯체 확장 층** (`KCExpansion`): 실제 PN→KC 배선을 시뮬레이션 없이 한 번에 계산
 - **데이터 도우미**: `python -m flydnet download`로 FlyWire·DoOR 데이터를 받음 (패키지에는 데이터 없음)
 
 빠른 시작 (설치와 데이터 받기 후):
@@ -87,6 +89,21 @@ layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=100, gains={"PN>KC": 2.0}, input
 feats = fd.extract(layer, enc, images)            # (n, 2597) KC 발화율
 fd.train_linear(feats, y, feats_test, y_test)     # 로지스틱 회귀
 mb.shuffled(seed=0)                               # 무작위 배선 대조군 (연결 수·차수는 그대로)
+```
+
+### 연속 학습: 새 클래스를 계속 추가하는 분류기
+
+정확도가 필요하면 이 방식이 가장 쓸 만하다 (실험 ⑪). 사전학습 모델로 특징을 뽑고, 도파민 연합 학습으로 클래스를
+차례로 배운다. 역전파가 없고, 데이터를 한 번만 보며, 새 클래스를 배워도 이전 클래스를 잊지 않는다.
+
+```python
+ro = fd.AssocReadout(n_in=512, n_classes=100, per_class=10)     # 클래스마다 원형 10개
+ro.fit(feats_task1, y_task1)                                    # 과제 1의 클래스
+ro.fit(feats_task2, y_task2)                                    # 과제 2 — 과제 1을 잊지 않음
+pred = ro.predict(feats_test, classes=seen_classes)
+
+kc = fd.KCExpansion(fd.Circuit.from_flywire(side=None), n_in=512, projection="gaussian", k_frac=0.2)
+codes = kc(feats)                                               # 실제 버섯체 확장 (이 과제에서는 오히려 손해, ⑪ 참고)
 ```
 
 ### PyTorch 층처럼 역전파로 학습
@@ -181,6 +198,7 @@ layer = fd.ConnectomeLayer(brain, "SENS", "REST", t_ms=50, dt=0.5, input_mode="r
 | `encoders.py` | `RateEncoder`: 텐서 → 입력 뉴런 발화율 |
 | `layers.py` | `ConnectomeLayer`: 배치 LIF 시뮬레이션 (희소행렬 곱, GPU). `input_mode="regular"`/`"poisson"` |
 | `readout.py` | `extract()`: 데이터 → 발화율 특징, `train_linear()`: 리드아웃 학습 |
+| `expansion.py` | `KCExpansion`: 실제 PN→KC 배선 앞먹임 확장 (상위 k만 남김, APL 억제처럼) |
 
 ## 실험 ① 버섯체 저장소(reservoir) — MNIST
 
@@ -455,6 +473,28 @@ layer = fd.ConnectomeLayer(vc.normalized(), fd.PHOTORECEPTORS, ["T4a", "T4b", "T
                            trainable=True, share="pair", train_neurons=True)
 ```
 
+## 실험 ⑪ CIFAR-100 연속 학습 — 사전학습 특징 + 도파민 연합 학습
+
+`python examples/continual_cifar.py` (처음엔 CIFAR-100·ResNet-18 가중치 받고 특징 추출 약 1분, 이후 10초).
+100개 클래스를 10개씩 10과제로 차례로 배움, 과제당 데이터 한 번(1에폭), ResNet-18(ImageNet) 특징 고정.
+
+| 방법 | 마지막 정확도 |
+|---|---|
+| 상한선: 모든 데이터를 한꺼번에 (연속 학습 아님) | 65.6% |
+| **도파민 연합 학습, 원형 10개 (특징 그대로)** | **57.7%** |
+| 같은 밀도 무작위 행렬 확장 + 연합 학습 | 54.9% |
+| 클래스 평균 (NCM) | 53.9% |
+| 재생 버퍼 (클래스당 20개) + 역전파 | 51.6% |
+| 실제 FlyWire KC 확장 + 연합 학습 (양쪽 버섯체, 가우스 투영, 20%) | 49.7% |
+| 무작위 배선 KC 확장 + 연합 학습 | 49.0% |
+| 미세조정 (앞의 것을 잊음) | 23.0% |
+
+해석
+- 도파민 연합 학습은 연속 학습에서 실제로 경쟁력 있다 (재생 버퍼 +6.1%p, NCM +3.8%p, 역전파 없음).
+- 버섯체 KC 확장은 손해였다 (투영·켜짐 비율·양쪽 버섯체를 바꿔 38.9 → 49.7%까지 올렸지만 특징 그대로보다 낮음).
+  실제 버섯체는 냄새 수용체 50여 개를 받도록 만들어져, 512차원 특징을 받기에는 PN 입구와 KC당 입력(약 5개)이 좁다.
+- 실제·무작위 배선은 같았다 (49.7% 대 49.0%).
+
 ## 지금까지의 결론
 
 | 질문 | 답 |
@@ -462,7 +502,8 @@ layer = fd.ConnectomeLayer(vc.normalized(), fd.PHOTORECEPTORS, ["T4a", "T4b", "T
 | 실제 FlyWire 배선이 무작위 배선보다 나은가 | 아니다. 합성 냄새에서만 +1.4%p, MNIST·실제 냄새 4가지 과제에서 차이 없음 |
 | 시각계처럼 배선이 기능을 정하는 회로에서는 | 시야 위치 대응은 필수(없으면 학습 불가). 하지만 그 안의 세부 배선(아형별 방향 구조)은 학습으로 대체됨 |
 | KC 층(확장 + 희소화)이 도움이 되나 | 리드아웃이 선형일 때만 (XOR형 과제 +19%p). 원형 연합 학습·MLP에는 불필요하거나 손해 |
-| 도파민 연합 학습(AssocReadout)이 쓸모 있나 | 그렇다. 한 번 보기, 역전파 없음, 연속 학습에서 같은 저장량 재생 버퍼보다 13~14%p 높음. 단 알려진 원형 분류기와 같은 원리 |
+| 도파민 연합 학습(AssocReadout)이 쓸모 있나 | 그렇다. 한 번 보기, 역전파 없음. 연속 학습에서 재생 버퍼보다 MNIST +13%p, 사전학습 특징의 CIFAR-100 +6%p. 단 알려진 원형 분류기와 같은 원리 |
+| 정확도가 필요하면 | 사전학습 특징 + `AssocReadout`. 커넥톰 배선(KC 확장)은 이 용도에서 도움이 안 됨 |
 
 ## 다음 단계 아이디어
 - 질문을 "커넥톰이 정확도를 높이는가"(10개 실험에서 아니다)에서 **"커넥톰이 어떤 해법을 찾게 하는가"**로 바꾸기:

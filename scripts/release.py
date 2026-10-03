@@ -138,11 +138,16 @@ def check(upload: bool, test: bool):
     ok("빌드한 wheel을 따로 설치해 불러오기·버전·명령줄 확인")
 
     tag = f"v{v}"
-    if run(["git", "tag", "--list", tag], capture_output=True, text=True).stdout.strip():
-        ok(f"git 태그 {tag} 이미 있음")
+    head = run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    at = run(["git", "rev-list", "-n", "1", tag], capture_output=True, text=True).stdout.strip()
+    if at == head:
+        ok(f"git 태그 {tag} (현재 커밋)")
     else:
+        if at:                                                # 예전 check에서 붙였지만 아직 안 올린 버전 → 옮김
+            run(["git", "tag", "-d", tag], capture_output=True)
+            print(f"  (태그 {tag}가 예전 커밋 {at[:7]}에 있었음 → 아직 안 올린 버전이라 현재 커밋으로 옮김)")
         run(["git", "tag", "-a", tag, "-m", f"flydnet {v}"])
-        ok(f"git 태그 {tag}")
+        ok(f"git 태그 {tag} → {head[:7]}")
 
     cmd = [PY, "-m", "twine", "upload", *(["--repository", "testpypi"] if test else []), *map(str, files)]
     if not upload:
