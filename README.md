@@ -7,7 +7,7 @@ trains the same model on the real connectome and on nested null models over pair
 tests, warns about pitfalls, and reads the nested controls to say *which* structure matters.
 Own autograd engine on NumPy (CPU) / CuPy (GPU); PyTorch optional. Docs in Korean.
 
-> **Alpha (0.2).** API가 바뀔 수 있다. 연구용 도구이며, 정확도 향상을 기대할 도구는 아니다 (아래 "결과 요약").
+> **Alpha (0.1).** API가 바뀔 수 있다. 연구용 도구이며, 정확도 향상을 기대할 도구는 아니다 (아래 "결과 요약").
 
 초파리 커넥톰의 실제 배선을 신경망 층으로 쓰고, **"이 배선이 정말 중요한가"**를 통계로 묻는 라이브러리.
 
