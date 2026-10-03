@@ -41,7 +41,7 @@ CONDITIONS = {
 }
 
 mb = fd.Circuit.from_flywire()
-enc = fd.GlomerularEncoder(mb)
+enc = fd.torch.GlomerularEncoder(mb)
 G = enc.n_glomeruli
 mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
                                   input_mode="regular")
@@ -51,15 +51,15 @@ for cname, kw in CONDITIONS.items():
         layers[(cname, k)] = mk(mb.shuffled(seed=k, **kw))
 print(f"{mb}\n조건 {len(CONDITIONS)}개 × 무작위 {args.shuffles}개 | 과제 seed {args.task_seeds}개\n")
 
-acc = lambda Ftr, ytr, Fte, yte: fd.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
+acc = lambda Ftr, ytr, Fte, yte: fd.torch.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
 loss = {c: [] for c in CONDITIONS}                      # 조건별 (설정×seed) 손실
 for C, K, noise, ntr in CONFIGS:
     t = time.time()
     res = {key: [] for key in layers}
     for s in range(args.task_seeds):
-        Xtr, ytr, Xte, yte = fd.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
+        Xtr, ytr, Xte, yte = fd.torch.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
         for key, L in layers.items():
-            res[key].append(acc(fd.extract(L, enc, Xtr), ytr, fd.extract(L, enc, Xte), yte))
+            res[key].append(acc(fd.torch.extract(L, enc, Xtr), ytr, fd.torch.extract(L, enc, Xte), yte))
     real = torch.tensor(res[("실제", 0)])
     line = f"  실제 {real.mean():5.1f}"
     for cname in CONDITIONS:

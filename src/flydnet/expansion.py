@@ -1,81 +1,75 @@
-"""실제 PN→KC 배선을 한 번에 계산하는 빠른 확장 층 (스파이크 시뮬레이션 없음)
+"""실제 PN→KC 배선을 한 번에 계산하는 빠른 확장 층 (자체 엔진판, torch 없음, 스파이크 시뮬레이션 없음)
 
   kc = fd.KCExpansion(fd.Circuit.from_flywire(), n_in=512)    # 특징 512개 → KC 2,597개
-  codes = kc(features)                                         # (B, 2597), KC 5%만 켜짐
+  codes = kc(features)                                         # Signal (B, 2597), KC 5%만 켜짐
 
 버섯체가 하는 일을 앞먹임 계산으로 줄인 것 (FlyHash, Dasgupta et al. 2017과 같은 구조, 단 배선은 실제 FlyWire):
-  특징 ─(고정 희소 투영)─▶ PN 활동 ─(평균 빼기: 촉각엽의 측억제)─▶ ─(실제 PN→KC 시냅스 수)─▶ KC 입력
+  특징 ─(고정 투영)─▶ PN 활동 ─(평균 빼기: 촉각엽의 측억제)─▶ ─(실제 PN→KC 시냅스 수)─▶ KC 입력
        ─(상위 k_frac만 남김: APL 억제)─▶ KC 코드
-ConnectomeLayer(LIF)보다 수천 배 빠르고 같은 입력에 항상 같은 출력 → 연속 학습 리드아웃(AssocReadout) 앞에 쓰기 좋음.
+torch판(flydnet.torch.KCExpansion)과 투영의 무작위 선택은 다름 (난수 생성기가 다름).
 """
 from __future__ import annotations
 
 import numpy as np
-import torch
-import torch.nn as nn
 
 from .circuit import Circuit
-from .torch.physiology import kenyon_code
+from .ganglion import backend as B
+from .ganglion.physiology import kenyon_code
+from .ganglion.signal import Signal
+from .ganglion.tissue import Tissue
 
 
-class KCExpansion(nn.Module):
+class KCExpansion(Tissue):
     """특징 (B, n_in) → KC 코드 (B, n_kc)
 
-    circuit:   PN·KC 그룹이 있는 회로 (Circuit.from_flywire(), 무작위 대조군은 circuit.shuffled())
-    n_in:      입력 특징 수. None이면 입력이 이미 PN 활동 (B, n_pn)
-    projection: 특징 → PN 고정 투영. "sparse" = PN마다 특징 k_in개 평균 (음수 없음, 사구체처럼) /
-               "gaussian" = 부호 있는 밀집 무작위 (특징이 많을 때 정보 손실이 적음)
-    k_in:      sparse 투영에서 PN 하나가 모으는 특징 수
-    k_frac:    켜 둘 KC 비율 (실제 초파리는 약 5~10%)
-    center:    PN 활동에서 샘플별 평균을 뺌 (없으면 모든 입력에 같은 KC가 켜지기 쉬움)
-    binary:    True = 켜진 KC는 1 / False = 켜진 KC는 입력 세기 그대로
+    circuit:    PN·KC 그룹이 있는 회로 (무작위 대조군은 circuit.shuffled())
+    n_in:       입력 특징 수. None이면 입력이 이미 PN 활동 (B, n_pn)
+    projection: "sparse" = PN마다 특징 k_in개 평균 (음수 없음, 사구체처럼) / "gaussian" = 부호 있는 밀집 무작위
+    k_frac:     켜 둘 KC 비율 (실제 초파리는 약 5~10%)
+    center:     PN 활동에서 샘플별 평균을 뺌
+    binary:     True = 켜진 KC는 1 / False = 켜진 KC는 입력 세기 그대로
     """
 
     def __init__(self, circuit: Circuit, n_in: int | None = None, pre: str = "PN", post: str = "KC",
                  k_in: int = 20, k_frac: float = 0.05, center: bool = True, binary: bool = False,
                  projection: str = "sparse", seed: int = 0, device: str | None = None):
         super().__init__()
-        dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        dev = B.check(device) if device is not None else B.default_device()
         P, K = circuit.groups[pre], circuit.groups[post]
         lp = np.full(circuit.N, -1, np.int64); lp[P] = np.arange(len(P))
         lk = np.full(circuit.N, -1, np.int64); lk[K] = np.arange(len(K))
         m = (lp[circuit.pre] >= 0) & (lk[circuit.post] >= 0) & (circuit.weight > 0)
-        W = torch.zeros(len(K), len(P))
-        W.index_put_((torch.tensor(lk[circuit.post[m]]), torch.tensor(lp[circuit.pre[m]])),
-                     torch.tensor(circuit.weight[m], dtype=torch.float32), accumulate=True)
-        self.register_buffer("W", W.to(dev))                       # (n_kc, n_pn) 시냅스 수
+        W = np.zeros((len(K), len(P)), np.float32)
+        np.add.at(W, (lk[circuit.post[m]], lp[circuit.pre[m]]), circuit.weight[m])
+        self.buffer("W", B.to(W, dev))                                    # (n_kc, n_pn) 시냅스 수
         self.n_pn, self.n_out = len(P), len(K)
         self.n_in = n_in if n_in is not None else len(P)
         self.k = max(1, int(round(k_frac * len(K))))
         self.center, self.binary = center, binary
         if n_in is not None:
-            g = torch.Generator().manual_seed(seed)
+            rng = np.random.default_rng(seed)
             if projection == "sparse":
                 k_in = min(k_in, n_in)
-                cols = torch.stack([torch.randperm(n_in, generator=g)[:k_in] for _ in range(len(P))])
-                proj = torch.zeros(len(P), n_in).scatter_(1, cols, 1.0 / k_in)
-            elif projection == "gaussian":                          # 부호 있는 밀집 투영: 정보 손실이 가장 적음
-                proj = torch.randn(len(P), n_in, generator=g) / n_in ** 0.5
+                proj = np.zeros((len(P), n_in), np.float32)
+                for i in range(len(P)):
+                    proj[i, rng.choice(n_in, k_in, replace=False)] = 1.0 / k_in
+            elif projection == "gaussian":
+                proj = (rng.normal(size=(len(P), n_in)) / np.sqrt(n_in)).astype(np.float32)
             else:
                 raise ValueError(projection)
-            self.register_buffer("proj", proj.to(dev))
+            self.buffer("proj", B.to(proj, dev))
         else:
-            self.proj = None
+            self.buffer("proj", None, persistent=False)
         self.name = circuit.name
 
-    def pn(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.to(self.W.device).float().flatten(1)
-        a = x @ self.proj.T if self.proj is not None else x
-        return a - a.mean(1, keepdim=True) if self.center else a
-
-    def drive(self, x: torch.Tensor) -> torch.Tensor:
-        """KC 입력 (상위 k만 남기기 전)"""
-        return self.pn(x) @ self.W.T
-
-    @torch.no_grad()
-    def forward(self, x: torch.Tensor, batch: int = 4096) -> torch.Tensor:
-        return torch.cat([kenyon_code(x[i:i + batch].to(self.W.device), self.W, self.k, self.proj,
-                                      self.center, self.binary) for i in range(0, len(x), batch)])
+    def forward(self, x, batch: int = 4096) -> Signal:
+        xs = x.data if isinstance(x, Signal) else x
+        if hasattr(xs, "detach"):
+            xs = xs.detach().cpu().numpy()
+        xp = B.xp(B.device_of(self.W))
+        out = [kenyon_code(xs[i:i + batch], self.W, self.k, self.proj, self.center, self.binary)
+               for i in range(0, len(xs), batch)]
+        return Signal(xp.concatenate(out))
 
     def extra_repr(self):
         return f"{self.name}: in {self.n_in} → PN {self.n_pn} → KC {self.n_out}, 켜짐 {self.k}개 ({self.k / self.n_out:.1%})"

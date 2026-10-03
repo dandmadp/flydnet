@@ -53,7 +53,7 @@ class PerHundredHz(nn.Module):
 def build(circuit, outputs, trainable):
     layer = fd.torch.ConnectomeLayer(circuit, "PN", outputs, t_ms=args.t_ms, dt=args.dt, gains={"PN>KC": 2.0},
                                input_mode="regular", trainable=trainable)
-    return nn.Sequential(fd.RateEncoder(784, len(circuit.groups["PN"])), layer, PerHundredHz(),
+    return nn.Sequential(fd.torch.RateEncoder(784, len(circuit.groups["PN"])), layer, PerHundredHz(),
                          nn.Linear(layer.n_out, 10)).to(dev)
 
 

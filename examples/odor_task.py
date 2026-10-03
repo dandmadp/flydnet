@@ -35,23 +35,23 @@ CONFIGS = [(20, 5, 0.5, 20), (20, 10, 0.5, 20), (10, 20, 0.5, 40), (50, 5, 0.8, 
 N_TEST = 50
 
 mb = fd.Circuit.from_flywire()
-enc = fd.GlomerularEncoder(mb)
+enc = fd.torch.GlomerularEncoder(mb)
 G = enc.n_glomeruli
 mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
                                   input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
 print(f"{mb}\n사구체 {G}개 | 무작위 배선 {args.shuffles}개 | 과제 seed {args.task_seeds}개\n")
 
-acc = lambda Ftr, ytr, Fte, yte: fd.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
+acc = lambda Ftr, ytr, Fte, yte: fd.torch.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
 summary = []
 for C, K, noise, ntr in CONFIGS:
     t = time.time()
     rows = []
     for s in range(args.task_seeds):
-        Xtr, ytr, Xte, yte = fd.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
+        Xtr, ytr, Xte, yte = fd.torch.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
         r = {"glomeruli": acc(Xtr, ytr, Xte, yte)}
         for name, L in layers.items():
-            r[name] = acc(fd.extract(L, enc, Xtr), ytr, fd.extract(L, enc, Xte), yte)
+            r[name] = acc(fd.torch.extract(L, enc, Xtr), ytr, fd.torch.extract(L, enc, Xte), yte)
         rows.append(r)
     glo = torch.tensor([r["glomeruli"] for r in rows])
     real = torch.tensor([r["real"] for r in rows])

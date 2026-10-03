@@ -8,9 +8,9 @@
                        fd.LateralInhibition(frac=0.05), fd.Projection(2597, 10))
     loss = fd.surprise(model(x), y); loss.retrograde()   # 역행성 신호 (자동 미분)
 
-시간 시뮬레이션 (스파이킹 LIF·연속값)도 자체 엔진: fd.ConnectomeLayer.
-torch 연동 (pip install flydnet[torch]): flydnet.torch (ConnectomeLayer의 torch판, anatomy, physiology),
-그리고 0.1의 torch 기반 기능 (AssocReadout, KCExpansion, RateEncoder, 시각계 도구 등)은 처음 쓸 때 불러옴.
+모든 기능이 자체 엔진 (torch 없음): 시간 시뮬레이션 fd.ConnectomeLayer, 인코더, 리드아웃, 도파민 학습,
+KC 확장, 데이터셋, 시각계 도구.
+torch 연동 (pip install flydnet[torch]): flydnet.torch — 0.1의 torch판 전부 (같은 이름), torch.nn용 구조물.
 """
 import importlib as _importlib
 
@@ -24,36 +24,24 @@ from .ganglion import (Signal, Synapse, Tissue, Pathway, Projection, Neuropil, L
 
 __version__ = "0.2.0"
 
-# torch가 필요한 기능: 처음 쓸 때 불러옴 (torch 없이도 import flydnet은 됨)
-_TORCH_ATTRS = {
-    "RateEncoder": "encoders", "GlomerularEncoder": "encoders",
-    "SpikeFn": "layers",
-    "extract": "readout", "train_linear": "readout",
-    "DopamineReadout": "plasticity", "AssocReadout": "plasticity",
-    "synthetic_odors": "datasets", "door_odors": "datasets", "biconditional_mixtures": "datasets",
-    "KCExpansion": "expansion",
-    "visual_circuit": "visual", "column_map": "visual", "drifting_grating": "visual", "direction_offsets": "visual",
-    "VISUAL_SYSTEM": "visual", "PHOTORECEPTORS": "visual", "COLUMNAR": "visual", "LPTC": "visual",
-    "MOTION_PATHWAY": "visual",
-}
-_TORCH_MODULES = {"encoders", "layers", "readout", "plasticity", "datasets", "expansion", "visual", "torch"}
+# 0.1 기능의 자체 엔진판 (torch 없음). torch판은 flydnet.torch에 같은 이름으로
+from .encoders import RateEncoder, GlomerularEncoder, to_rates
+from .readout import extract, train_linear
+from .plasticity import DopamineReadout, AssocReadout
+from .expansion import KCExpansion
+from .datasets import synthetic_odors, door_odors, biconditional_mixtures
+from .visual import (visual_circuit, column_map, drifting_grating, direction_offsets,
+                     VISUAL_SYSTEM, PHOTORECEPTORS, COLUMNAR, LPTC, MOTION_PATHWAY)
 
 
 def __getattr__(name):
-    mod = _TORCH_ATTRS.get(name, name if name in _TORCH_MODULES else None)
-    if mod is None:
+    """flydnet.torch (torch 연동)는 처음 쓸 때 불러옴. torch가 없으면 설치 안내"""
+    if name != "torch":
         raise AttributeError(f"module 'flydnet' has no attribute '{name}'")
     try:
-        m = _importlib.import_module(f".{mod}", __name__)
+        m = _importlib.import_module(".torch", __name__)
     except ImportError as e:
-        if "torch" in str(e):
-            raise ImportError(f"flydnet.{name}에는 PyTorch가 필요함: pip install flydnet[torch]  "
-                              f"(torch 없이 쓰려면 flydnet.ganglion)") from e
-        raise
-    val = m if name == mod else getattr(m, name)
-    globals()[name] = val                                  # 다음부터는 바로
-    return val
-
-
-def __dir__():
-    return sorted(set(globals()) | set(_TORCH_ATTRS) | _TORCH_MODULES)
+        raise ImportError("flydnet.torch에는 PyTorch가 필요함: pip install flydnet[torch]  "
+                          "(torch 없이 쓰려면 flydnet 최상위 이름들)") from e
+    globals()["torch"] = m
+    return m

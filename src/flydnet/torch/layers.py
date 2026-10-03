@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .circuit import Circuit
+from ..circuit import Circuit
 
 DEFAULT_PARAMS = dict(
     v_0=-52.0, v_rst=-52.0, v_th=-45.0,   # mV
@@ -414,7 +414,7 @@ class ConnectomeLayer(nn.Module):
 
     def save(self, path):
         """회로 배선 + 설정 + 학습한 연결 세기를 파일 하나에. FlyWire 데이터 없이도 load()로 다시 만들 수 있음"""
-        from . import __version__
+        from .. import __version__
         torch.save(dict(format=self.FORMAT, version=__version__, circuit=self.circuit.to_dict(),
                         config=dict(self._init_args, gains=dict(self.gains)),
                         state_dict={k: v.detach().cpu() for k, v in self.state_dict().items()}), path)

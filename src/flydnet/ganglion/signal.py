@@ -384,15 +384,26 @@ def checkpoint(fn, *inputs):
             total.retrograde(keep=True)                      # fn 밖에서 온 신호의 경로는 다음 구간도 써야 함
         return tuple(f.retro if f.plastic else None for f in fresh)
 
-    hub = Signal(inputs[0].xp.zeros(()))
-    hub.plastic = True                                     # 입력이 plastic이 아니어도 fn 안의 Synapse로 보내야 함
-    hub._parents, hub._back = tuple(inputs), back
+    return multi_output(inputs, [o.data for o in outs], back_packed=back, force=True)
+
+
+def multi_output(parents, outs, back=None, back_packed=None, force: bool = False):
+    """출력이 여러 개인 연산을 만듦. outs: 출력 배열 목록, back(grads 목록 — 없는 것은 None) → 부모마다 역행성 신호.
+    force=True면 부모가 plastic이 아니어도 경로를 만듦 (안에서 바깥 Synapse를 쓰는 경우, checkpoint)"""
+    parents = tuple(parents)
+    if not learning_enabled() or not (force or any(p.plastic for p in parents)):
+        return tuple(Signal(o) for o in outs)
+    n = len(outs)
+    hub = Signal(B.xp(B.device_of(outs[0])).zeros(()))
+    hub.plastic = True
+    hub._parents = parents
+    hub._back = back_packed if back_packed is not None else (lambda packed: back(packed.parts))
     result = []
     for k, o in enumerate(outs):
-        s = Signal(o.data)
-        s.plastic, s._parents = True, (hub,)
-        s._back = (lambda k: (lambda g: (_Packed(n, k, g),)))(k)
-        result.append(s)
+        sig = Signal(o)
+        sig.plastic, sig._parents = True, (hub,)
+        sig._back = (lambda k: (lambda g: (_Packed(n, k, g),)))(k)
+        result.append(sig)
     return tuple(result)
 
 

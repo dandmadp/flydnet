@@ -35,8 +35,8 @@ KS = [int(k) for k in args.ks.split(",")]
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 
 mb = fd.Circuit.from_flywire()
-enc = fd.GlomerularEncoder(mb)
-X0 = fd.door_odors(enc.glomeruli, args.data)["X"]
+enc = fd.torch.GlomerularEncoder(mb)
+X0 = fd.torch.door_odors(enc.glomeruli, args.data)["X"]
 ok = np.nonzero(((X0 > 0.05).sum(1) >= 3).numpy())[0]
 mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"KC 실제": mk(mb), "KC 무작위": mk(mb.shuffled(seed=0))}
@@ -58,9 +58,9 @@ def mlp(Ftr, ytr, Fte, yte, hidden=64, steps=300, seed=0):
         return (net(f(Fte)).argmax(1).cpu() == yte).float().mean().item()
 
 
-readouts = {"로지스틱": lambda a, b, c, d: fd.train_linear(a, b, c, d, n_classes=2)["test_acc"], "MLP": mlp}
+readouts = {"로지스틱": lambda a, b, c, d: fd.torch.train_linear(a, b, c, d, n_classes=2)["test_acc"], "MLP": mlp}
 for k in KS:
-    readouts[f"연합 k={k}"] = lambda a, b, c, d, k=k: fd.AssocReadout(a.shape[1], 2, per_class=k).fit(a, b).accuracy(c, d)
+    readouts[f"연합 k={k}"] = lambda a, b, c, d, k=k: fd.torch.AssocReadout(a.shape[1], 2, per_class=k).fit(a, b).accuracy(c, d)
 
 feat_names = ["사구체"] + list(layers)
 res = {(f, r): [] for f in feat_names for r in readouts}
@@ -69,9 +69,9 @@ for s in range(args.seeds):
     rng = np.random.default_rng(s)
     sets = [tuple(rng.choice(ok, 4, replace=False)) for _ in range(args.sets)]
     g = torch.Generator().manual_seed(s)
-    (xtr, ytr, ptr) = fd.biconditional_mixtures(X0, sets, args.n_train, generator=g)
-    (xte, yte, pte) = fd.biconditional_mixtures(X0, sets, args.n_test, generator=g)
-    F = {"사구체": (xtr, xte)} | {k: (fd.extract(L, enc, xtr), fd.extract(L, enc, xte)) for k, L in layers.items()}
+    (xtr, ytr, ptr) = fd.torch.biconditional_mixtures(X0, sets, args.n_train, generator=g)
+    (xte, yte, pte) = fd.torch.biconditional_mixtures(X0, sets, args.n_test, generator=g)
+    F = {"사구체": (xtr, xte)} | {k: (fd.torch.extract(L, enc, xtr), fd.torch.extract(L, enc, xte)) for k, L in layers.items()}
     for fname, (Ftr, Fte) in F.items():
         for p in range(args.sets):
             a, b = ptr == p, pte == p

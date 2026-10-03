@@ -96,7 +96,7 @@ for name, (Ftr, Fte) in feats.items():
     methods = {"역전파": lambda s: Backprop(Ftr.shape[1], mu, sd, seed=s)}
     for k in KS:
         methods[f"역전파 + 재생 {k}"] = lambda s, k=k: Backprop(Ftr.shape[1], mu, sd, replay=k, seed=s)
-        methods[f"연합 {k}"] = lambda s, k=k: fd.AssocReadout(Ftr.shape[1], 10, per_class=k)
+        methods[f"연합 {k}"] = lambda s, k=k: fd.torch.AssocReadout(Ftr.shape[1], 10, per_class=k)
     print(f"[{name}, {Ftr.shape[1]}차원]")
     for mname, make in methods.items():
         runs = [run(make(s), Ftr, Fte, s) for s in range(args.seeds)]

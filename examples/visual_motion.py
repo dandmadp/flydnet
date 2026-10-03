@@ -65,7 +65,7 @@ if dev == "cuda":
     torch.cuda.set_per_process_memory_fraction(0.75)            # 넘치면 오류 (Windows 가상 메모리로 C: 채우지 않게)
 
 vc = fd.visual_circuit()
-xy = fd.column_map(vc)                                          # 지도는 실제 배선으로 만들고 두 조건에 똑같이 씀
+xy = fd.torch.column_map(vc)                                          # 지도는 실제 배선으로 만들고 두 조건에 똑같이 씀
 circ = vc if args.circuit == "real" else vc.shuffled(seed=args.shuffle_seed)
 if G:
     circ = circ.normalized()
@@ -93,7 +93,7 @@ norm = lambda f: (f - f.mean(0)) / f.std(0).clamp_min(1e-6)
 def batch(n, gen):
     y = torch.randint(0, args.dirs, (n,), generator=gen)
     ph = torch.rand(n, generator=gen) * 2 * np.pi
-    lum = fd.drifting_grating(pr_xy, y.numpy() * 360.0 / args.dirs, args.t_ms, int(args.t_ms / 2),
+    lum = fd.torch.drifting_grating(pr_xy, y.numpy() * 360.0 / args.dirs, args.t_ms, int(args.t_ms / 2),
                               wavelength=args.wavelength, temporal_hz=args.hz, phase=ph)
     lum = (lum + args.noise * torch.randn(lum.shape, generator=gen)).clamp(-1, 1)
     return (0.5 if G else 100.0) * (1 + lum), y
@@ -169,7 +169,7 @@ def neuron_dsi(reps=4):
     R = torch.zeros(args.dirs, layer.n_out)
     with torch.no_grad():
         for _ in range(reps):
-            lum = fd.drifting_grating(pr_xy, th, args.t_ms, int(args.t_ms / 2), wavelength=args.wavelength,
+            lum = fd.torch.drifting_grating(pr_xy, th, args.t_ms, int(args.t_ms / 2), wavelength=args.wavelength,
                                       temporal_hz=args.hz, phase=torch.rand(args.dirs, generator=g) * 2 * np.pi)
             R += layer((0.5 if G else 100.0) * (1 + lum)).cpu() / reps
     v = (R * torch.exp(1j * torch.tensor(np.radians(th), dtype=torch.float32))[:, None]).sum(0)

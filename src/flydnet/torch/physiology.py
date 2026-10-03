@@ -18,7 +18,7 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
-from ..layers import SparsePropagate, SpikeFn
+from .layers import SparsePropagate, SpikeFn
 
 
 # ─────────────── 시냅스 전달 ───────────────

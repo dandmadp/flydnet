@@ -16,6 +16,7 @@ import json
 import numpy as np
 
 from . import backend as B
+from . import kernels as K
 from . import physiology as P
 from .signal import Signal, as_signal, checkpoint, learning_enabled, quiescent, where
 from .tissue import Synapse, Tissue
@@ -228,14 +229,18 @@ class ConnectomeLayer(Tissue):
 
     @staticmethod
     def _frames(x: Signal):
+        """입력 (B, n_in) 또는 (B, T, n_in) → 스텝 s의 (n_in, B) 신호를 주는 함수"""
         if x.ndim == 2:
-            return lambda s, steps: x, 1
+            xt = x.T
+            return lambda s, steps: xt
         if x.ndim == 3:
             T = x.shape[1]
-            return (lambda s, steps: x[:, s * T // steps]), T
+            xt = x.transpose(1, 2, 0)                                      # (T, n_in, B)
+            return lambda s, steps: xt[s * T // steps]
         raise ValueError("입력은 (B, n_in) 또는 (B, T, n_in)")
 
     # ─────────────── 순전파 ───────────────
+    # 내부 신호 배치는 (뉴런 N, 배치 B). 한 스텝은 kernels.lif_step / graded_step 한 번 (필요한 값만 저장)
     def forward(self, rates, seed: int | None = None, return_all: bool = False, record=None):
         """record: 회로 뉴런 번호 목록이면 스텝별 활동도 → (출력, (B, steps, k) numpy). 체크포인팅과 같이 쓰지 않음"""
         x = as_signal(rates, self.device)
@@ -253,116 +258,102 @@ class ConnectomeLayer(Tissue):
         gd = float(np.exp(-dt / p["tau"]))
         if self.neuron_params:
             b, a = self._neuron_terms(dt)
-            v_eq = b + p["v_0"]
+            v_eq, a = (b + p["v_0"]).reshape(-1, 1), a.reshape(-1, 1)
         else:
             v_eq, a = p["v_0"], dt / p["t_mbr"]
-        poi_w = p["w_syn"] * p["f_poi"]
-        prob = x * (dt / 1000.0)                                     # 스텝당 입력 스파이크 확률
-        frame, _ = self._frames(prob)
+        frame = self._frames(x * (dt / 1000.0))                            # 스텝당 입력 스파이크 확률 (n_in, B)
         s_cnt = int(round(self.count_from_ms / dt))
-        rfc_vec = xp.full(N, float(rfc), dtype=xp.float32); rfc_vec[self.in_idx] = 0
-        scale = p["v_th"] - p["v_rst"]
+        rfc_vec = xp.full((N, 1), float(rfc), dtype=xp.float32); rfc_vec[self.in_idx] = 0
         values = self.values()
-        M = self.wiring.matrix(values.data)                          # 순전파당 한 번만
+        M, MT = K.matrices(self.wiring, values.data)                       # 순전파당 한 번만
         if seed is None:
             seed = int(np.random.SeedSequence().generate_state(1)[0])
         in_idx, regular = self.in_idx, self.input_mode == "regular"
-        rec, rec_idx = None, None
+        consts = dict(gd=gd, poi_w=p["w_syn"] * p["f_poi"], v_th=p["v_th"], v_rst=p["v_rst"],
+                      scale=p["v_th"] - p["v_rst"], slope=self.slope)
+        rec = [] if record is not None else None
+        rec_idx = B.to(np.asarray(record), self.device) if record is not None else None
 
         def run(s0, s1, V, G, refr, counts, phase, *buf):
             buf = list(buf)
             for s in range(s0, s1):
                 ps = frame(s, steps)
-                G = G + buf[s % R]
                 act = refr.data <= 0
-                V = where(act, V + (v_eq - V + G) * a, V)
-                G = where(act, G * gd, G)
                 if regular:
                     ph = phase.data + ps.data
                     spikes = (ph >= 1).astype(ph.dtype)
                     phase = Signal(ph - spikes)
                 else:
-                    spikes = (P.hash_uniform(xp, seed, s, ps.shape) < ps.data).astype(ps.data.dtype)
-                inp = ps + Signal(spikes - ps.data) if ps.plastic else Signal(spikes)   # 값은 스파이크, 기울기는 확률로
-                V = P.add_columns(V, in_idx, inp * poi_w)
-                spk = P.fire((V - p["v_th"]) * (1.0 / scale), 0.0, self.slope)
+                    spikes = (P.hash_uniform(xp, seed, s, ps.shape[::-1]).T < ps.data).astype(ps.data.dtype)
+                V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, in_idx, v_eq, a, **consts)
                 fired = spk.data > 0
                 if s >= s_cnt:
                     counts = counts + spk
                 if rec is not None:
-                    rec.append(spk.data[:, rec_idx].copy())
-                V = where(fired, p["v_rst"], V)                       # 리셋은 기울기 끊음 (표준)
-                G = where(fired, 0.0, G)
+                    rec.append(spk.data[rec_idx].T.copy())
                 refr = Signal(xp.where(fired, rfc_vec, refr.data - 1))
-                buf[(s + dly) % R] = P.transmit(spk, values, self.wiring, matrix=M)
+                buf[(s + dly) % R] = K.propagate(spk, values, M, MT, self.wiring)
             return (V, G, refr, counts, phase, *buf)
 
-        z = lambda: Signal(xp.zeros((Bn, N), dtype=xp.float32))
+        z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))
         if self.v_init == "random":
-            V0 = Signal(xp.broadcast_to(p["v_rst"] + self.v_frac * (p["v_th"] - p["v_rst"]), (Bn, N)).copy())
+            V0 = Signal(xp.broadcast_to((p["v_rst"] + self.v_frac * (p["v_th"] - p["v_rst"]))[:, None], (N, Bn)).copy())
         else:
-            V0 = Signal(xp.full((Bn, N), p["v_0"], dtype=xp.float32))
-        state = (V0, z(), z(), z(), Signal(xp.broadcast_to(self.phase0, (Bn, self.n_in)).copy()), *[z() for _ in range(R)])
+            V0 = Signal(xp.full((N, Bn), p["v_0"], dtype=xp.float32))
+        phase0 = Signal(xp.broadcast_to(self.phase0[:, None], (self.n_in, Bn)).copy())
+        state = (V0, z(), z(), z(), phase0, *[z() for _ in range(R)])
+        state = self._run(run, state, steps, x, record)
+        rate = state[3].T * (1000.0 / (self.t_ms - s_cnt * dt))            # (B, N) Hz
+        out = rate if return_all else rate[:, self.out_idx]
+        return (out, self._trace(rec)) if record is not None else out
+
+    def _run(self, run, state, steps, x, record):
+        """구간 나눠 실행 (학습 중이고 checkpoint_every면 구간마다 다시 계산)"""
         ce = self.checkpoint_every
         if ce and self._needs_retro(x):
             if record is not None:
                 raise ValueError("record는 체크포인팅과 같이 쓸 수 없음 (quiescent()에서 쓰기)")
             for s0 in range(0, steps, ce):
                 state = checkpoint(lambda *st, s0=s0: run(s0, min(s0 + ce, steps), *st), *state)
-        else:
-            if record is not None:
-                rec, rec_idx = [], B.to(np.asarray(record), self.device)
-            state = run(0, steps, *state)
-        rate = state[3] * (1000.0 / (self.t_ms - s_cnt * dt))          # (B, N) Hz
-        out = rate if return_all else rate[:, self.out_idx]
-        if record is not None:
-            return out, B.numpy(xp.stack(rec, axis=1))
-        return out
+            return state
+        return run(0, steps, *state)
+
+    def _trace(self, rec):
+        return B.numpy(B.xp(self.device).stack(rec, axis=1))              # (B, steps, k)
 
     def _forward_graded(self, x: Signal, return_all: bool, record):
         p, N, xp = self.p, self.circuit.N, B.xp(self.device)
         Bn = x.shape[0]
         dt = p["dt"]; steps = int(round(self.t_ms / dt))
         r_max = p.get("r_max", 10.0)
-        frame, _ = self._frames(x)
+        frame = self._frames(x)
         s_cnt = int(round(self.count_from_ms / dt))
         if self.neuron_params:
             b, a = self._neuron_terms(dt)
+            b, a = b.reshape(-1, 1), a.reshape(-1, 1)
         else:
             b, a = 0.0, dt / p["t_mbr"]
         values = self.values()
-        M = self.wiring.matrix(values.data)
+        M, MT = K.matrices(self.wiring, values.data)
         in_idx = self.in_idx
-        rec, rec_idx = None, None
+        rec = [] if record is not None else None
+        rec_idx = B.to(np.asarray(record), self.device) if record is not None else None
 
         def run(s0, s1, V, r, acc):
             for s in range(s0, s1):
-                I = P.transmit(r, values, self.wiring, matrix=M)
-                V = V + (b - V + I) * a
-                r = P.put_columns(V.clip(0.0, r_max), in_idx, frame(s, steps))   # 입력 뉴런은 입력값 그대로
+                I = K.propagate(r, values, M, MT, self.wiring)
+                V, r = K.graded_step(V, I, frame(s, steps), in_idx, b, a, r_max)
                 if s >= s_cnt:
                     acc = acc + r
                 if rec is not None:
-                    rec.append(r.data[:, rec_idx].copy())
+                    rec.append(r.data[rec_idx].T.copy())
             return V, r, acc
 
-        z = lambda: Signal(xp.zeros((Bn, N), dtype=xp.float32))
-        state = (z(), z(), z())
-        ce = self.checkpoint_every
-        if ce and self._needs_retro(x):
-            if record is not None:
-                raise ValueError("record는 체크포인팅과 같이 쓸 수 없음 (quiescent()에서 쓰기)")
-            for s0 in range(0, steps, ce):
-                state = checkpoint(lambda *st, s0=s0: run(s0, min(s0 + ce, steps), *st), *state)
-        else:
-            if record is not None:
-                rec, rec_idx = [], B.to(np.asarray(record), self.device)
-            state = run(0, steps, *state)
-        mean = state[2] * (1.0 / (steps - s_cnt))
+        z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))
+        state = self._run(run, (z(), z(), z()), steps, x, record)
+        mean = state[2].T * (1.0 / (steps - s_cnt))
         out = mean if return_all else mean[:, self.out_idx]
-        if record is not None:
-            return out, B.numpy(xp.stack(rec, axis=1))
-        return out
+        return (out, self._trace(rec)) if record is not None else out
 
     # ─────────────── 저장 / 불러오기 ───────────────
     def save(self, path):

@@ -178,3 +178,68 @@ def surprise(logits, y) -> Signal:
     lp = log_softmax(logits)
     picked = lp[xp.arange(len(y)), y]
     return -picked.mean()
+
+
+# ─────────────── 기억 (배열, 역전파 없음) ───────────────
+def _arr(x):
+    return x.data if isinstance(x, Signal) else x
+
+
+def recall(a, prototypes, count=None):
+    """기억 인출: 활동 a (B, n)와 원형 (P, n)의 코사인 유사도 (B, P) 배열. count가 0인(빈) 원형은 −inf"""
+    a, W = _arr(a), _arr(prototypes)
+    xp = B.xp(B.device_of(W))
+    s = a @ (W / xp.maximum(xp.linalg.norm(W, axis=1, keepdims=True), 1e-8)).T
+    return s if count is None else xp.where(_arr(count) == 0, -xp.inf, s)
+
+
+def reinforce_(prototypes, count, a, y, per_class: int):
+    """도파민 강화 (배열 제자리 갱신): 클래스 y의 원형 per_class개 중
+    - 빈 원형이 있으면 그 클래스의 i번째 샘플이 i번째 빈 원형을 채움
+    - 나머지 샘플은 가장 잘 맞는 원형 하나에만 보상 → 그 원형 = 받은 샘플들의 평균 (누적)
+    다른 클래스의 원형은 바뀌지 않음 → 클래스를 차례로 배워도 잊지 않음"""
+    xp = B.xp(B.device_of(prototypes))
+    a = _arr(a)
+    y = B.to(B.labels(y), B.device_of(prototypes))
+    k = per_class
+    C = len(count) // k
+    onehot = xp.eye(C, dtype=xp.int64)[y]
+    rank = (xp.cumsum(onehot, axis=0) * onehot).sum(1) - 1               # 클래스 안 순번
+    empty = count.reshape(C, k) == 0
+    seed = rank < empty.sum(1)[y]
+    if bool(seed.any()):
+        order = xp.argsort((~empty).astype(xp.int8), axis=1, kind="stable")   # 빈 원형 번호가 앞으로
+        idx = y[seed] * k + order[y[seed], rank[seed]]
+        prototypes[idx] = a[seed]
+        count[idx] = 1
+    rest = ~seed
+    if not bool(rest.any()):
+        return
+    a, y = a[rest], y[rest]
+    own = recall(a, prototypes, count).reshape(len(a), C, k)[xp.arange(len(a)), y]
+    idx = y * k + own.argmax(1)
+    n = xp.zeros_like(count)
+    B.scatter_add(n, idx, xp.ones(len(a), dtype=count.dtype))
+    tot = xp.zeros_like(prototypes)
+    B.scatter_add(tot, idx, a.astype(prototypes.dtype, copy=False))
+    count += n
+    hit = n > 0
+    prototypes[hit] += (tot[hit] - n[hit, None] * prototypes[hit]) / count[hit, None]
+
+
+def kenyon_code(x, w_pn_kc, k: int, projection=None, center: bool = True, binary: bool = False):
+    """KC 희소 부호화 (FlyHash 구조), 배열: [투영] → PN 활동 → [평균 빼기] → W_pn_kc → 상위 k만
+    w_pn_kc: (n_kc, n_pn), projection: (n_pn, n_in) 또는 None"""
+    W = _arr(w_pn_kc)
+    xp = B.xp(B.device_of(W))
+    a = B.to(_arr(x), B.device_of(W)).reshape(len(_arr(x)), -1).astype(W.dtype, copy=False)
+    if projection is not None:
+        a = a @ _arr(projection).T
+    if center:
+        a = a - a.mean(axis=1, keepdims=True)
+    d = a @ W.T
+    idx = xp.argpartition(-d, k - 1, axis=1)[:, :k]
+    vals = xp.ones((len(d), k), dtype=d.dtype) if binary else xp.maximum(xp.take_along_axis(d, idx, axis=1), 0)
+    out = xp.zeros_like(d)
+    xp.put_along_axis(out, idx, vals, axis=1)
+    return out

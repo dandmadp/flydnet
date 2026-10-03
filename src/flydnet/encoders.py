@@ -1,46 +1,60 @@
-"""텐서 → 입력 뉴런 발화율(Hz) 변환. '설탕 뉴런 150Hz 자극'을 일반 데이터로 확장한 것"""
+"""값 → 입력 뉴런 발화율(Hz) 변환 (자체 엔진판, torch 없음). '설탕 뉴런 150Hz 자극'을 일반 데이터로 확장한 것"""
+from __future__ import annotations
+
 import numpy as np
-import torch
-import torch.nn as nn
+
+from .ganglion import backend as B
+from .ganglion.signal import Signal, as_signal
+from .ganglion.tissue import Tissue
 
 
-def _to_rates(x: torch.Tensor, max_rate: float) -> torch.Tensor:
-    """음수는 0, 샘플마다 최댓값 = max_rate (전체 세기가 달라도 같은 패턴이면 같은 발화율)"""
-    x = x.clamp_min(0)
-    return x / x.amax(1, keepdim=True).clamp_min(1e-8) * max_rate
+def to_rates(x, max_rate: float) -> Signal:
+    """음수는 0, 샘플마다 최댓값 = max_rate (전체 세기가 달라도 같은 패턴이면 같은 발화율). 미분 가능"""
+    x = as_signal(x).flatten(1).relu()
+    return x / x.max(axis=1, keepdims=True).clip(lo=1e-8) * max_rate
 
 
-class RateEncoder(nn.Module):
+class RateEncoder(Tissue):
     """입력 특징 n_in개를 입력 뉴런 n_out개의 발화율로 바꿈
 
     - n_in == n_out 이고 projection=None: 특징 하나 = 뉴런 하나
     - 아니면 고정 무작위 희소 투영: 뉴런마다 특징 k개를 모아 받음 (사구체가 여러 수용체 입력을 모으듯)
     출력은 샘플마다 최댓값이 max_rate가 되도록 정규화 (음수는 0)
+    torch판(flydnet.torch.RateEncoder)과 투영의 무작위 선택은 다름 (난수 생성기가 다름)
     """
 
     def __init__(self, n_in: int, n_out: int, max_rate: float = 100.0, k: int = 20, seed: int = 0,
-                 projection: str | None = "random"):
+                 projection: str | None = "random", device: str | None = None):
         super().__init__()
+        dev = B.check(device) if device is not None else B.default_device()
         self.n_in, self.n_out, self.max_rate = n_in, n_out, max_rate
         if projection is None:
             if n_in != n_out:
                 raise ValueError("projection=None이면 n_in == n_out 이어야 함")
-            self.P = None
+            self.buffer("P", None, persistent=False)
         else:
-            g = torch.Generator().manual_seed(seed)
-            cols = torch.stack([torch.randperm(n_in, generator=g)[:k] for _ in range(n_out)])
-            P = torch.zeros(n_out, n_in)
-            P.scatter_(1, cols, 1.0 / k)
-            self.register_buffer("P", P)
+            rng = np.random.default_rng(seed)
+            k = min(k, n_in)
+            P = np.zeros((n_out, n_in), np.float32)
+            for i in range(n_out):
+                P[i, rng.choice(n_in, k, replace=False)] = 1.0 / k
+            self.buffer("P", B.to(P, dev))
+        self._dev = dev
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.flatten(1).float()
+    def forward(self, x) -> Signal:
+        dev = B.device_of(self.P) if self.P is not None else self._dev
+        x = as_signal(x, dev).flatten(1)
+        if x.data.dtype.kind != "f":
+            x = Signal(x.data.astype(np.float32))
         if self.P is not None:
-            x = x @ self.P.T.to(x.device)
-        return _to_rates(x, self.max_rate)
+            x = x @ Signal(self.P.T)
+        return to_rates(x, self.max_rate)
+
+    def extra_repr(self):
+        return f"{self.n_in} → {self.n_out}, 최대 {self.max_rate} Hz"
 
 
-class GlomerularEncoder(nn.Module):
+class GlomerularEncoder(Tissue):
     """냄새 = 사구체별 활성 벡터 (B, n_glomeruli) → 투사 뉴런(PN) 발화율 (B, n_PN)
 
     실제 더듬이엽 구조를 따름: 같은 사구체의 단일 사구체형 PN들은 같은 발화율을 받음.
@@ -48,24 +62,31 @@ class GlomerularEncoder(nn.Module):
     사구체 이름은 cell_type의 '_' 앞부분 (예: DM1_lPN → DM1)
     """
 
-    def __init__(self, circuit, group: str = "PN", max_rate: float = 100.0):
+    def __init__(self, circuit, group: str = "PN", max_rate: float = 100.0, device: str | None = None):
         super().__init__()
         if circuit.meta is None:
             raise ValueError("circuit.meta(세포 주석)가 필요함 — Circuit.from_flywire()로 만든 회로를 쓸 것")
+        dev = B.check(device) if device is not None else B.default_device()
         m = circuit.meta.iloc[circuit.groups[group]]
         uni = m.cell_sub_class.astype(str).eq("uniglomerular").values
         glom = m.cell_type.astype(str).str.split("_").str[0].values
         self.glomeruli = sorted(set(glom[uni]))
-        col = {gname: j for j, gname in enumerate(self.glomeruli)}
-        P = torch.zeros(len(m), len(self.glomeruli))
+        col = {g: j for j, g in enumerate(self.glomeruli)}
+        P = np.zeros((len(m), len(self.glomeruli)), np.float32)
         for i in np.nonzero(uni)[0]:
             P[i, col[glom[i]]] = 1.0
-        self.register_buffer("P", P)
+        self.buffer("P", B.to(P, dev))
         self.max_rate = max_rate
 
     @property
     def n_glomeruli(self) -> int:
         return len(self.glomeruli)
 
-    def forward(self, odor: torch.Tensor) -> torch.Tensor:
-        return _to_rates(odor.float() @ self.P.T.to(odor.device), self.max_rate)
+    def forward(self, odor) -> Signal:
+        x = as_signal(odor, B.device_of(self.P))
+        if x.data.dtype != np.float32 and not x.plastic:
+            x = Signal(x.data.astype(np.float32))
+        return to_rates(x @ Signal(self.P.T), self.max_rate)
+
+    def extra_repr(self):
+        return f"사구체 {self.n_glomeruli} → PN {self.P.shape[0]}, 최대 {self.max_rate} Hz"

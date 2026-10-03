@@ -41,7 +41,7 @@ Xte, yte = te.data[:args.n_test].float() / 255, te.targets[:args.n_test]
 
 mb = fd.Circuit.from_flywire()
 print(mb)
-enc = fd.RateEncoder(784, len(mb.groups["PN"]), max_rate=args.max_rate)
+enc = fd.torch.RateEncoder(784, len(mb.groups["PN"]), max_rate=args.max_rate)
 n_kc = len(mb.groups["KC"])
 
 feats = {"pixels": (Xtr.flatten(1), Xte.flatten(1)), "PN": (enc(Xtr), enc(Xte))}
@@ -55,8 +55,8 @@ for name, circ in circuits:
         layer = fd.torch.ConnectomeLayer(circ, "PN", ("KC", "MBON"), t_ms=args.t_ms,
                                    gains={"PN>KC": args.pn_kc_gain}, input_mode=args.input_mode)
         t = time.time()
-        Ftr = fd.extract(layer, enc, Xtr, batch=args.batch, seed=0)
-        Fte = fd.extract(layer, enc, Xte, batch=args.batch, seed=10**6)
+        Ftr = fd.torch.extract(layer, enc, Xtr, batch=args.batch, seed=0)
+        Fte = fd.torch.extract(layer, enc, Xte, batch=args.batch, seed=10**6)
         torch.save((Ftr, Fte), cache)
         print(f"  {name}: 시뮬레이션 {time.time() - t:.0f}s", flush=True)
     print(f"  {name}: KC 활성 {(Ftr[:, :n_kc] > 0).float().mean() * 100:.1f}%", flush=True)
@@ -66,5 +66,5 @@ for name, circ in circuits:
 print(f"\n{'특징':<16}{'차원':>6}{'train':>9}{'test':>9}")
 for name in ["pixels", "PN"] + [f"{g} {c}" for g in ("KC", "MBON") for c, _ in circuits]:
     Ftr, Fte = feats[name]
-    r = fd.train_linear(Ftr, ytr, Fte, yte)
+    r = fd.torch.train_linear(Ftr, ytr, Fte, yte)
     print(f"{name:<16}{Ftr.shape[1]:>6}{r['train_acc'] * 100:>8.2f}%{r['test_acc'] * 100:>8.2f}%", flush=True)

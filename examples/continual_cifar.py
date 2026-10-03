@@ -122,7 +122,7 @@ def linear_cl(buffer_per_class=0, epochs=1, lr=1e-3):
 
 
 def assoc_cl(encode, k):
-    ro = fd.AssocReadout(encode(Xtr[:2]).shape[1], 100, per_class=k, device=dev)
+    ro = fd.torch.AssocReadout(encode(Xtr[:2]).shape[1], 100, per_class=k, device=dev)
     learn = lambda X, y, seen: ro.fit(encode(X), y, batch=256)
     predict = lambda X, seen: ro.predict(encode(X), classes=seen)
     return run_task_loop(learn, predict)
@@ -130,7 +130,7 @@ def assoc_cl(encode, k):
 
 results = {}
 t0 = time.time()
-r = fd.train_linear(Xtr, ytr, Xte, yte, n_classes=100, epochs=30)
+r = fd.torch.train_linear(Xtr, ytr, Xte, yte, n_classes=100, epochs=30)
 results["joint (상한선, 연속 학습 아님)"] = [r["test_acc"]]
 results["finetune 선형"] = linear_cl()
 results["replay-20 선형"] = linear_cl(buffer_per_class=20)
@@ -140,11 +140,11 @@ print(f"역전파 기준선 {time.time() - t0:.0f}s", flush=True)
 mb = fd.Circuit.from_flywire(side=None if args.side == "both" else "right")
 n_in = Xtr.shape[1]
 expanders = {
-    "KC 실제 배선": fd.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection),
-    "KC 무작위 배선": fd.KCExpansion(mb.shuffled(seed=0), n_in=n_in, k_frac=args.k_frac, projection=args.projection),
+    "KC 실제 배선": fd.torch.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection),
+    "KC 무작위 배선": fd.torch.KCExpansion(mb.shuffled(seed=0), n_in=n_in, k_frac=args.k_frac, projection=args.projection),
 }
 # 같은 크기의 가우스 무작위 확장 (커넥톰 없이 흔히 쓰는 방식) — 같은 PN 투영 뒤 밀집 무작위 행렬
-g_exp = fd.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection)
+g_exp = fd.torch.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection)
 g_exp.W = torch.randn(g_exp.W.shape, generator=torch.Generator().manual_seed(1)).abs().to(g_exp.W.device) \
     * (torch.rand(g_exp.W.shape, generator=torch.Generator().manual_seed(2)) < (g_exp.W > 0).float().mean().item()).to(g_exp.W.device)
 g_exp.name = "희소 무작위 (같은 연결 밀도)"

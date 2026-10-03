@@ -1,4 +1,4 @@
-"""초파리 시각계 회로 (자체 엔진판, 결과는 numpy): 광수용체 → 라미나 → 메둘라 → T4/T5(운동 감지) → 소엽판 뉴런
+"""초파리 시각계 회로: 광수용체 → 라미나 → 메둘라 → T4/T5(운동 감지) → 소엽판 뉴런
 
   circ = fd.visual_circuit()                 # 오른쪽 시각엽, 세포 유형마다 그룹 하나
   xy   = fd.column_map(circ)                 # 뉴런별 시야 좌표 (단위 ≈ 기둥 간격)
@@ -13,9 +13,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import scipy.sparse as sps
+import torch
 
-from .circuit import Circuit
+from ..circuit import Circuit
 
 PHOTORECEPTORS = ["R1-6", "R7", "R8"]
 # 광수용체 + 시각엽 내부 뉴런 + 시각엽에서 중앙 뇌로 가는 뉴런(소엽판 HS/VS 포함)
@@ -69,15 +69,16 @@ def column_map(circuit: Circuit, anchor: str = "Mi1", smooth: int = 3, columnar=
             idx = circuit.groups[gname]
             Z[idx] -= Z[idx].mean(0) - Z[anc].mean(0)
         return Z
-    Z = center(Z)
+    Z = torch.tensor(center(Z))
 
     m = is_col[circuit.pre] & is_col[circuit.post]
     i, j, w = circuit.pre[m], circuit.post[m], np.abs(circuit.weight[m]).astype(np.float64)
-    A = sps.coo_matrix((np.r_[w, w], (np.r_[i, j], np.r_[j, i])), shape=(circuit.N, circuit.N)).tocsr()
-    deg = np.maximum(np.bincount(np.r_[i, j], weights=np.r_[w, w], minlength=circuit.N), 1e-9)
+    A = torch.sparse_coo_tensor(np.stack([np.r_[i, j], np.r_[j, i]]), np.r_[w, w], (circuit.N, circuit.N),
+                                check_invariants=False).coalesce()
+    deg = torch.tensor(np.bincount(np.r_[i, j], weights=np.r_[w, w], minlength=circuit.N)).clamp_min(1e-9)
     for _ in range(smooth):
-        Z = 0.5 * Z + 0.5 * (A @ Z) / deg[:, None]
-    Z = center(Z)
+        Z = 0.5 * Z + 0.5 * torch.sparse.mm(A, Z) / deg[:, None]
+    Z = center(Z.numpy())
 
     Za = Z[anc] - Z[anc].mean(0)                                 # 등방으로 + 기둥 간격 단위로
     evals, evecs = np.linalg.eigh(np.cov(Za.T))
@@ -90,21 +91,20 @@ def column_map(circuit: Circuit, anchor: str = "Mi1", smooth: int = 3, columnar=
 
 
 def drifting_grating(xy, directions, t_ms: float, frames: int, wavelength: float = 8.0, temporal_hz: float = 5.0,
-                     phase=None, contrast: float = 1.0, onset_ms: float = 0.0) -> np.ndarray:
+                     phase=None, contrast: float = 1.0, onset_ms: float = 0.0) -> torch.Tensor:
     """움직이는 사인파 격자. 밝기 (B, frames, n), −contrast ~ +contrast (onset 전은 0 = 회색)
     xy: (n, 2) 시야 좌표 (기둥 간격 단위) / directions: (B,) 도 (0 = +x 방향)
     wavelength: 기둥 수 / temporal_hz: 한 점에서 밝기가 바뀌는 빈도 (속도 = wavelength × temporal_hz 기둥/s)"""
-    xy = np.nan_to_num(np.asarray(xy, np.float32))
-    th = np.asarray(directions, np.float32).reshape(-1) * np.float32(np.pi / 180)
+    xy = torch.as_tensor(np.nan_to_num(np.asarray(xy, np.float32)))
+    th = torch.as_tensor(directions, dtype=torch.float32) * np.pi / 180
     B = len(th)
-    phase = np.zeros(B, np.float32) if phase is None else np.asarray(phase, np.float32).reshape(-1)
-    t = (np.arange(frames, dtype=np.float32) + 0.5) * t_ms / frames              # ms, 프레임 중앙
-    k = np.stack([np.cos(th), np.sin(th)], 1) * np.float32(2 * np.pi / wavelength)  # (B, 2)
+    phase = torch.zeros(B) if phase is None else torch.as_tensor(phase, dtype=torch.float32)
+    t = (torch.arange(frames) + 0.5) * t_ms / frames                            # ms, 프레임 중앙
+    k = torch.stack([torch.cos(th), torch.sin(th)], 1) * (2 * np.pi / wavelength)  # (B, 2)
     proj = k @ xy.T                                                              # (B, n)
-    tt = np.maximum(t - onset_ms, 0) / 1000.0
-    lum = contrast * np.sin(proj[:, None, :] - np.float32(2 * np.pi * temporal_hz) * tt[None, :, None]
-                            + phase[:, None, None])
-    return (lum * (t >= onset_ms).astype(np.float32)[None, :, None]).astype(np.float32)
+    tt = (t - onset_ms).clamp_min(0) / 1000.0
+    lum = contrast * torch.sin(proj[:, None, :] - 2 * np.pi * temporal_hz * tt[None, :, None] + phase[:, None, None])
+    return lum * (t >= onset_ms).float()[None, :, None]
 
 
 def direction_offsets(circuit: Circuit, xy: np.ndarray, post_types=("T4a", "T4b", "T4c", "T4d"),

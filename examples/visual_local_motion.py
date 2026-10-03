@@ -65,7 +65,7 @@ if dev == "cuda":
 DIRS = 8
 
 vc = fd.visual_circuit()
-xy_full = fd.column_map(vc)                                     # 지도는 실제 배선(시각계 전체)으로 만들고 모든 조건에 똑같이
+xy_full = fd.torch.column_map(vc)                                     # 지도는 실제 배선(시각계 전체)으로 만들고 모든 조건에 똑같이
 keep = np.concatenate([vc.groups[g] for g in fd.MOTION_PATHWAY if g in vc.groups]) if args.pathway == "motion"     else np.arange(vc.N)
 xy = xy_full[keep]                                              # subset은 그룹 순서대로 뉴런을 남김
 if args.pathway == "motion":

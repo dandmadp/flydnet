@@ -404,47 +404,18 @@ class MushroomBodyOutput(Tissue):
         return a / xp.maximum(a.max(axis=1, keepdims=True), 1e-8)
 
     def _scores(self, a):
-        xp = B.xp(B.device_of(a))
-        W = self.prototypes
-        s = a @ (W / xp.maximum(xp.linalg.norm(W, axis=1, keepdims=True), 1e-8)).T
-        s = xp.where(self.count == 0, -xp.inf, s)
+        s = P.recall(a, self.prototypes, self.count)
         return s.reshape(len(a), self.n_classes, self.per_class).max(axis=2)
 
     def forward(self, x) -> Signal:
         return Signal(self._scores(self.activity(x)))
 
     def learn(self, x, y, batch: int = 256):
-        """도파민 강화 (AssocReadout·flydnet.physiology.reinforce_와 같은 규칙)"""
+        """도파민 강화 (physiology.reinforce_ — AssocReadout과 같은 규칙)"""
         a_all = self.activity(x)
-        xp = B.xp(B.device_of(a_all))
-        y_all = B.to(_labels(y), B.device_of(a_all))
-        C, k = self.n_classes, self.per_class
+        y_all = B.labels(y)
         for s in range(0, len(a_all), batch):
-            a, y = a_all[s:s + batch], y_all[s:s + batch]
-            onehot = xp.eye(C, dtype=xp.int64)[y]
-            rank = (xp.cumsum(onehot, axis=0) * onehot).sum(1) - 1
-            empty = self.count.reshape(C, k) == 0
-            seed = rank < empty.sum(1)[y]
-            if seed.any():
-                order = xp.argsort((~empty).astype(xp.int8), axis=1, kind="stable")
-                idx = y[seed] * k + order[y[seed], rank[seed]]
-                self.prototypes[idx] = a[seed]
-                self.count[idx] = 1
-            rest = ~seed
-            if not rest.any():
-                continue
-            a, y = a[rest], y[rest]
-            W = self.prototypes
-            s_ = a @ (W / xp.maximum(xp.linalg.norm(W, axis=1, keepdims=True), 1e-8)).T
-            s_ = xp.where(self.count == 0, -xp.inf, s_).reshape(len(a), C, k)[xp.arange(len(a)), y]
-            idx = y * k + s_.argmax(1)
-            n = xp.zeros_like(self.count)
-            B.scatter_add(n, idx, xp.ones(len(a), dtype=n.dtype))
-            tot = xp.zeros_like(self.prototypes)
-            B.scatter_add(tot, idx, a)
-            self.count += n
-            hit = n > 0
-            self.prototypes[hit] += (tot[hit] - n[hit, None] * self.prototypes[hit]) / self.count[hit, None]
+            P.reinforce_(self.prototypes, self.count, a_all[s:s + batch], y_all[s:s + batch], self.per_class)
         return self
 
     def predict(self, x, classes=None):

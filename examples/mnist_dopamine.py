@@ -50,10 +50,10 @@ def mean_sd(xs):
 # ───────────── A. 전체 학습 ─────────────
 print(f"A. 전체 학습 ({args.seeds}회 반복)\n{'특징':<13}{'역전파(로지스틱)':>20}{'도파민 bidir':>20}{'도파민 assoc':>16}")
 for name, (Ftr, Fte) in feats.items():
-    bp = [fd.train_linear(Ftr, ytr, Fte, yte)["test_acc"]]           # 결정적이라 1회
-    da = [fd.DopamineReadout(Ftr.shape[1], 10, "bidir", args.lr).fit(Ftr, ytr, args.epochs, seed=s).accuracy(Fte, yte)
+    bp = [fd.torch.train_linear(Ftr, ytr, Fte, yte)["test_acc"]]           # 결정적이라 1회
+    da = [fd.torch.DopamineReadout(Ftr.shape[1], 10, "bidir", args.lr).fit(Ftr, ytr, args.epochs, seed=s).accuracy(Fte, yte)
           for s in range(args.seeds)]
-    asc = [fd.DopamineReadout(Ftr.shape[1], 10, "assoc").fit(Ftr, ytr).accuracy(Fte, yte)]  # 순서 무관 → 1회
+    asc = [fd.torch.DopamineReadout(Ftr.shape[1], 10, "assoc").fit(Ftr, ytr).accuracy(Fte, yte)]  # 순서 무관 → 1회
     print(f"{name:<13}{mean_sd(bp):>20}{mean_sd(da):>20}{mean_sd(asc):>16}", flush=True)
 
 
@@ -107,8 +107,8 @@ print("   표: 각 단계 후 '지금까지 본 숫자 전체' 정확도 / 마�
 for name, (Ftr, Fte) in feats.items():
     mu, sd = Ftr.mean(0), (Ftr - Ftr.mean(0)).std().clamp_min(1e-6)
     makers = {"역전파": lambda s: SGDLogistic(Ftr.shape[1], mu, sd, seed=s),
-              "bidir": lambda s: fd.DopamineReadout(Ftr.shape[1], 10, "bidir", args.lr),
-              "assoc": lambda s: fd.DopamineReadout(Ftr.shape[1], 10, "assoc")}
+              "bidir": lambda s: fd.torch.DopamineReadout(Ftr.shape[1], 10, "bidir", args.lr),
+              "assoc": lambda s: fd.torch.DopamineReadout(Ftr.shape[1], 10, "assoc")}
     for mname, make in makers.items():
         runs = [continual(make, Ftr, Fte, s) for s in range(args.seeds)]
         curve = torch.tensor([r[0] for r in runs]).mean(0) * 100

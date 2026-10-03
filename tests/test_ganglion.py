@@ -218,13 +218,28 @@ def test_pathway_learns_toy_problem():
 def test_mushroom_body_output_matches_assoc_readout():
     rng = np.random.default_rng(0)
     X = rng.random((300, 40)).astype(np.float32); y = rng.integers(0, 5, 300)
-    import torch as _t
-    ref = fd.AssocReadout(40, 5, per_class=3, device="cpu")
-    ref.step(_t.tensor(X), _t.tensor(y))
+    ref = fd.AssocReadout(40, 5, per_class=3, device="cpu")                    # 자체 엔진판 AssocReadout
+    ref.step(X, y)
     mbo = G.MushroomBodyOutput(40, 5, per_class=3, device="cpu").learn(X, y, batch=300)
-    np.testing.assert_allclose(mbo.prototypes, ref.W.numpy(), atol=1e-6)
-    assert (mbo.predict(X) == ref.predict(_t.tensor(X)).numpy()).all()
+    np.testing.assert_allclose(mbo.prototypes, ref.W, atol=1e-6)
+    assert (mbo.predict(X) == ref.predict(X)).all()
     assert mbo.predict(X, classes=[1, 2]).max() <= 2
+
+
+@needs_torch
+def test_assoc_and_dopamine_readouts_match_torch():
+    """자체 엔진판 AssocReadout·DopamineReadout = torch판 (같은 순서로 학습하면 같은 시냅스)"""
+    rng = np.random.default_rng(1)
+    X = rng.random((200, 30)).astype(np.float32); y = rng.integers(0, 4, 200)
+    for make in (lambda m: m.AssocReadout(30, 4, per_class=3, device="cpu"),
+                 *[lambda m, mode=mode: m.DopamineReadout(30, 4, mode=mode, device="cpu")
+                   for mode in ("bidir", "assoc", "ltd", "ltd_err", "ltp")]):
+        a, t = make(fd), make(fd.torch)
+        for i in range(0, 200, 50):
+            a.step(X[i:i + 50], y[i:i + 50])
+            t.step(torch.tensor(X[i:i + 50]), torch.tensor(y[i:i + 50]))
+        np.testing.assert_allclose(a.W, t.W.numpy(), atol=1e-5)
+        assert (a.predict(X) == t.predict(torch.tensor(X)).numpy()).all()
 
 
 # ─────────────── 2. torch를 정답지로 ───────────────
@@ -314,9 +329,14 @@ def test_flydnet_works_without_torch():
         out = layer(np.full((2, 3), 150.0, np.float32), seed=0)
         (out * out).sum().retrograde()                       # 시간 시뮬레이션도 torch 없이 학습
         assert layer.log_scale.retro is not None
+        r = fd.AssocReadout(3, 2, per_class=2, device="cpu").fit(np.random.rand(10, 3), np.arange(10) % 2)
+        assert r.predict(np.random.rand(4, 3)).shape == (4,)                   # 0.1 기능도 torch 없이
+        fd.KCExpansion(c, n_in=4, pre="A", post="B", device="cpu")(np.random.rand(2, 4))
+        fd.train_linear(np.random.rand(20, 3), np.arange(20) % 2, np.random.rand(5, 3), np.arange(5) % 2,
+                        epochs=2, device="cpu")
         try:
-            fd.AssocReadout
-            raise SystemExit("torch 기능이 불러와짐")
+            fd.torch
+            raise SystemExit("torch 연동이 불러와짐")
         except ImportError as e:
             assert "flydnet[torch]" in str(e)
         print("ok")
@@ -345,7 +365,7 @@ def _tiny(n_in=5, n_out=12, n_edges=120, seed=0):
     ("graded", dict(params={"w_syn": 0.3}, bias={"OUT": 0.2}, train_neurons=True, dt=1.0)),
 ])
 def test_connectome_layer_matches_torch(neuron, kw):
-    from flydnet.layers import ConnectomeLayer as TL
+    from flydnet.torch.layers import ConnectomeLayer as TL
     c = _tiny()
     tl = TL(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", **kw)
     gl = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", **kw)
@@ -429,7 +449,7 @@ def test_connectome_layer_gpu_matches_cpu():
 @needs_torch
 def test_pair_order_matches_torch_with_unsorted_group_names():
     """그룹 이름이 알파벳순이 아닐 때도 연결 종류 순서가 torch판과 같아야 함 (실제 데이터에서 잡힌 버그)"""
-    from flydnet.layers import ConnectomeLayer as TL
+    from flydnet.torch.layers import ConnectomeLayer as TL
     c = _tiny()
     c = fd.Circuit(c.root_ids, {"Zin": c.groups["IN"], "Aout": c.groups["OUT"]}, c.pre, c.post, c.weight)
     kw = dict(t_ms=20, dt=1.0, neuron="graded", params={"w_syn": 0.3}, bias=0.2, trainable=True, share="pair")
@@ -440,3 +460,26 @@ def test_pair_order_matches_torch_with_unsorted_group_names():
     tl(torch.tensor(x)).sum().backward()
     gl(x).sum().retrograde()
     np.testing.assert_allclose(gl.log_scale.retro, tl.log_scale.grad.numpy(), rtol=1e-3, atol=1e-5)
+
+
+@needs_gpu
+@pytest.mark.parametrize("nb", [1, 3, 8, 16, 32, 40])
+def test_gpu_kernels_match_reference(nb):
+    """직접 쓴 CUDA 커널 (행 우선 SpMM, 연결별 내적) = 기준 계산. 배치 32 초과(레인 반복)·빈 행 포함"""
+    import cupy as cp
+    from flydnet.ganglion import kernels as K
+    rng = np.random.default_rng(nb)
+    n = 300
+    key = rng.choice(n * n, 2000, replace=False)
+    post, pre = key // n, key % n
+    post[post == 7] = 8                                                        # 행 7은 비어 있게
+    key = np.unique(post * n + pre); post, pre = key // n, key % n
+    w, order = G.wiring(post, pre, n, n, device="gpu")
+    vals = cp.asarray(rng.normal(size=len(post)).astype(np.float32))
+    M, MT = K.matrices(w, vals)
+    x = cp.asarray(rng.normal(size=(n, nb)).astype(np.float32))
+    g = cp.asarray(rng.normal(size=(n, nb)).astype(np.float32))
+    np.testing.assert_allclose(cp.asnumpy(K.spmm(M, x)), cp.asnumpy(M @ x), rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(cp.asnumpy(K.spmm(MT, g)), cp.asnumpy(MT @ g), rtol=1e-4, atol=1e-4)
+    ref = cp.asnumpy((g[w.post] * x[w.pre]).sum(axis=1))
+    np.testing.assert_allclose(cp.asnumpy(K.edge_dot(g, x, w.indptr, w.post, w.pre)), ref, rtol=1e-4, atol=1e-4)

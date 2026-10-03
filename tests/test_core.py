@@ -54,7 +54,7 @@ def test_shuffled_keeps_degrees_per_group_pair(mb):
 
 # ─────────────── RateEncoder ───────────────
 def test_encoder_shape_and_range():
-    enc = fd.RateEncoder(784, 344, max_rate=100)
+    enc = fd.torch.RateEncoder(784, 344, max_rate=100)
     r = enc(torch.rand(8, 28, 28))
     assert r.shape == (8, 344)
     assert r.min() >= 0 and torch.allclose(r.amax(1), torch.full((8,), 100.0))
@@ -62,7 +62,7 @@ def test_encoder_shape_and_range():
 
 def test_encoder_identity_requires_same_size():
     with pytest.raises(ValueError):
-        fd.RateEncoder(10, 20, projection=None)
+        fd.torch.RateEncoder(10, 20, projection=None)
 
 
 # ─────────────── ConnectomeLayer ───────────────
@@ -77,7 +77,7 @@ def test_layer_shape_and_zero_input(mb):
 @needs_data
 def test_layer_regular_is_deterministic(mb):
     layer = fd.torch.ConnectomeLayer(mb, "PN", "KC", t_ms=30, gains={"PN>KC": 2.0}, input_mode="regular")
-    x = fd.RateEncoder(784, 344)(torch.rand(4, 784))
+    x = fd.torch.RateEncoder(784, 344)(torch.rand(4, 784))
     assert torch.equal(layer(x, seed=1), layer(x, seed=2))
     assert layer(x).sum() > 0
 
@@ -101,33 +101,33 @@ def _toy(n=400, k=50, c=4, seed=0):
 @pytest.mark.parametrize("mode", ["bidir", "assoc"])
 def test_readout_learns_toy_problem(mode):
     X, y = _toy()
-    m = fd.DopamineReadout(X.shape[1], 4, mode, lr=0.1, device="cpu").fit(X, y, epochs=3)
+    m = fd.torch.DopamineReadout(X.shape[1], 4, mode, lr=0.1, device="cpu").fit(X, y, epochs=3)
     assert m.accuracy(X, y) > 0.9
 
 
 def test_bidir_weights_stay_nonnegative():
     X, y = _toy()
-    m = fd.DopamineReadout(X.shape[1], 4, "bidir", lr=1.0, device="cpu").fit(X, y, epochs=3)
+    m = fd.torch.DopamineReadout(X.shape[1], 4, "bidir", lr=1.0, device="cpu").fit(X, y, epochs=3)
     assert (m.W >= 0).all()
 
 
 def test_assoc_is_order_independent():
     X, y = _toy()
-    a = fd.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X, y, seed=0)
+    a = fd.torch.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X, y, seed=0)
     order = torch.argsort(y)                           # 클래스별로 몰아서 (연속 학습과 같은 순서)
-    b = fd.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X[order], y[order], seed=1)
+    b = fd.torch.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X[order], y[order], seed=1)
     assert torch.allclose(a.W, b.W, atol=1e-5)
 
 
 def test_invalid_mode():
     with pytest.raises(ValueError):
-        fd.DopamineReadout(10, 2, "nope")
+        fd.torch.DopamineReadout(10, 2, "nope")
 
 
 # ─────────────── GlomerularEncoder / synthetic_odors ───────────────
 @needs_data
 def test_glomerular_encoder(mb):
-    enc = fd.GlomerularEncoder(mb)
+    enc = fd.torch.GlomerularEncoder(mb)
     assert enc.n_glomeruli == 56
     assert enc.P.sum() == 139                          # 단일 사구체형 PN 139개, 각자 사구체 하나
     assert (enc.P.sum(1) <= 1).all()
@@ -143,8 +143,8 @@ def test_shuffled_keeps_meta(mb):
 
 
 def test_synthetic_odors_shapes_and_determinism():
-    a = fd.synthetic_odors(5, 56, 3, 4, protos_per_class=2, seed=1)
-    b = fd.synthetic_odors(5, 56, 3, 4, protos_per_class=2, seed=1)
+    a = fd.torch.synthetic_odors(5, 56, 3, 4, protos_per_class=2, seed=1)
+    b = fd.torch.synthetic_odors(5, 56, 3, 4, protos_per_class=2, seed=1)
     Xtr, ytr, Xte, yte = a
     assert Xtr.shape == (15, 56) and Xte.shape == (20, 56)
     assert (Xtr >= 0).all() and torch.equal(ytr.bincount(), torch.full((5,), 3))
@@ -176,8 +176,8 @@ def test_shuffled_has_no_duplicate_or_self_edges(mb):
 @needs_data
 @pytest.mark.skipif(bool(fd.data.missing("door")), reason="DoOR 데이터 없음")
 def test_door_odors(mb):
-    enc = fd.GlomerularEncoder(mb)
-    d = fd.door_odors(enc.glomeruli, min_measured=20)
+    enc = fd.torch.GlomerularEncoder(mb)
+    d = fd.torch.door_odors(enc.glomeruli, min_measured=20)
     assert d["X"].shape == (len(d["names"]), 56)
     assert (d["X"] >= 0).all() and (d["X"] <= 1).all()
     assert (d["X"][~d["measured"]] == 0).all()           # 측정 안 된 칸은 0
@@ -187,14 +187,14 @@ def test_door_odors(mb):
 
 def test_assoc_readout_k1_matches_dopamine_assoc():
     X, y = _toy()
-    a = fd.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X, y)
-    b = fd.AssocReadout(X.shape[1], 4, per_class=1, device="cpu").fit(X, y)
+    a = fd.torch.DopamineReadout(X.shape[1], 4, "assoc", device="cpu").fit(X, y)
+    b = fd.torch.AssocReadout(X.shape[1], 4, per_class=1, device="cpu").fit(X, y)
     assert torch.allclose(a.W, b.W, atol=1e-5)
 
 
 def test_assoc_readout_never_changes_other_classes():
     X, y = _toy()
-    m = fd.AssocReadout(X.shape[1], 4, per_class=3, device="cpu")
+    m = fd.torch.AssocReadout(X.shape[1], 4, per_class=3, device="cpu")
     m.fit(X[y < 2], y[y < 2])
     before = m.W[:2 * 3].clone()
     m.fit(X[y >= 2], y[y >= 2])                         # 나중 클래스 학습
@@ -205,13 +205,13 @@ def test_assoc_readout_never_changes_other_classes():
 
 def test_train_linear_is_reproducible():
     X, y = _toy(n=100)
-    r = [fd.train_linear(X[:60], y[:60], X[60:], y[60:], epochs=5, device="cpu")["model"].weight for _ in range(2)]
+    r = [fd.torch.train_linear(X[:60], y[:60], X[60:], y[60:], epochs=5, device="cpu")["model"].weight for _ in range(2)]
     assert torch.equal(r[0], r[1])
 
 
 def test_assoc_readout_uses_all_prototypes_in_one_batch():
     X, y = _toy(n=40)
-    m = fd.AssocReadout(X.shape[1], 4, per_class=3, device="cpu").fit(X, y, batch=64)   # 한 묶음에 전부
+    m = fd.torch.AssocReadout(X.shape[1], 4, per_class=3, device="cpu").fit(X, y, batch=64)   # 한 묶음에 전부
     assert (m.count.view(4, 3) > 0).all()
     assert m.count.sum() == 40
 
@@ -244,7 +244,7 @@ def test_trainable_subset_and_sign_kept(mb):
 @needs_data
 def test_untrained_trainable_layer_matches_fixed(mb):
     kw = dict(t_ms=20, dt=0.5, gains={"PN>KC": 2.0}, input_mode="regular")
-    x = fd.RateEncoder(784, 344)(torch.rand(4, 784))
+    x = fd.torch.RateEncoder(784, 344)(torch.rand(4, 784))
     with torch.no_grad():
         a = fd.torch.ConnectomeLayer(mb, "PN", "KC", **kw)(x)
         b = fd.torch.ConnectomeLayer(mb, "PN", "KC", trainable=True, **kw)(x)
@@ -253,7 +253,7 @@ def test_untrained_trainable_layer_matches_fixed(mb):
 
 def test_surrogate_spike():
     x = torch.tensor([-1.0, -0.01, 0.01, 1.0], requires_grad=True)
-    y = fd.layers.SpikeFn.apply(x, 10.0)
+    y = fd.torch.layers.SpikeFn.apply(x, 10.0)
     assert y.tolist() == [0, 0, 1, 1]
     y.sum().backward()
     assert (x.grad > 0).all() and x.grad[1] > x.grad[0]      # 문턱 근처에서 기울기가 큼
@@ -296,7 +296,7 @@ def test_layer_save_load_roundtrip(mb, tmp_path):
     layer.set_gain("PN>KC", 2.5)                            # 만든 뒤 바꾼 배율도 저장되는지
     layer.save(tmp_path / "layer.pt")
     new = fd.torch.ConnectomeLayer.load(tmp_path / "layer.pt")
-    x = fd.RateEncoder(784, 344)(torch.rand(3, 784))
+    x = fd.torch.RateEncoder(784, 344)(torch.rand(3, 784))
     with torch.no_grad():
         assert torch.equal(layer(x), new(x))
     assert torch.equal(new.weights(), layer.weights())
@@ -319,8 +319,8 @@ def test_model_state_dict_roundtrip(mb, tmp_path):
     assert torch.equal(a[0].weights(), b[0].weights())
 
 
-@pytest.mark.parametrize("cls,kw", [(fd.AssocReadout, dict(per_class=3)),
-                                    (fd.DopamineReadout, dict(mode="bidir", lr=0.1))])
+@pytest.mark.parametrize("cls,kw", [(fd.torch.AssocReadout, dict(per_class=3)),
+                                    (fd.torch.DopamineReadout, dict(mode="bidir", lr=0.1))])
 def test_readout_save_load(cls, kw, tmp_path):
     X, y = _toy()
     m = cls(X.shape[1], 4, device="cpu", **kw).fit(X, y)
@@ -328,7 +328,7 @@ def test_readout_save_load(cls, kw, tmp_path):
     n = cls.load(tmp_path / "r.pt", device="cpu")
     assert torch.equal(m.predict(X), n.predict(X))
     with pytest.raises(ValueError):
-        (fd.DopamineReadout if cls is fd.AssocReadout else fd.AssocReadout).load(tmp_path / "r.pt")
+        (fd.torch.DopamineReadout if cls is fd.torch.AssocReadout else fd.torch.AssocReadout).load(tmp_path / "r.pt")
 
 
 # ─────────────── 그래디언트 체크포인팅 ───────────────
@@ -363,7 +363,7 @@ def _tiny_circuit(n_in=5, n_out=12, n_edges=60, seed=0):
 
 
 def test_sparse_propagate_matches_dense_reference():
-    from flydnet.layers import SparsePropagate
+    from flydnet.torch.layers import SparsePropagate
     c = _tiny_circuit()
     layer = fd.torch.ConnectomeLayer(c, "IN", "OUT", trainable=True, device="cpu")
     N = c.N
@@ -469,7 +469,7 @@ def test_new_options_save_load_roundtrip(tmp_path):
 
 def test_drifting_grating():
     xy = np.random.default_rng(0).normal(size=(30, 2)).astype(np.float32) * 5
-    lum = fd.drifting_grating(xy, [0, 90], t_ms=100, frames=20, onset_ms=20, contrast=0.5)
+    lum = fd.torch.drifting_grating(xy, [0, 90], t_ms=100, frames=20, onset_ms=20, contrast=0.5)
     assert lum.shape == (2, 20, 30)
     assert (lum[:, :4] == 0).all() and lum.abs().max() <= 0.5 + 1e-6 and lum[:, 4:].abs().max() > 0.3
 
@@ -479,7 +479,7 @@ def test_visual_circuit_and_direction_wiring():
     vc = fd.visual_circuit()
     assert {"T4a", "Mi1", "R1-6", "HSE"} <= set(vc.groups) and vc.pos is not None
     assert (vc.weight[np.isin(vc.pre, vc.groups["R1-6"])] < 0).all()
-    xy = fd.column_map(vc)
+    xy = fd.torch.column_map(vc)
     assert np.isfinite(xy[vc.groups["Mi1"]]).all() and np.isnan(xy[vc.groups["HSE"]]).all()
     real = fd.direction_offsets(vc, xy)
     with pytest.warns(UserWarning):
@@ -603,19 +603,19 @@ def _pn_kc_circuit(n_pn=30, n_kc=200, per_kc=6, seed=0):
 
 def test_kc_expansion_sparsity_and_weights():
     c = _pn_kc_circuit()
-    kc = fd.KCExpansion(c, n_in=50, k_frac=0.1, device="cpu")
+    kc = fd.torch.KCExpansion(c, n_in=50, k_frac=0.1, device="cpu")
     assert kc.W.shape == (200, 30) and kc.W.sum() == c.weight.sum()
     x = torch.rand(7, 50)
     out = kc(x)
     assert out.shape == (7, 200) and ((out != 0).sum(1) <= 20).all()
     assert torch.equal(out, kc(x))                                       # 결정론적
-    b = fd.KCExpansion(c, n_in=50, k_frac=0.1, binary=True, device="cpu")(x)
+    b = fd.torch.KCExpansion(c, n_in=50, k_frac=0.1, binary=True, device="cpu")(x)
     assert set(b.unique().tolist()) <= {0.0, 1.0} and (b.sum(1) == 20).all()
 
 
 def test_kc_expansion_similar_inputs_share_codes():
     c = _pn_kc_circuit(n_pn=60, n_kc=1000)
-    kc = fd.KCExpansion(c, n_in=100, k_frac=0.05, binary=True, device="cpu")
+    kc = fd.torch.KCExpansion(c, n_in=100, k_frac=0.05, binary=True, device="cpu")
     g = torch.Generator().manual_seed(0)
     x = torch.rand(1, 100, generator=g)
     near, far = x + 0.02 * torch.randn(1, 100, generator=g), torch.rand(1, 100, generator=g)
@@ -716,7 +716,7 @@ def test_lateral_inhibition_and_axon_hillock():
 
 def test_mushroom_body_output_matches_assoc_readout(tmp_path):
     X, y = _toy(n=300, k=40, c=5)
-    ref = fd.AssocReadout(40, 5, per_class=3, device="cpu").fit(X, y, batch=50)
+    ref = fd.torch.AssocReadout(40, 5, per_class=3, device="cpu").fit(X, y, batch=50)
     mbo = MushroomBodyOutput(40, 5, per_class=3)
     g = torch.Generator().manual_seed(0)                                      # AssocReadout.fit과 같은 순서
     perm = torch.randperm(len(X), generator=g)
@@ -732,7 +732,7 @@ def test_mushroom_body_output_matches_assoc_readout(tmp_path):
 
 def test_kenyon_code_matches_kc_expansion():
     c = _pn_kc_circuit()
-    kc = fd.KCExpansion(c, n_in=50, k_frac=0.1, device="cpu")
+    kc = fd.torch.KCExpansion(c, n_in=50, k_frac=0.1, device="cpu")
     x = torch.rand(6, 50)
     assert torch.equal(kc(x), P.kenyon_code(x, kc.W, kc.k, kc.proj))
 

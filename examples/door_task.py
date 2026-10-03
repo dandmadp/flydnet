@@ -34,8 +34,8 @@ ap.add_argument("--min-class-size", type=int, default=7, help="B에서 쓸 계�
 args = ap.parse_args()
 
 mb = fd.Circuit.from_flywire()
-enc = fd.GlomerularEncoder(mb)
-door = fd.door_odors(enc.glomeruli, args.data, min_measured=args.min_measured)
+enc = fd.torch.GlomerularEncoder(mb)
+door = fd.torch.door_odors(enc.glomeruli, args.data, min_measured=args.min_measured)
 X0, classes = door["X"], np.asarray(door["classes"])
 print(f"{mb}\nDoOR 냄새 {len(X0)}개 | 사구체 {enc.n_glomeruli}개 중 측정 {int(door['measured'].any(0).sum())}개 | "
       f"냄새당 켜진 사구체 {(X0 > 0.05).sum(1).float().mean():.1f}개\n")
@@ -53,10 +53,10 @@ def jitter(X, n, seed):
 
 
 def features(x):
-    return {"glomeruli": x} | {name: fd.extract(L, enc, x) for name, L in layers.items()}
+    return {"glomeruli": x} | {name: fd.torch.extract(L, enc, x) for name, L in layers.items()}
 
 
-acc = lambda Ftr, ytr, Fte, yte: fd.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
+acc = lambda Ftr, ytr, Fte, yte: fd.torch.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
 
 
 def report(title, res):
