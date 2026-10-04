@@ -1,6 +1,7 @@
 """성능 측정: 전체 뇌 ConnectomeLayer 학습 1스텝 (순전파 + 역전파 + 가소성) 과 시뮬레이션 (역전파 없음)
 
   python scripts/bench.py                  # GPU, 약 2분
+  python scripts/bench.py --torch          # + torch 모델 안에서: 연결 장치(fd.torch.bridge) 대 0.1 torch판 복사본
 
 설정: 전체 뇌 138,639개 뉴런·연결 1,509만, 입력 = 감각 뉴런, 출력 = 하행 뉴런, 연결마다 학습, 20 ms (200스텝),
 체크포인팅 20스텝마다
@@ -19,6 +20,7 @@ def main():
     ap.add_argument("--batches", default="8,32")
     ap.add_argument("--t-ms", type=float, default=20.0)
     ap.add_argument("--repeat", type=int, default=3)
+    ap.add_argument("--torch", action="store_true", help="연결 장치 대 torch판 복사본 (배치 8)")
     a = ap.parse_args()
     B.limit_gpu_memory(0.75)
     brain = fd.Circuit.whole_brain()
@@ -51,6 +53,27 @@ def main():
                   f"GPU 메모리 {B.gpu_memory_used() / 2**30:.1f} GB", flush=True)
         del layer, rule
         B.gpu_memory_peak_reset()
+    if a.torch:
+        bench_torch(brain, a)
+
+
+def bench_torch(brain, a):
+    import torch
+    kw = dict(t_ms=a.t_ms, trainable=True, checkpoint_every=20)
+    makers = [("연결 장치 (자체 엔진)", lambda: fd.torch.bridge(fd.ConnectomeLayer(brain, "sensory", "descending", **kw), seed=0)),
+              ("0.1 torch판 복사본", lambda: fd.torch.ConnectomeLayer(brain, "sensory", "descending", device="cuda", **kw))]
+    for name, make in makers:
+        m = make()
+        opt = torch.optim.Adam(m.parameters(), lr=1e-3)
+        x = torch.rand(8, len(brain.groups["sensory"]), device="cuda") * 100
+        ts = []
+        for r in range(a.repeat + 1):
+            t = time.perf_counter()
+            opt.zero_grad(); (m(x) * 0.01).sum().backward(); opt.step(); torch.cuda.synchronize()
+            ts.append(time.perf_counter() - t)
+        print(f"torch 모델 안 {name:<20} 배치 8: 학습 1스텝 {np.median(ts[1:]):.2f}초", flush=True)
+        del m, opt
+        torch.cuda.empty_cache(); B.gpu_memory_peak_reset()
 
 
 if __name__ == "__main__":

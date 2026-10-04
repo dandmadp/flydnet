@@ -8,6 +8,10 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- **torch 연결 장치 `fd.torch.bridge`**: 자체 엔진 구조물을 torch 모델 안에서 `nn.Module`로. 계산은 자체 엔진,
+  메모리 공유(GPU DLPack·CPU numpy, 복사 없음), torch backward → 자체 엔진 retrograde, 학습 값은 같은 메모리의 torch
+  Parameter (torch 옵티마이저가 갱신). no_grad 지원, 자체 엔진이 배열을 바꿔 끼우면 다시 묶음. 출력·기울기가 자체
+  엔진과 같음 (테스트). 전체 뇌에서 0.1 torch판 복사본보다 약 4배 빠름. 예제 `examples/torch_bridge.py`
 - **어떤 그래프든 회로로**: `Circuit.from_edges` (번호·이름, 그룹 dict·노드별 이름, 남는 노드는 rest),
   `from_scipy`, `from_networkx`, `to_scipy`, `to_networkx`, `regroup`, `check` (번호 범위·그룹 겹침·NaN 검증).
   예쁜꼬마선충 커넥톰 `Circuit.celegans()` (Cook et al. 2019, 고정 커밋·SHA-256, GABA 뉴런 26개는 억제,

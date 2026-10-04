@@ -244,10 +244,24 @@ c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
 이름은 같은 일을 하는 생물 구조에서 땄다 (역행성 신호, 시냅스, 조직, 신경 경로, 가소성…).
 엔진 검증: 연산마다 수치 미분, torch와 출력·기울기·옵티마이저 비교, CPU↔GPU 비교 (`tests/`).
 
-### torch 연동
+### torch 연동: fd.torch.bridge
 
-0.1 코드는 `fd.이름`을 `fd.torch.이름`으로 바꾸면 그대로 돈다
-(`fd.torch.ConnectomeLayer`, `fd.torch.AssocReadout`, `fd.torch.extract` 등).
+torch 모델 안에서 flydnet 구조물을 쓴다. **계산은 자체 엔진** (원본 모델과 같은 계산, 직접 작성한 CUDA 커널),
+겉은 `nn.Module`. 복사 없이 메모리를 공유하고(GPU는 DLPack), 역전파가 torch 쪽으로 이어진다.
+
+```python
+layer = fd.ConnectomeLayer(mb, "PN", "MBON", trainable=True)
+model = torch.nn.Sequential(encoder, fd.torch.bridge(layer, seed=0), torch.nn.Linear(48, 10))
+opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch가 갱신 (자체 엔진과 같은 메모리)
+```
+
+- 자체 엔진만 쓸 때와 출력·기울기가 같다 (테스트). 연결 장치 자체의 비용은 거의 없음
+- 전체 뇌 학습 1스텝 (배치 8): 연결 장치 1.1초 대 0.1 torch판 복사본 4.7초. 뉴런 수천 개인 작은 회로에서는
+  torch판이 조금 빠름 (버섯체 118 ms 대 164 ms)
+- `examples/torch_bridge.py`
+
+0.1 코드는 `fd.이름`을 `fd.torch.이름`으로 바꾸면 그대로 돈다 (0.1의 torch판 복사본, 예전 계산 = `timing="legacy"`).
+새 기능(`genetics`, `explain`, `ThreeFactor`, 원본 모델과 같은 계산)은 연결 장치로 쓸 것.
 
 ## 결과 요약
 
