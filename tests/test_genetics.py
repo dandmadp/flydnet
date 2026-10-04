@@ -7,7 +7,7 @@ import pytest
 
 import flydnet as fd
 from flydnet.ganglion import backend as B
-from flydnet.genetics import activate, ablate, block, driver, lines, screen, silence
+from flydnet.genetics import activate, ablate, block, driver, lines, mosaic, screen, silence
 
 
 def _chain(n_side=6):
@@ -199,3 +199,64 @@ def test_active_effects_visible_and_clearable():
     assert "켜진 효과기" in repr(L) and "silence" in repr(L) and len(fd.genetics.active(L)) == 2
     fd.genetics.clear(L)
     assert not fd.genetics.active(L) and "켜진 효과기" not in repr(L)
+
+
+# ─────────────── mosaic: 세포 유형 드롭아웃 ───────────────
+def _graded_chain(c, outputs=("H",)):
+    return _layer(c, outputs=outputs, neuron="graded", t_ms=20)
+
+
+def test_mosaic_only_while_learning():
+    c = _chain()
+    L = _graded_chain(c)
+    x = np.full((4, 6), 0.8, np.float32)
+    with fd.quiescent():
+        clean = L(x, seed=0).numpy()
+    with mosaic(L, p=0.5, by="cell_type", within=driver(c, group="H")):
+        with fd.quiescent():
+            np.testing.assert_allclose(L(x, seed=0).numpy(), clean)          # 평가 때는 꺼짐
+        train = L(x, seed=0).numpy()
+        again = L(x, seed=0).numpy()
+    np.testing.assert_array_equal(train, again)                          # 같은 seed = 같은 모자이크
+    assert not np.allclose(train, clean)
+    for b in range(len(train)):                                          # 유형 단위: h1(앞 3개)·h2(뒤 3개)는 통째로 꺼지거나 켜짐
+        for part in (train[b, :3], train[b, 3:]):
+            assert (part == 0).all() or (part > 0).all()
+    on = train[train > 0] / clean[train > 0]
+    np.testing.assert_allclose(on, 2.0, rtol=1e-5)                       # rescale 1/(1-p)
+
+
+def test_mosaic_by_neuron_and_validation():
+    c = _chain()
+    L = _graded_chain(c)
+    x = np.full((32, 6), 0.8, np.float32)
+    with mosaic(L, p=0.5, by="neuron", within=driver(c, group="H")):
+        r = L(x, seed=1).numpy()
+    mixed = [(row[:3] == 0).any() and (row[:3] > 0).any() for row in r]
+    assert any(mixed)                                                    # 뉴런마다 따로 꺼짐 (보통 드롭아웃)
+    with pytest.raises(ValueError, match="p는"):
+        mosaic(L, p=1.0)
+    e = mosaic(L, p=0.2)
+    assert "mosaic" in repr(L) and "p 0.2" in repr(L)
+    e.remove()
+
+
+def test_mosaic_spiking_checkpoint_and_explain():
+    c = _chain()
+    x = fd.Signal(np.full((3, 6), 150.0, np.float32))
+    outs = []
+    for ce in (None, 9):
+        L = _layer(c, outputs=("O",), trainable=True, t_ms=60, checkpoint_every=ce)
+        with mosaic(L, p=0.3, by="cell_type"):
+            out = L(x, seed=4)
+            out.sum().retrograde()
+        outs.append((out.numpy(), L.log_scale.retro.copy()))
+    np.testing.assert_allclose(outs[0][0], outs[1][0])
+    np.testing.assert_allclose(outs[0][1], outs[1][1], rtol=1e-4, atol=1e-6)
+    L = _graded_chain(c, outputs=("O",))
+    s = lambda L_, seed: L_(np.full((2, 6), 0.8, np.float32), seed=seed).sum()
+    plain = fd.explain(s, L).groups.set_index("name").pred_drop
+    with mosaic(L, p=0.5):
+        withm = fd.explain(s, L).groups.set_index("name").pred_drop
+        assert len(fd.genetics.active(L)) == 1                           # explain 뒤에도 그대로
+    np.testing.assert_allclose(plain.sort_index(), withm.sort_index())   # 설명할 때는 드롭아웃 끔

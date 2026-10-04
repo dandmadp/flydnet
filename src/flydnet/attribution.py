@@ -96,6 +96,9 @@ def explain(score, layer, by: str = "cell_type", pathways: bool = False, verify:
     g_n = np.zeros(circuit.N)
     g_e = None
     base = []
+    mos = [e for e in layer._effects if e.kind == "mosaic"]               # 세포 유형 드롭아웃은 학습용 - 설명할 때는 끔
+    for e in mos:
+        e.remove()
     try:
         for s in seeds:
             pn = Signal(xp.ones((circuit.N, 1), dtype=xp.float32), plastic=True)
@@ -117,6 +120,7 @@ def explain(score, layer, by: str = "cell_type", pathways: bool = False, verify:
                 say(f"  기울기 seed {s}: score {base[-1]:.4g}", flush=True)
     finally:
         layer._probe = {}
+        layer._effects.extend(m for m in mos if m not in layer._effects)
     g_n /= len(seeds)
     base_mean = float(np.mean(base))
     drop = np.bincount(inv, weights=g_n, minlength=len(names))

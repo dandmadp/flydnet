@@ -12,6 +12,7 @@
                                     w_syn·f_poi 더하기, 자극받는 뉴런은 불응기 없음).
                                     연속값 뉴런(neuron="graded")은 level로 활동을 고정
   ablate(circuit, line)             세포 제거: 그 뉴런들의 연결을 모두 뺀 새 회로 (학습 비교용 - fd.compare와 함께)
+  mosaic(layer, p=0.1, by=...)      세포 유형 드롭아웃 (유전 모자이크): 학습 중에만 시료마다 세포 유형을 통째로 무작위로 끔
 
   active(layer), clear(layer)       지금 켜져 있는 효과기 / 모두 끄기 (print(layer)에도 보임)
   lines(circuit, by="cell_type")    주석 값마다 드라이버 (GAL4 모음)
@@ -171,6 +172,8 @@ class Expression:
 
     def __repr__(self):
         extra = f", {self.hz} Hz" if self.hz is not None else (f", level {self.level}" if self.level is not None else "")
+        if self.kind == "mosaic":
+            extra = f", p {self.p}, by {self.by}"
         return f"<{self.kind} {self.line.name} ({len(self.line)}개{extra})>"
 
 
@@ -202,6 +205,48 @@ def activate(layer, line: Line, hz: float = 100.0, level: float | None = None) -
     if layer.neuron == "graded":
         level = 1.0 if level is None else level
     return Expression(layer, "activate", line, hz=float(hz), level=level)
+
+
+def mosaic(layer, p: float = 0.1, by: str = "cell_type", within: Line | None = None, rescale: bool = True) -> Expression:
+    """세포 유형 드롭아웃 (유전 모자이크): 학습 중에만, 시료마다 세포 유형(by)을 확률 p로 통째로 끔 (Kir2.1과 같은 조작).
+    한 세포 유형에만 기대지 않게 → 세포 유형 손상(수용체 결손 등)에 강한 모델. 평가(quiescent) 때는 꺼짐
+
+    by:      주석 열 (예: "cell_type"), "group", 또는 "neuron" (뉴런마다 따로 = 보통 드롭아웃, 비교용)
+    within:  이 집단 안에서만 (예: driver(mb, group="PN")). None이면 회로 전체
+    rescale: 남은 세포의 출력을 1/(1-p)배 (보통 드롭아웃처럼 학습·평가 때의 평균 입력을 맞춤)
+    난수는 순전파의 seed로 정해짐 (같은 seed = 같은 모자이크, 체크포인팅으로 다시 계산해도 같음)"""
+    if not 0 <= p < 1:
+        raise ValueError(f"p는 0 이상 1 미만: {p}")
+    c = layer.circuit
+    line = within if within is not None else Line(c, np.arange(c.N), "전체")
+    if by == "neuron":
+        inv = np.arange(c.N)
+    else:
+        from .attribution import _labels
+        _, inv = np.unique(_labels(c, by).astype(str), return_inverse=True)
+    e = Expression(layer, "mosaic", line)
+    e.p, e.by, e.rescale = float(p), by, rescale
+    member = np.zeros(c.N, bool); member[line.idx] = True
+    _, e.inv = np.unique(inv[member], return_inverse=True)        # 집단 안의 유형만 번호 매김
+    e.member = np.nonzero(member)[0]
+    e.n_types = int(e.inv.max()) + 1 if len(e.inv) else 0
+    return e
+
+
+def mosaic_mask(layer, seed: int, batch: int):
+    """순전파용 모자이크 마스크 (N, batch) 또는 None (학습 중이 아니거나 mosaic이 없으면)"""
+    from .ganglion.signal import learning_enabled
+    mos = [e for e in getattr(layer, "_effects", ()) if e.kind == "mosaic" and e.p > 0]
+    if not mos or not learning_enabled():
+        return None
+    rng = np.random.default_rng([int(seed) % (1 << 63), 0x3051C])
+    m = np.ones((layer.circuit.N, batch), np.float32)
+    for e in mos:
+        keep = (rng.random((e.n_types, batch)) >= e.p).astype(np.float32)
+        if e.rescale:
+            keep /= (1 - e.p)
+        m[e.member] *= keep[e.inv]
+    return B.to(m, layer.device)
 
 
 def ablate(circuit, line: Line):

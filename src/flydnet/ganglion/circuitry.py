@@ -26,6 +26,11 @@ def genetics_effects(layer) -> dict:
     from ..genetics import effects
     return effects(layer)
 
+
+def genetics_mosaic(layer, seed, batch):
+    from ..genetics import mosaic_mask
+    return mosaic_mask(layer, seed, batch)
+
 DEFAULT_PARAMS = dict(
     v_0=-52.0, v_rst=-52.0, v_th=-45.0,   # mV
     t_mbr=20.0, tau=5.0,                  # ms
@@ -272,7 +277,7 @@ class ConnectomeLayer(Tissue):
         if x.data.size and not bool(B.xp(self.device).isfinite(x.data).all()):
             raise ValueError("입력에 NaN·무한대가 있음 (그대로 두면 스파이크가 안 생겨 출력이 조용히 0이 됨)")
         if self.neuron == "graded":
-            return self._forward_graded(x, return_all, record)
+            return self._forward_graded(x, return_all, record, seed)
         p, N, xp = self.p, self.circuit.N, B.xp(self.device)
         Bn = x.shape[0]
         dt = p["dt"]; steps = int(round(self.t_ms / dt))
@@ -313,6 +318,7 @@ class ConnectomeLayer(Tissue):
         fx = genetics_effects(self)
         quiet, blocked, act_idx = fx.get("silence"), fx.get("block"), fx.get("act_idx")
         n_act = 0 if act_idx is None else len(act_idx)
+        drop = genetics_mosaic(self, seed, Bn)                             # 세포 유형 드롭아웃 (학습 중에만)
         if n_act:                                   # 활성화 = 포아송 자극을 입력처럼 전위에 직접, 불응기 없음 (Shiu et al.과 같음)
             idx_all = xp.concatenate([in_idx, act_idx])
             rfc_vec[act_idx] = 0
@@ -346,6 +352,8 @@ class ConnectomeLayer(Tissue):
                     spk = spk * quiet
                 if probe_n is not None:                                    # fd.explain: 뉴런마다 배율 탐침 (값 1)
                     spk = spk * probe_n
+                if drop is not None:
+                    spk = spk * drop
                 fired = spk.data > 0
                 if s >= s_cnt:
                     counts = counts + spk
@@ -382,7 +390,7 @@ class ConnectomeLayer(Tissue):
     def _trace(self, rec):
         return B.numpy(B.xp(self.device).stack(rec, axis=1))              # (B, steps, k)
 
-    def _forward_graded(self, x: Signal, return_all: bool, record):
+    def _forward_graded(self, x: Signal, return_all: bool, record, seed=None):
         p, N, xp = self.p, self.circuit.N, B.xp(self.device)
         Bn = x.shape[0]
         dt = p["dt"]; steps = int(round(self.t_ms / dt))
@@ -404,6 +412,9 @@ class ConnectomeLayer(Tissue):
         rec_idx = B.to(np.asarray(record), self.device) if record is not None else None
         fx = genetics_effects(self)
         quiet, blocked, act_idx = fx.get("silence"), fx.get("block"), fx.get("act_idx")
+        if seed is None:
+            seed = int(np.random.SeedSequence().generate_state(1)[0])
+        drop = genetics_mosaic(self, seed, Bn)
         if act_idx is not None:                                            # 활성화 = 활동을 level로 고정 (입력 뉴런처럼)
             in_idx = xp.concatenate([in_idx, act_idx])
             level = Signal(xp.broadcast_to(fx["act_level"], (len(act_idx), Bn)).copy())
@@ -419,6 +430,8 @@ class ConnectomeLayer(Tissue):
                     r = r * quiet
                 if probe_n is not None:
                     r = r * probe_n
+                if drop is not None:
+                    r = r * drop
                 if s >= s_cnt:
                     acc = acc + r
                 if rec is not None:
