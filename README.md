@@ -174,8 +174,9 @@ fd.genetics.mosaic(layer, p=0.2, by="cell_type", within=fd.genetics.driver(mb, g
 | 대조 실험 | `compare`, `controls.Shuffled / Randomized / ShuffledWeights / Local / Custom` |
 | torch 연동 | `flydnet.torch.*` — 0.1의 torch판 전부 (같은 이름), `torch.nn`용 구조물 |
 
-전체 뇌(13.9만 뉴런, 연결 1,509만)도 일반 GPU에서 학습된다 (`ConnectomeLayer` 학습 1스텝, RTX 5070:
-배치 8에 0.58초, 배치 32에 1.3초).
+전체 뇌(13.9만 뉴런, 연결 1,509만)도 일반 GPU에서 학습된다. `scripts/bench.py` (RTX 5070 12 GB, 감각 → 하행 뉴런,
+연결 1,509만 개 모두 학습, 20 ms = 200스텝): 학습 1스텝 배치 8에 1.1초 (GPU 3.3 GB), 배치 32에 2.6초 (8.6 GB).
+시뮬레이션만은 1초 시행 30개에 약 26초 (원본 Brian2 CPU는 1시행 약 15초).
 
 ### 자체 엔진 이름 (torch 대응)
 
