@@ -133,7 +133,7 @@ class ThreeFactor:
         a = act[self._post]                                                  # (E, B) 시냅스 후 뉴런이 적분 중인지
         self._eV = xp.where(a, i["e_v"] * self._eV + i["e_g"] * self._eG, self._eV)
         if s >= i["s_cnt"]:
-            psi = (1.0 / i["scale"]) / (1 + i["slope"] * xp.abs(u)) ** 2       # 대리 기울기 (역전파와 같음)
+            psi = (i.get("damp", 1.0) / i["scale"]) / (1 + i["slope"] * xp.abs(u)) ** 2   # 대리 기울기 (역전파와 같음)
             if i["gain"] is not None:
                 psi = psi * i["gain"]
             self._gt += ((self._L * psi)[self._post] * self._eV).sum(axis=1)

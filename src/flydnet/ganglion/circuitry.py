@@ -22,6 +22,18 @@ from .signal import Signal, as_signal, checkpoint, concat, learning_enabled, qui
 from .tissue import Synapse, Tissue
 
 
+def _damped(spk: Signal, d: float) -> Signal:
+    """값은 spk 그대로, 역행성 신호만 d배"""
+    if d == 1.0 or not spk.plastic:
+        return spk
+    return spk * d + Signal(spk.data * (1.0 - d))
+
+
+def _cut(x):
+    """역행성 신호 경로를 끊은 같은 값 (구간 절단)"""
+    return Signal(x.data) if isinstance(x, Signal) else x
+
+
 def _registry():
     from ..neurons import REGISTRY
     return REGISTRY
@@ -61,6 +73,11 @@ class ConnectomeLayer(Tissue):
     count_from_ms: 이 시각부터 스파이크(또는 활동)를 셈
     neuron:     "lif" (기본) / "graded"
     inputs=None: 입력 그룹 없이 (fd.genetics.activate로만 자극할 때). 그때 layer(None, batch=시행 수)
+    surrogate_damp: 스파이크의 대리 기울기에 곱하는 계수. 값은 그대로, 역전파만 줄임 → 되먹임 회로를 돌며 기울기가
+                커지는 것을 막음. 기본 0.1 (timing="legacy"는 1 = 0.1.15와 같음). 1이면 긴 시뮬레이션에서 기울기가
+                수억 배로 부풀고 방향도 틀림 (fd.gradcheck로 확인). 자기 손실에 맞는 값은 fd.tune_surrogate로
+    truncate:   n이면 n스텝마다 상태의 역전파 연결을 끊음 (구간 절단 역전파, truncated BPTT). 발화율 합은 끊지 않음
+                → 각 스텝의 기울기가 최대 n스텝 과거까지만. 긴 시뮬레이션에서 기울기가 부푸는 것을 막음
     timing:     "brian" (기본, 0.1.16~) = Shiu et al. 2024 Brian2 모델과 같은 한 스텝 (정확한 선형 적분, 불응기 중 도착한
                 시냅스 입력은 버림, 입력 스파이크는 발화 판정 뒤, 불응기 2.2 ms = 22스텝). 같은 입력이면 스파이크 시각까지 같음
                 "legacy" = 0.1.15까지 (오일러 적분, 불응기 중 입력을 쌓아 둠, torch판과 같음). 0.1.15 저장 파일은 legacy로 읽힘
@@ -72,7 +89,8 @@ class ConnectomeLayer(Tissue):
                  gains: dict | None = None, device: str | None = None, input_mode: str = "poisson",
                  trainable=False, dt: float | None = None, slope: float = 10.0, checkpoint_every: int | None = None,
                  share: str = "edge", bias=None, t_mbr=None, train_neurons: bool = False, v_init: str = "rest",
-                 count_from_ms: float = 0.0, neuron: str = "lif", timing: str = "brian"):
+                 count_from_ms: float = 0.0, neuron: str = "lif", timing: str = "brian",
+                 surrogate_damp: float | None = None, truncate: int | None = None):
         super().__init__()
         listify = lambda x: x if (x is None or isinstance(x, str)) else list(x)
         self.config = dict(inputs=listify(inputs), outputs=listify(outputs), t_ms=t_ms, params=dict(params or {}),
@@ -82,7 +100,7 @@ class ConnectomeLayer(Tissue):
                            bias=dict(bias) if isinstance(bias, dict) else bias,
                            t_mbr=dict(t_mbr) if isinstance(t_mbr, dict) else t_mbr,
                            train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms, neuron=neuron,
-                           timing=timing)
+                           timing=timing, surrogate_damp=surrogate_damp, truncate=truncate)
         from ..neurons import NeuronModel, from_config
         if isinstance(neuron, dict):                                     # 저장 파일에서 (사용자 정의 뉴런 모델)
             neuron = from_config(neuron)
@@ -94,6 +112,20 @@ class ConnectomeLayer(Tissue):
             raise ValueError(f"neuron은 'lif', 'graded', 또는 fd.neurons.NeuronModel: {neuron}")
         if timing not in ("brian", "legacy"):
             raise ValueError(f"timing은 'brian' 또는 'legacy': {timing}")
+        if surrogate_damp is None:                       # 기본: 0.1 (gradcheck로 고른 값), 예전 방식(legacy)은 1 (0.1.15와 같게)
+            surrogate_damp = 1.0 if timing == "legacy" and isinstance(neuron, str) else 0.1
+        self.config["surrogate_damp"] = float(surrogate_damp)
+        if not 0 < surrogate_damp <= 1:
+            raise ValueError(f"surrogate_damp는 0 초과 1 이하: {surrogate_damp}")
+        if truncate is not None and truncate < 1:
+            raise ValueError(f"truncate는 1 이상의 스텝 수: {truncate}")
+        self.surrogate_damp, self.truncate = float(surrogate_damp), truncate
+        if truncate is not None:
+            _dt = dt if dt is not None else DEFAULT_PARAMS["dt"]
+            _dly = max(int(round(dict(DEFAULT_PARAMS, **(params or {}))["t_dly"] / _dt)), 1)
+            if truncate <= _dly:
+                raise ValueError(f"truncate({truncate})는 시냅스 지연 {_dly}스텝보다 커야 함 - 아니면 이동 중인 스파이크가 "
+                                 f"늘 끊겨 연결 세기의 기울기가 모두 사라짐 (예: truncate={_dly * 5})")
         self.timing = timing
         if input_mode not in ("poisson", "regular"):
             raise ValueError(input_mode)
@@ -351,12 +383,16 @@ class ConnectomeLayer(Tissue):
                 if m is not None:
                     gain = m if gain is None else gain * m
             obs.begin(dict(e_v=e_v, e_g=e_g, gd=gd, dly=dly, steps=steps, s_cnt=s_cnt, scale=consts["scale"],
-                           slope=self.slope, batch=Bn, gain=gain, blocked=blocked,
+                           slope=self.slope, damp=self.surrogate_damp, batch=Bn, gain=gain, blocked=blocked,
                            rate_c=1000.0 / (self.t_ms - s_cnt * dt)))
+
+        damp, trunc = self.surrogate_damp, self.truncate
 
         def run(s0, s1, V, G, refr, counts, phase, *buf):
             buf = list(buf)
             for s in range(s0, s1):
+                if trunc and s and s % trunc == 0:                           # 구간 절단: 상태의 과거 경로를 끊음
+                    V, G, buf = _cut(V), _cut(G), [_cut(b) for b in buf]
                 ps = frame(s, steps)
                 act = refr.data <= 0
                 if regular:
@@ -376,6 +412,7 @@ class ConnectomeLayer(Tissue):
                                                  **consts)
                 else:
                     V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, idx, v_eq, a, **consts)
+                spk = _damped(spk, damp)
                 if quiet is not None:                                      # Kir2.1: 발화 없음
                     spk = spk * quiet
                 if probe_n is not None:                                    # fd.explain: 뉴런마다 배율 탐침 (값 1)
@@ -465,10 +502,14 @@ class ConnectomeLayer(Tissue):
                            rate_c=1000.0 / (self.t_ms - s_cnt * dt), model=model))
         zeros = xp.zeros((N, Bn), dtype=xp.float32)
 
+        damp, trunc = self.surrogate_damp, self.truncate
+
         def run(s0, s1, counts, phase, *rest):
             st = dict(zip(names, rest[:len(names)]))
             buf = list(rest[len(names):])
             for s in range(s0, s1):
+                if trunc and s and s % trunc == 0:
+                    st, buf = {k: _cut(v) for k, v in st.items()}, [_cut(b) for b in buf]
                 ps = frame(s, steps)
                 if regular:
                     ph = phase.data + ps.data
@@ -484,6 +525,7 @@ class ConnectomeLayer(Tissue):
                 I_ext = P.put(zeros, idx_all, ps * poi_w + Signal((spikes - ps.data) * poi_w)) if len(idx_all) \
                     else Signal(zeros)
                 st, spk = model.step(st, buf[s % R], I_ext, ctx)
+                spk = _damped(spk, damp)
                 for m in (quiet, probe_n, drop):
                     if m is not None:
                         spk = spk * m
@@ -534,8 +576,12 @@ class ConnectomeLayer(Tissue):
             in_idx = xp.concatenate([in_idx, act_idx])
             level = Signal(xp.broadcast_to(fx["act_level"], (len(act_idx), Bn)).copy())
 
+        trunc = self.truncate
+
         def run(s0, s1, V, r, acc):
             for s in range(s0, s1):
+                if trunc and s and s % trunc == 0:
+                    V, r = _cut(V), _cut(r)
                 I = K.propagate(r if blocked is None else r * blocked, values, M, MT, self.wiring)
                 x_in = frame(s, steps)
                 if act_idx is not None:
@@ -582,6 +628,7 @@ class ConnectomeLayer(Tissue):
             raise ValueError(f"flydnet ganglion ConnectomeLayer 파일이 아님 (format={d.get('format')})")
         cfg = json.loads(str(d["config"]))
         cfg.setdefault("timing", "legacy")                                 # 0.1.15 이전 파일은 그때 방식으로
+        cfg.setdefault("surrogate_damp", 1.0)
         layer = cls(Circuit.from_arrays(d, "circuit."), device=device, **cfg)
         layer.load_state({k[6:]: v for k, v in d.items() if k.startswith("state.")})
         layer._build()

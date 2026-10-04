@@ -34,6 +34,7 @@ from . import graphs                       # fd.graphs.erdos_renyi / watts_strog
 from . import genetics                     # fd.genetics.driver / silence / block / activate / ablate / screen
 from . import neurons                      # 사용자 정의 뉴런 모델: fd.neurons.NeuronModel, register, LIF, Izhikevich
 from .stdp import STDP, Monitor                 # 관찰자 규격과 STDP (사용자 정의 학습 규칙의 틀)
+from .gradcheck import gradcheck, tune_surrogate, GradCheck   # 스파이킹 역전파 기울기 확인·감쇠 고르기
 from .threefactor import ThreeFactor             # 3요소 학습 규칙 (e-prop): 역전파 없이 커넥톰 연결 학습
 from .attribution import explain, Explanation   # 회로 기여도: 어떤 세포 유형·경로에 기대는지 + 실제로 꺼서 확인
 from . import controls                     # fd.controls.Shuffled / Randomized / ShuffledWeights / Local / Custom

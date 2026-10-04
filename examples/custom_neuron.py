@@ -5,7 +5,7 @@
 
 정의한 것은 한 스텝뿐인데 따라오는 것:
   시뮬레이션 (지연·입력·체크포인팅) / 역전파 (자동 미분) / fd.genetics (끄기·켜기) / fd.explain / 저장·불러오기
-주의: 이 예에서 explain의 확인(verify)은 기울기를 믿으면 안 된다고 알려 준다 - 확인 기능이 왜 필요한지의 예
+explain의 확인(verify)으로 기울기가 믿을 만한지 실제로 꺼서 확인한다 (감쇠 없이는 방향이 틀렸음)
 속도: 같은 계산을 내장 LIF (손으로 유도한 합친 연산)와 플러그인 LIF로 재서 비교
 """
 import sys
@@ -72,10 +72,12 @@ print(f"   KC {r[:, mb.groups['KC']].mean():.2f} → {r2[:, mb.groups['KC']].mea
 
 print("3) 역전파 (자동 미분) + explain으로 기울기가 믿을 만한지 실제로 꺼서 확인")
 rep = fd.explain(lambda L, s: L(enc(X), seed=s).sum(), layer, by="cell_type", verify=4)
-print(f"   예측(기울기)과 실제로 끈 결과의 순위 상관 {rep.agreement:+.2f}")
-print("   → 이 모델·설정(1000스텝)에서는 기울기를 믿으면 안 됨: 스파이크 개시의 지수항에서 기울기를 끊은 근사와,")
-print("     긴 시간 역전파에서 되먹임 회로를 돌며 커지는 기울기 때문. 학습에는 fd.ThreeFactor나 짧은 시뮬레이션,")
-print("     해석에는 실제로 끈 결과(rep.verified.actual_drop)를 쓸 것")
+print(f"   예측(기울기)과 실제로 끈 결과의 순위 상관 {rep.agreement:+.2f} (surrogate_damp {layer.surrogate_damp:g})")
+if rep.agreement is not None and rep.agreement >= 0.7:
+    print("   → 기울기를 믿을 만함 (기본 surrogate_damp 0.1이 1000스텝 동안 기울기가 부푸는 것을 막음;")
+    print("     감쇠 없이(surrogate_damp=1) 돌리면 순위 상관 -0.42로 방향까지 틀림)")
+else:
+    print("   → 기울기를 믿으면 안 됨: fd.tune_surrogate로 감쇠를 고르거나 fd.ThreeFactor, 해석은 실제로 끈 결과로")
 
 print("4) 세포 유형별 실제 손상 효과 (확인한 유형)")
 print("  ", ", ".join(f"{n} {v:.0f}" for n, v in zip(rep.verified.name, rep.verified.actual_drop)))
