@@ -514,7 +514,8 @@ class ConnectomeLayer(Tissue):
                     z = P.hash_uniform(xp, noise_seed, s, (Bn, N, 2))
                     gauss = xp.sqrt(-2 * xp.log(1 - z[..., 0])) * xp.cos(2 * np.pi * z[..., 1])
                     Vd = V.data + (gauss.T * sigma * act).astype(xp.float32)
-                    V = Signal(Vd)._link((V,), lambda g: (g,))
+                    V_pre, V = V, Signal(Vd)._link((V,), lambda g: (g,))
+                    release(V_pre)                                             # 잡음 전 막전위는 역전파에 필요 없음
                 if regular:
                     ph = phase.data + ps.data
                     spikes = (ph >= 1).astype(ph.dtype)
