@@ -123,3 +123,35 @@ def test_door_task():
     assert Xtr.shape[0] == 20 and Xtr.dtype == np.float32 and 0 <= Xtr.min() and Xtr.max() <= 1
     assert sorted(set(ytr)) == list(range(5)) and len(fd.door_task.names) == 5
     np.testing.assert_array_equal(fd.door_task(n_odors=5, samples=4, seed=1)[0], Xtr)
+
+
+# ─────────────── 짧은 이름·자동 보정 ───────────────
+def test_short_names():
+    assert fd.Connectome is fd.ConnectomeLayer and fd.Adaptive is fd.AdaptivePlasticity
+    assert fd.Glomeruli is fd.GlomerularEncoder and fd.Inhibition is fd.LateralInhibition
+    assert fd.MBON is fd.MushroomBodyOutput and fd.tune is fd.tune_surrogate
+    a = fd.Connectome(_c(), "IN", "O", t_ms=40, device="cpu", damp=0.2, ckpt=10)
+    assert a.surrogate_damp == 0.2 and a.checkpoint_every == 10
+    with pytest.raises(TypeError, match="하나만"):
+        fd.Connectome(_c(), "IN", "O", device="cpu", damp=0.2, surrogate_damp=0.3)
+
+
+def test_calibrate_reaches_targets_and_saves(tmp_path):
+    c = _c()
+    L = fd.Connectome(c, "IN", ("H", "O"), t_ms=100, device="cpu", input_mode="regular")
+    tab = L.calibrate(X, {"H": 30, "O": 15}, iters=12)
+    assert set(tab.group) == {"H", "O"}
+    with fd.quiescent():
+        r = L(X, seed=0, return_all=True).numpy()
+    for g, t in (("H", 30), ("O", 15)):
+        assert abs(r[:, c.groups[g]].mean() - t) <= 0.25 * t, (g, r[:, c.groups[g]].mean())
+    assert any(k.endswith(">H") for k in L.gains) and L.config["gains"] == L.gains
+    L.save(tmp_path / "cal")
+    M = fd.Connectome.load(tmp_path / "cal.npz", device="cpu")
+    assert M.gains == L.gains
+    with pytest.raises(ValueError, match="입력 그룹"):
+        L.calibrate(X, {"IN": 10})
+    with pytest.raises(KeyError, match="회로에 없는"):
+        L.calibrate(X, {"Q": 10})
+    t2 = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu").calibrate(X, 20)   # 숫자 = 출력 그룹 모두
+    assert list(t2.group) == ["O"]

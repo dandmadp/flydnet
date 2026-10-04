@@ -44,6 +44,18 @@ from .visual import (visual_circuit, column_map, drifting_grating, direction_off
                      VISUAL_SYSTEM, PHOTORECEPTORS, COLUMNAR, LPTC, MOTION_PATHWAY)
 
 
+# 짧은 이름 (긴 이름도 그대로 동작)
+Connectome = ConnectomeLayer
+Adaptive = AdaptivePlasticity
+Glomeruli = GlomerularEncoder
+Inhibition = LateralInhibition
+MBON = MushroomBodyOutput
+tune = tune_surrogate
+flywire = Circuit.from_flywire          # fd.flywire() = 오른쪽 버섯체, fd.flywire(groups, side=...)
+brain = Circuit.whole_brain             # 전체 뇌 138,639개 뉴런
+worm = Circuit.celegans                 # 예쁜꼬마선충
+
+
 def __getattr__(name):
     """flydnet.torch (torch 연동)는 처음 쓸 때 불러옴. torch가 없으면 설치 안내"""
     if name != "torch":

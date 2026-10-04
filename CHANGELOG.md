@@ -8,6 +8,12 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- **짧은 이름** (긴 이름도 그대로): `fd.Connectome`, `fd.Adaptive`, `fd.Glomeruli`, `fd.Inhibition`, `fd.MBON`, `fd.tune`,
+  `fd.flywire()`, `fd.brain()`, `fd.worm()`, 인자 `damp`·`ckpt`
+- **가중치 자동 보정 `Connectome.calibrate(x, {"KC": 5, ...})`**: 그룹마다 평균 발화율이 목표가 되도록 들어오는 연결
+  종류의 배율을 반복 조정 (흥분·억제 비율 유지, 저장됨). 손으로 맞추던 gains를 대신함
+- **정확도**: 실제 냄새 12개 과제에서 MBON(48개) 대신 KC(2,597개)에서 읽고 학습률 3e-3 → 0.57 → 0.962 ± 0.004 (seed 4).
+  `fd.train` 기본 학습률 1e-2 → 3e-3. `examples/quickstart.py`가 이 설정
 - **편의**: `fd.train` (학습 루프 한 줄: 배치·섞기·코사인 학습률·clip·평가, seed를 받는 층에 자동으로),
   `fd.evaluate`, `fd.door_task` (DoOR 실제 냄새 구분 과제), `fd.Homeostasis` (시료마다 평균 0·표준편차 1, 발화율을
   리드아웃에 넣기 전에), `Pathway(x, seed=)`가 seed를 받는 자식에게 전달, `ConnectomeLayer`에 시료 하나 `(n_in,)` 입력.

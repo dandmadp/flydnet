@@ -39,7 +39,7 @@ def evaluate(model, X, y, batch: int = 256, seed: int = 10 ** 6) -> float:
     return hits / max(len(y), 1)
 
 
-def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 1e-2, decay: float = 0.0,
+def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, decay: float = 0.0,
           clip: float | None = 1.0, schedule: str = "cosine", val=None, loss=surprise, synapses=None, seed: int = 0,
           verbose: bool = True) -> dict:
     """학습 루프: 에폭마다 섞어 배치로, 적응형 가소성(AdamW) + 학습률 스케줄 + 기울기 크기 제한.

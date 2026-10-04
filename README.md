@@ -36,29 +36,38 @@ Colab처럼 CuPy가 이미 깔린 곳에 GPU 옵션을 붙이면 CuPy가 두 개
 ```python
 import numpy as np, flydnet as fd
 
-mb = fd.Circuit.from_flywire()                       # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
+mb = fd.flywire()                       # 오른쪽 버섯체: PN 344, KC 2597, APL 1, MBON 48
 model = fd.Pathway(
     fd.Projection(784, 344),                         # 축삭 투사: 픽셀 → PN (모두 연결)
     fd.Neuropil(mb, "PN", "KC"),                     # 실제 PN→KC 배선 (연결 13,485개만, 부호 유지 학습)
-    fd.LateralInhibition(frac=0.05),                 # APL 억제: KC 5%만
+    fd.Inhibition(frac=0.05),                 # APL 억제: KC 5%만
     fd.Projection(2597, 10),
 )
-rule = fd.AdaptivePlasticity(model.named_synapses(), rate=1e-3, clip=1.0)   # clip: 기울기 크기 제한
+rule = fd.Adaptive(model.named_synapses(), rate=1e-3, clip=1.0)   # clip: 기울기 크기 제한
 loss = fd.surprise(model(x), y)                      # 놀람 = 교차 엔트로피
 rule.clear(); loss.retrograde(); rule.step()         # 역행성 신호(자동 미분) → 가소성
 ```
 MNIST 2에폭 96.2% (GPU 약 6초, `examples/ganglion_mnist.py`).
 
-학습 루프를 한 줄로 (`fd.train`: 배치·섞기·코사인 학습률·기울기 제한·평가), 실제 냄새 과제도 한 줄로 (`fd.door_task`):
+학습 루프를 한 줄로 (`fd.train`: 배치·섞기·코사인 학습률·기울기 제한·평가), 실제 냄새 과제도 한 줄로 (`fd.door_task`),
+가중치는 자동 보정 (`calibrate`: 그룹마다 목표 발화율이 되도록 들어오는 연결 배율을 맞춤):
 
 ```python
 Xtr, ytr, Xte, yte = fd.door_task(n_odors=12)                       # DoOR 실제 냄새
-model = fd.Pathway(fd.GlomerularEncoder(mb),
-                   fd.ConnectomeLayer(mb, "PN", "MBON", t_ms=50, dt=0.5, input_mode="regular",
-                                      gains={"PN>KC": 3.0, "KC>MBON": 3.0}, trainable=["PN>KC", "KC>MBON"]),
-                   fd.Homeostasis(), fd.Projection(48, 12))          # Homeostasis = 발화율 크기 맞추기 (LayerNorm)
-hist = fd.train(model, Xtr, ytr, val=(Xte, yte), epochs=12)         # 평가 정확도 0.57 (찍기 0.083), examples/quickstart.py
+enc = fd.Glomeruli(mb)
+layer = fd.Connectome(mb, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC"])
+layer.calibrate(enc(Xtr[::3]), {"KC": 5})                           # KC 평균 5 Hz가 되도록 배율 자동 조정
+model = fd.Pathway(enc, layer, fd.Homeostasis(), fd.Projection(2597, 12))
+hist = fd.train(model, Xtr, ytr, val=(Xte, yte), epochs=12)         # 평가 정확도 0.96 (찍기 0.083), examples/quickstart.py
 ```
+
+| 같은 과제, seed 4개 | 정확도 |
+|---|---|
+| MBON 48개에서 읽기 (배율 3 손으로) | 0.57 |
+| KC 2,597개에서 읽기, 배율 3 손으로, 학습률 1e-2 | 0.938 ± 0.013 |
+| KC에서 읽기, 자동 보정, 학습률 3e-3 (`fd.train` 기본) | **0.962 ± 0.004** |
+
+MBON은 48개뿐이라 병목. 자동 보정의 정확도 이득은 잡음 안 (+0.8%p) - 이점은 배율을 손으로 맞출 필요가 없다는 것.
 
 ## 대조 실험: fd.compare
 
@@ -101,11 +110,11 @@ shuffled_weights             0.7678    [0.7537, 0.7819]    -0.005556  -0.36   0.
 초파리 실험실의 방법 그대로: 드라이버로 뉴런 집단을 고르고, 효과기로 끄고·켜고·막는다.
 
 ```python
-brain = fd.Circuit.whole_brain()                                  # 138,639개 뉴런 (Shiu et al. 2024 모델과 같은 순서)
+brain = fd.brain()                                  # 138,639개 뉴런 (Shiu et al. 2024 모델과 같은 순서)
 G = fd.genetics
 sugar = G.driver(brain, cell_sub_class="sugar")                   # GAL4: 주석 조건으로 (root_ids=, group=도 가능)
 mn9 = G.driver(brain, root_ids=[720575940660219265])
-layer = fd.ConnectomeLayer(brain, inputs=None, outputs="motor", t_ms=1000)
+layer = fd.Connectome(brain, inputs=None, outputs="motor", t_ms=1000)
 with G.activate(layer, sugar, hz=100):                            # CsChrimson: 포아송 자극
     r = layer(None, batch=30, return_all=True)                    # 30번 시행, 모든 뉴런 발화율
 ```
@@ -209,7 +218,7 @@ tf.assign(out); rule.step()                                             # 흔적
 c = fd.Circuit.from_edges(pre, post, weight, groups={"in": [...], "out": [...]})   # 번호 또는 이름
 c = fd.Circuit.from_scipy(A)                     # A[i, j] = i → j  (또는 orientation="post_pre")
 c = fd.Circuit.from_networkx(G)                  # 노드 속성 → 주석, "group" 속성 → 그룹
-worm = fd.Circuit.celegans()                     # 예쁜꼬마선충 (Cook et al. 2019), python -m flydnet download worm
+worm = fd.worm()                     # 예쁜꼬마선충 (Cook et al. 2019), python -m flydnet download worm
 g = fd.graphs.watts_strogatz(400, 12, 0.1, groups={"in": range(20), "out": range(360, 400)})
 #   erdos_renyi / watts_strogatz / barabasi_albert / stochastic_block / layered (억제 비율·데일의 법칙)
 c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
@@ -240,7 +249,7 @@ class MyNeuron(fd.neurons.NeuronModel):
         spk = fd.ganglion.fire(v, -50.0, slope=1.0)
         return {"v": fd.ganglion.where(spk.data > 0, -65.0, v)}, spk
 
-layer = fd.ConnectomeLayer(circuit, "in", "out", neuron=MyNeuron(), checkpoint_every=50)
+layer = fd.Connectome(circuit, "in", "out", neuron=MyNeuron(), checkpoint_every=50)
 ```
 - 내장: `fd.neurons.LIF` (내장 LIF와 스파이크가 스텝까지 같고 기울기 차이 4e-5 이내 - 플러그인 틀의 검증),
   `fd.neurons.Izhikevich`. 예제 `examples/custom_neuron.py`는 AdEx를 직접 정의한다
@@ -266,7 +275,7 @@ stdp = fd.STDP(layer); stdp(x, seed=0); stdp.assign(); rule.step()    # 원인 �
 ```python
 print(fd.gradcheck(score, layer))            # 방향 일치(cos)·크기 비율·기준 신뢰도, 연결 종류별
 print(fd.gradcheck(score, layer, seeds=16))  # 포아송 입력이면 여러 seed 평균 출력의 기울기로 (기준이 불안정할 때)
-fd.tune_surrogate(score, layer)              # 후보 중 자기 손실에 가장 잘 맞는 감쇠를 골라 적용
+fd.tune(score, layer)              # 후보 중 자기 손실에 가장 잘 맞는 감쇠를 골라 적용
 ```
 
 | 초파리, 방향 일치 cos | 감쇠 없음 | auto (기본) |
@@ -282,6 +291,17 @@ fd.tune_surrogate(score, layer)              # 후보 중 자기 손실에 가�
 - `explain`은 기울기로 모든 유형을 한 번에 훑어 후보를 고르고, 결론은 실제로 끈 값(`verify`)으로.
   1차 예측이 방향까지 틀린 유형(되먹임 억제 뉴런 APL 등)은 확인 결과에 표시된다
 - 표와 재현: `validation/gradients/`
+
+## 짧은 이름
+
+긴 이름도 그대로 동작한다.
+
+| 짧은 이름 | 원래 이름 |
+|---|---|
+| `fd.flywire()`, `fd.brain()`, `fd.worm()` | `Circuit.from_flywire()`, `Circuit.whole_brain()`, `Circuit.celegans()` |
+| `fd.Connectome` | `fd.ConnectomeLayer` (인자 `damp` = `surrogate_damp`, `ckpt` = `checkpoint_every`) |
+| `fd.Adaptive`, `fd.Glomeruli`, `fd.Inhibition`, `fd.MBON` | `AdaptivePlasticity`, `GlomerularEncoder`, `LateralInhibition`, `MushroomBodyOutput` |
+| `fd.tune` | `fd.tune_surrogate` |
 
 ## 구성 요소
 
@@ -321,7 +341,7 @@ torch 모델 안에서 flydnet 구조물을 쓴다. **계산은 자체 엔진** 
 겉은 `nn.Module`. 복사 없이 메모리를 공유하고(GPU는 DLPack), 역전파가 torch 쪽으로 이어진다.
 
 ```python
-layer = fd.ConnectomeLayer(mb, "PN", "MBON", trainable=True)
+layer = fd.Connectome(mb, "PN", "MBON", trainable=True)
 model = torch.nn.Sequential(encoder, fd.torch.bridge(layer, seed=0), torch.nn.Linear(48, 10))
 opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch가 갱신 (자체 엔진과 같은 메모리)
 ```

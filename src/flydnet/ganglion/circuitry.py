@@ -102,8 +102,17 @@ class ConnectomeLayer(Tissue):
                  trainable=False, dt: float | None = None, slope: float = 10.0, checkpoint_every: int | None = None,
                  share: str = "edge", bias=None, t_mbr=None, train_neurons: bool = False, v_init: str = "rest",
                  count_from_ms: float = 0.0, neuron: str = "lif", timing: str = "brian",
-                 surrogate_damp: float | str | None = None, truncate: int | None = None, noise: float = 0.0):
+                 surrogate_damp: float | str | None = None, truncate: int | None = None, noise: float = 0.0,
+                 damp=None, ckpt: int | None = None):
         super().__init__()
+        if damp is not None:                                     # 짧은 이름: damp = surrogate_damp, ckpt = checkpoint_every
+            if surrogate_damp is not None:
+                raise TypeError("damp와 surrogate_damp는 같은 것 - 하나만")
+            surrogate_damp = damp
+        if ckpt is not None:
+            if checkpoint_every is not None:
+                raise TypeError("ckpt와 checkpoint_every는 같은 것 - 하나만")
+            checkpoint_every = ckpt
         listify = lambda x: x if (x is None or isinstance(x, str)) else list(x)
         self.config = dict(inputs=listify(inputs), outputs=listify(outputs), t_ms=t_ms, params=dict(params or {}),
                            input_mode=input_mode,
@@ -681,6 +690,50 @@ class ConnectomeLayer(Tissue):
         layer.load_state({k[6:]: v for k, v in d.items() if k.startswith("state.")})
         layer._build()
         return layer
+
+    def calibrate(self, rates, target, iters: int = 8, tol: float = 0.1, seed: int = 0, step: float = 0.5,
+                  verbose: bool = False):
+        """가중치 자동 보정: 그룹마다 평균 발화율이 target이 되도록 그 그룹으로 들어오는 연결 종류의 배율(gains)을 조정
+
+        rates:  대표 입력 (B, n_in) - 실제로 쓸 입력과 비슷하게
+        target: {그룹: Hz} 또는 숫자 (출력 그룹 모두에). 예: {"KC": 5, "MBON": 20}
+        반복마다 배율 x (목표 / 현재)^step (발화가 없으면 x 2), 모든 그룹이 목표의 ±tol 안이면 멈춤.
+        층의 gains가 바뀜 (저장됨). 반환: 그룹별 처음·마지막 발화율과 배율 표"""
+        import pandas as pd
+        tgt = {g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
+        for g in tgt:
+            if g not in self.circuit.groups:
+                raise KeyError(f"회로에 없는 그룹: {g}")
+            if g in self.in_names:
+                raise ValueError(f"{g}는 입력 그룹 - 발화율이 입력으로 정해짐")
+        gid = {g: i for i, g in enumerate(self._group_names)}
+        code = np.unique(self._edge_code)
+        n = len(self._group_names)
+        incoming = {g: [self._edge_names([c])[0] for c in code if c % n == gid[g]] for g in tgt}
+        idx = {g: B.to(self.circuit.groups[g], self.device) for g in tgt}
+        factor = {g: 1.0 for g in tgt}
+
+        def measure():
+            with quiescent():
+                r = self(rates, seed=seed, return_all=True).data
+            return {g: float(r[:, idx[g]].mean()) for g in tgt}
+        first = now = measure()
+        for it in range(iters):
+            if all(abs(now[g] - tgt[g]) <= tol * tgt[g] for g in tgt):
+                break
+            for g in tgt:
+                f = 2.0 if now[g] <= 0 else float(np.clip((tgt[g] / now[g]) ** step, 0.25, 4.0))
+                factor[g] *= f
+                for k in incoming[g]:
+                    self.gains[k] = self.gains.get(k, 1.0) * f
+            self._build()
+            self.config["gains"] = dict(self.gains)
+            now = measure()
+            if verbose:
+                from .._console import say
+                say(f"  보정 {it + 1}: " + ", ".join(f"{g} {now[g]:.1f} Hz" for g in tgt), flush=True)
+        return pd.DataFrame({"group": list(tgt), "target_hz": [tgt[g] for g in tgt], "before_hz": [first[g] for g in tgt],
+                             "after_hz": [now[g] for g in tgt], "gain_factor": [factor[g] for g in tgt]})
 
     def damp_value(self, t_ms: float | None = None) -> float:
         """이 층이 쓰는 대리 기울기 감쇠 값 ("auto"면 t_ms 길이에서 계산된 값)"""
