@@ -126,11 +126,17 @@ def driver(circuit, group: str | None = None, root_ids=None, name: str | None = 
     return line
 
 
-def lines(circuit, by: str = "cell_type", min_size: int = 1, within: Line | None = None) -> dict[str, Line]:
-    """주석 열 by의 값마다 드라이버 (GAL4 모음). within을 주면 그 집단 안에서만"""
-    if circuit.meta is None or by not in circuit.meta.columns:
+def lines(circuit, by: str | None = None, min_size: int = 1, within: Line | None = None) -> dict[str, Line]:
+    """주석 열 by의 값마다 드라이버 (GAL4 모음). by="group"이면 회로 그룹마다, None이면 cell_type 주석이 있으면 그것,
+    없으면 group. within을 주면 그 집단 안에서만"""
+    from .attribution import default_by
+    by = by or default_by(circuit)
+    if by == "group":
+        vals = pd.Series(circuit.group_of(), dtype="string")
+    elif circuit.meta is None or by not in circuit.meta.columns:
         raise KeyError(f"주석 열이 없음: {by}")
-    vals = circuit.meta[by].astype("string")
+    else:
+        vals = circuit.meta[by].astype("string")
     if within is not None:
         mask = np.zeros(circuit.N, bool); mask[within.idx] = True
         vals = vals.where(mask)
@@ -207,11 +213,12 @@ def activate(layer, line: Line, hz: float = 100.0, level: float | None = None) -
     return Expression(layer, "activate", line, hz=float(hz), level=level)
 
 
-def mosaic(layer, p: float = 0.1, by: str = "cell_type", within: Line | None = None, rescale: bool = True) -> Expression:
+def mosaic(layer, p: float = 0.1, by: str | None = None, within: Line | None = None, rescale: bool = True) -> Expression:
     """세포 유형 드롭아웃 (유전 모자이크): 학습 중에만, 시료마다 세포 유형(by)을 확률 p로 통째로 끔 (Kir2.1과 같은 조작).
     한 세포 유형에만 기대지 않게 → 세포 유형 손상(수용체 결손 등)에 강한 모델. 평가(quiescent) 때는 꺼짐
 
-    by:      주석 열 (예: "cell_type"), "group", 또는 "neuron" (뉴런마다 따로 = 보통 드롭아웃, 비교용)
+    by:      주석 열 (예: "cell_type"), "group", 또는 "neuron" (뉴런마다 따로 = 보통 드롭아웃, 비교용).
+             None이면 cell_type 주석이 있으면 그것, 없으면 group
     within:  이 집단 안에서만 (예: driver(mb, group="PN")). None이면 회로 전체
     rescale: 남은 세포의 출력을 1/(1-p)배 (보통 드롭아웃처럼 학습·평가 때의 평균 입력을 맞춤)
     난수는 순전파의 seed로 정해짐 (같은 seed = 같은 모자이크, 체크포인팅으로 다시 계산해도 같음)"""
@@ -219,6 +226,8 @@ def mosaic(layer, p: float = 0.1, by: str = "cell_type", within: Line | None = N
         raise ValueError(f"p는 0 이상 1 미만: {p}")
     c = layer.circuit
     line = within if within is not None else Line(c, np.arange(c.N), "전체")
+    from .attribution import default_by
+    by = by or default_by(c)
     if by == "neuron":
         inv = np.arange(c.N)
     else:

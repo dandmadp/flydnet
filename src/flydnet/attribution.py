@@ -21,8 +21,14 @@ from .ganglion import backend as B
 from .ganglion.signal import Signal, quiescent
 
 
-def _labels(circuit, by: str) -> np.ndarray:
-    """뉴런별 이름: by = "group" 또는 주석 열 (값이 없으면 "<그룹>?")"""
+def default_by(circuit) -> str:
+    """기본 묶음 기준: 주석에 cell_type이 있으면 그것 (커넥톰), 없으면 회로 그룹 (일반 그래프)"""
+    return "cell_type" if circuit.meta is not None and "cell_type" in circuit.meta.columns else "group"
+
+
+def _labels(circuit, by: str | None) -> np.ndarray:
+    """뉴런별 이름: by = "group" 또는 주석 열 (값이 없으면 "<그룹>?"). None이면 default_by"""
+    by = by or default_by(circuit)
     group = circuit.group_of()
     if by == "group":
         return group.astype(object)
@@ -75,11 +81,11 @@ class Explanation:
     __repr__ = __str__
 
 
-def explain(score, layer, by: str = "cell_type", pathways: bool = False, verify: int = 0, seeds=1,
+def explain(score, layer, by: str | None = None, pathways: bool = False, verify: int = 0, seeds=1,
             verbose: bool = False) -> Explanation:
     """score(layer, seed)가 어떤 세포 유형(by)·경로에 기대는지. layer는 ConnectomeLayer
 
-    by:       "cell_type" 등 회로 주석 열, 또는 "group" (회로 그룹)
+    by:       "cell_type" 등 회로 주석 열, 또는 "group" (회로 그룹). None이면 cell_type 주석이 있으면 그것, 없으면 group
     pathways: 연결 종류(by 이름 pre > post)별 기여도 (연결마다 기울기 - 전체 뇌면 메모리가 더 듦)
     verify:   예측이 큰 유형 k개 + 나머지(예측 0 제외)에서 순위를 고르게 k개를 실제로 꺼서 확인 (k x 2 x seed 수 만큼 순전파)
     seeds:    정수(개수) 또는 목록. 예측·확인 모두 seed 평균"""
@@ -88,6 +94,7 @@ def explain(score, layer, by: str = "cell_type", pathways: bool = False, verify:
         raise TypeError("ConnectomeLayer에서만 (fd.ConnectomeLayer)")
     seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
     circuit, dev = layer.circuit, layer.device
+    by = by or default_by(circuit)
     xp = B.xp(dev)
     labels = _labels(circuit, by)
     names, inv = np.unique(labels.astype(str), return_inverse=True)

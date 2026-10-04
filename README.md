@@ -188,6 +188,30 @@ tf.assign(out); rule.step()                                             # 흔적
 +9%p (p = 0.031). 실제 피드백 경로는 피드백 없음보다 나은 경향(+4%p, 4/6, p = 0.13)이지만 무작위 피드백보다는
 못했다 (-5%p, 1/6, p = 0.13) - 이 설정에서는 실제 MBON → DAN → KC 경로가 오차를 그대로 전달하지 않는다.
 
+## 어떤 그래프든: 다른 커넥톰과 합성 그래프
+
+초파리용으로 만든 도구(`ConnectomeLayer`, `compare`, `explain`, `genetics`, `ThreeFactor`)가 어떤 방향 그래프에서도 동작한다.
+
+```python
+c = fd.Circuit.from_edges(pre, post, weight, groups={"in": [...], "out": [...]})   # 번호 또는 이름
+c = fd.Circuit.from_scipy(A)                     # A[i, j] = i → j  (또는 orientation="post_pre")
+c = fd.Circuit.from_networkx(G)                  # 노드 속성 → 주석, "group" 속성 → 그룹
+worm = fd.Circuit.celegans()                     # 예쁜꼬마선충 (Cook et al. 2019), python -m flydnet download worm
+g = fd.graphs.watts_strogatz(400, 12, 0.1, groups={"in": range(20), "out": range(360, 400)})
+#   erdos_renyi / watts_strogatz / barabasi_albert / stochastic_block / layered (억제 비율·데일의 법칙)
+c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
+```
+
+- 주석이 없는 그래프에서는 `explain`·`mosaic`·`genetics.lines`가 그룹 단위로 동작한다 (주석이 있으면 `cell_type`).
+- 세기는 시냅스 수처럼 `w_syn`(0.275 mV)을 곱해 쓴다. 세기가 1 근처인 그래프는 `params={"w_syn": ...}`나 `gains`로 키운다.
+- `examples/any_graph.py`:
+  - 예쁜꼬마선충 감각 뉴런 24개 → 체벽 근육 95개로 패턴 구분 + `fd.compare`: 실제 배선의 이점은 보이지 않고,
+    시냅스 세기만 섞은 대조군이 오히려 좋음 (+9.7%p, 6/6, p = 0.031). 임의의 패턴 구분은 이 회로가 하는 일이 아니므로
+    흔한 결과
+  - 그래프 종류 비교 (노드 400, 연결 약 4,700, 그래프마다 세기를 골라 평균 발화율 약 17 Hz로 맞춤):
+    무작위 0.64 > 척도 없음 0.41 > 작은 세상 0.34 > 블록 0.17 (모두 6/6, p = 0.031). 단 입력·출력 노드의 위치
+    (고리 위 거리, 다른 모듈)에 크게 좌우되므로, 그래프 구조 자체의 결론이 아니라 이런 질문을 하는 방법의 예
+
 ## 구성 요소
 
 | 무엇 | 이름 |

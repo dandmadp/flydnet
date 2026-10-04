@@ -133,6 +133,201 @@ class Circuit:
         return cls(ids, groups, df.Presynaptic_Index.values, df.Postsynaptic_Index.values, w,
                    name="FlyWire 전체 뇌", meta=meta, pos=a[["pos_x", "pos_y", "pos_z"]].to_numpy(np.float32))
 
+    # ─────────────── 어떤 그래프든 ───────────────
+    @classmethod
+    def from_edges(cls, pre, post, weight=None, groups=None, names=None, meta=None, pos=None,
+                   name: str = "graph", rest: str = "rest", n: int | None = None) -> "Circuit":
+        """연결 목록으로 회로 만들기 (커넥톰이 아니어도 됨)
+
+        pre, post: 주는·받는 노드. 정수(0 ~ N-1) 또는 이름(문자열 등)
+        weight:    연결 세기 (부호 = 흥분 +/억제 -). None이면 모두 1. ConnectomeLayer에서는 시냅스 수처럼
+                   w_syn(기본 0.275 mV)을 곱해 쓰므로, 세기가 1 근처면 gains·params={"w_syn": ...}로 키울 것
+        groups:    {그룹 이름: 노드 번호 또는 이름 목록} 또는 노드마다 그룹 이름 (길이 N). 어느 그룹에도 없는 노드는 rest
+        names:     노드 이름 순서 (이름으로 줄 때 번호를 정함). None이면 정수는 0..max, 이름은 정렬 순서
+        n:         노드 수 (정수로 줄 때, 연결이 없는 노드까지). None이면 meta 행 수 또는 가장 큰 번호 + 1
+        meta:      노드별 주석 표 (pandas, 행 = 노드 순서) → genetics.driver·explain에서 열 이름으로 고름.
+                   이름으로 만들면 노드 이름이 meta["node"] (driver(c, node=[...])로 고름)
+        pos:       노드 위치 (N, 2 또는 3)"""
+        pre, post = np.asarray(pre), np.asarray(post)
+        if pre.shape != post.shape or pre.ndim != 1:
+            raise ValueError(f"pre·post는 길이가 같은 1차원: {pre.shape}, {post.shape}")
+        labeled = names is not None or pre.dtype.kind not in "iu" or post.dtype.kind not in "iu"
+        if labeled:
+            order = list(names) if names is not None else sorted(set(pre.tolist()) | set(post.tolist()), key=str)
+            if len(set(order)) != len(order):
+                raise ValueError("names에 같은 이름이 있음")
+            index = {k: i for i, k in enumerate(order)}
+            try:
+                pre_i = np.array([index[k] for k in pre.tolist()], np.int64)
+                post_i = np.array([index[k] for k in post.tolist()], np.int64)
+            except KeyError as e:
+                raise KeyError(f"names에 없는 노드: {e}") from None
+            N = len(order)
+        else:
+            pre_i, post_i = pre.astype(np.int64), post.astype(np.int64)
+            N = n if n is not None else len(meta) if meta is not None else                 int(max(pre_i.max(initial=-1), post_i.max(initial=-1))) + 1
+            order = None
+        w = np.ones(len(pre_i), np.float32) if weight is None else np.asarray(weight, np.float32)
+        lookup = (lambda v: index[v]) if labeled else int
+        if groups is None:
+            gidx = {}
+        elif isinstance(groups, dict):
+            try:
+                gidx = {str(k): np.array([lookup(v) for v in vs], np.int64) for k, vs in groups.items()}
+            except KeyError as e:
+                raise KeyError(f"그룹에 없는 노드: {e}") from None
+        else:
+            lab = np.asarray(groups, dtype=object)
+            if len(lab) != N:
+                raise ValueError(f"노드마다 그룹 이름이면 길이 {N}: {len(lab)}")
+            gidx = {str(k): np.nonzero(lab == k)[0] for k in dict.fromkeys(lab.tolist())}
+        covered = np.zeros(N, bool)
+        for v in gidx.values():
+            covered[v] = True
+        if not covered.all():
+            if rest in gidx:
+                raise ValueError(f"그룹에 속하지 않은 노드를 넣을 그룹 이름 '{rest}'가 이미 있음")
+            gidx[rest] = np.nonzero(~covered)[0]
+        if meta is None and labeled:
+            meta = pd.DataFrame({"node": [str(k) for k in order]})
+        c = cls(np.arange(N), gidx, pre_i, post_i, w, name=name, meta=meta, pos=pos)
+        c.check()
+        return c
+
+    @classmethod
+    def from_scipy(cls, matrix, orientation: str = "pre_post", **kw) -> "Circuit":
+        """연결 행렬 (scipy 희소 또는 numpy). orientation="pre_post"면 A[i, j] = i → j (networkx와 같음),
+        "post_pre"면 A[j, i] = i → j. 0이 아닌 칸이 연결, 값이 세기"""
+        import scipy.sparse as sps
+        if orientation not in ("pre_post", "post_pre"):
+            raise ValueError("orientation은 'pre_post' 또는 'post_pre'")
+        A = sps.coo_matrix(matrix)
+        if A.shape[0] != A.shape[1]:
+            raise ValueError(f"정사각 행렬이어야 함: {A.shape}")
+        A.sum_duplicates()
+        keep = A.data != 0
+        r, c, v = A.row[keep], A.col[keep], A.data[keep]
+        pre, post = (r, c) if orientation == "pre_post" else (c, r)
+        kw.setdefault("meta", None)
+        out = cls.from_edges(pre, post, v, **{k: x for k, x in kw.items() if k != "meta"},
+                             meta=kw["meta"] if kw["meta"] is not None else pd.DataFrame(index=range(A.shape[0])))
+        return out
+
+    @classmethod
+    def from_networkx(cls, G, weight: str | None = "weight", group: str | None = "group", **kw) -> "Circuit":
+        """networkx 그래프. 방향 없는 그래프는 양쪽 방향 연결로. 노드 속성(숫자·문자)은 meta 열,
+        group 속성이 있으면 그룹. 노드 순서 = G.nodes 순서, 노드 이름은 meta["node"]"""
+        nodes = list(G.nodes)
+        index = {n: i for i, n in enumerate(nodes)}
+        pre, post, w = [], [], []
+        for a, b, d in G.edges(data=True):
+            x = float(d.get(weight, 1.0)) if weight else 1.0
+            pre.append(index[a]); post.append(index[b]); w.append(x)
+            if not G.is_directed() and a != b:
+                pre.append(index[b]); post.append(index[a]); w.append(x)
+        attrs = {}
+        for n in nodes:
+            for k, v in G.nodes[n].items():
+                if isinstance(v, (str, int, float, bool, np.integer, np.floating)):
+                    attrs.setdefault(k, {})[n] = v
+        meta = pd.DataFrame({"node": [str(n) for n in nodes], **{k: [d.get(n) for n in nodes] for k, d in attrs.items()}})
+        groups = meta[group].astype(object).where(meta[group].notna(), None).to_numpy() if group in meta else None
+        if groups is not None:
+            groups = np.array(["rest" if g is None else str(g) for g in groups], dtype=object)
+        return cls.from_edges(np.array(pre, np.int64), np.array(post, np.int64), np.array(w, np.float32),
+                              groups=groups, meta=meta, name=kw.pop("name", "networkx"), **kw)
+
+    def to_scipy(self, orientation: str = "pre_post"):
+        """연결 행렬 (scipy CSR). 같은 쌍의 연결은 더함"""
+        import scipy.sparse as sps
+        r, c = (self.pre, self.post) if orientation == "pre_post" else (self.post, self.pre)
+        return sps.csr_matrix((self.weight, (r, c)), shape=(self.N, self.N))
+
+    def to_networkx(self):
+        """networkx.DiGraph (노드 = 회로 번호, 속성 group·meta 열, 연결 속성 weight)"""
+        import networkx as nx
+        G = nx.DiGraph()
+        g = self.group_of()
+        for i in range(self.N):
+            attrs = {"group": g[i]}
+            if self.meta is not None:
+                attrs.update({k: v for k, v in self.meta.iloc[i].items() if not (isinstance(v, float) and np.isnan(v))})
+            G.add_node(i, **attrs)
+        A = self.to_scipy().tocoo()
+        G.add_weighted_edges_from(zip(A.row.tolist(), A.col.tolist(), A.data.tolist()))
+        return G
+
+    def regroup(self, groups: dict, rest: str = "rest") -> "Circuit":
+        """그룹을 새로 정함 ({이름: 노드 번호}, 나머지는 rest). 연결·주석은 그대로"""
+        return Circuit.from_edges(self.pre, self.post, self.weight, groups={k: np.asarray(v) for k, v in groups.items()},
+                                  meta=self.meta if self.meta is not None else pd.DataFrame(index=range(self.N)),
+                                  pos=self.pos, name=self.name, rest=rest)._with_ids(self.root_ids)
+
+    def _with_ids(self, ids):
+        self.root_ids = np.asarray(ids, np.int64)
+        return self
+
+    def check(self) -> "Circuit":
+        """구조 확인: 번호 범위, 그룹 겹침, 세기 유한, 주석·위치 길이. 문제가 있으면 ValueError"""
+        N = self.N
+        if len(self.pre) != len(self.post) or len(self.pre) != len(self.weight):
+            raise ValueError(f"pre·post·weight 길이가 다름: {len(self.pre)}, {len(self.post)}, {len(self.weight)}")
+        if len(self.pre) and (min(self.pre.min(), self.post.min()) < 0 or max(self.pre.max(), self.post.max()) >= N):
+            raise ValueError(f"연결의 노드 번호가 0 ~ {N - 1} 밖")
+        if not np.isfinite(self.weight).all():
+            raise ValueError("연결 세기에 NaN·무한대")
+        seen = np.zeros(N, np.int64)
+        for k, v in self.groups.items():
+            if len(v) and (v.min() < 0 or v.max() >= N):
+                raise ValueError(f"그룹 {k}의 번호가 0 ~ {N - 1} 밖")
+            np.add.at(seen, v, 1)
+        if (seen > 1).any():
+            raise ValueError(f"여러 그룹에 속한 노드가 있음 (예: {np.nonzero(seen > 1)[0][:5].tolist()})")
+        if self.meta is not None and len(self.meta) != N:
+            raise ValueError(f"meta 행 수 {len(self.meta)} ≠ 노드 수 {N}")
+        if self.pos is not None and len(self.pos) != N:
+            raise ValueError(f"pos 행 수 {len(self.pos)} ≠ 노드 수 {N}")
+        return self
+
+    @classmethod
+    def celegans(cls, synapses: str = "chemical", data_dir: str | Path | None = None) -> "Circuit":
+        """예쁜꼬마선충 자웅동체 커넥톰 (Cook et al. 2019): 뉴런 300개 + 근육·기타 세포 148개
+
+        그룹: neuron, body_muscle (체벽 근육), pharynx (인두 근육·주변 세포), other (자궁·음문 근육, 장 등)
+        부호: GABA 뉴런 26개 (McIntire et al. 1993: DD1-6, VD1-13, RME 4개, AVL, DVB, RIS)가 주는 화학 시냅스는 억제
+        synapses: "chemical" (기본) / "electrical" / "both". 전기 시냅스(간극 연결)는 이 모델에 따로 없어서
+                  양방향 흥분 연결로 근사 (목록에 있는 방향 그대로)
+        세기 = 시냅스 수 (전자현미경). 주석 열: node (뉴런 이름, 예 "ASEL"), cell_class, gaba
+        뉴런 고르기: fd.genetics.driver(worm, node=["ASEL", "ASER"])"""
+        import re
+        from .data import require
+        if synapses not in ("chemical", "electrical", "both"):
+            raise ValueError("synapses는 'chemical', 'electrical', 'both'")
+        d = pd.read_csv(require("worm", data_dir) / "herm_full_edgelist.csv")
+        d.columns = [c.strip() for c in d.columns]
+        for c in ("Source", "Target", "Type"):
+            d[c] = d[c].astype(str).str.strip()
+        names = sorted(set(d.Source) | set(d.Target))
+        if synapses != "both":
+            d = d[d.Type == synapses]
+        gaba = set([f"DD0{i}" for i in range(1, 7)] + [f"VD{i:02d}" for i in range(1, 14)]
+                   + ["RMEL", "RMER", "RMED", "RMEV", "AVL", "DVB", "RIS"])
+
+        def kind(n):
+            if not re.search(r"[a-z]", n):
+                return "neuron"
+            if "BWM" in n:
+                return "body_muscle"
+            if re.match(r"(pm|mc)\d", n):
+                return "pharynx"
+            return "other"
+        cls_ = [kind(n) for n in names]
+        sign = np.where((d.Type == "chemical") & d.Source.isin(gaba), -1.0, 1.0)
+        meta = pd.DataFrame({"node": names, "cell_class": cls_, "gaba": [n in gaba for n in names]})
+        return cls.from_edges(d.Source.to_numpy(), d.Target.to_numpy(), (d.Weight.to_numpy() * sign).astype(np.float32),
+                              groups=np.array(cls_, dtype=object), names=names, meta=meta,
+                              name=f"C. elegans (Cook 2019, {synapses})")
+
     def shuffled(self, seed: int = 0, pairs=None, exclude=None, local=None, merge=None) -> "Circuit":
         """무작위 배선 대조군: (보내는 그룹, 받는 그룹) 쌍마다 받는 뉴런을 섞음.
         그룹 간 연결 수·시냅스 수·뉴런별 입출력 개수는 그대로, '누가 누구에게'만 무작위.

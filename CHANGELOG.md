@@ -8,6 +8,13 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- **어떤 그래프든 회로로**: `Circuit.from_edges` (번호·이름, 그룹 dict·노드별 이름, 남는 노드는 rest),
+  `from_scipy`, `from_networkx`, `to_scipy`, `to_networkx`, `regroup`, `check` (번호 범위·그룹 겹침·NaN 검증).
+  예쁜꼬마선충 커넥톰 `Circuit.celegans()` (Cook et al. 2019, 고정 커밋·SHA-256, GABA 뉴런 26개는 억제,
+  `python -m flydnet download worm`). 합성 그래프 `fd.graphs` (Erdos-Renyi, Watts-Strogatz, Barabasi-Albert,
+  블록 구조, 앞먹임 층; 억제 비율·데일의 법칙). 주석이 없는 그래프에서 `explain`·`mosaic`·`lines`는 그룹 단위
+  (`by=None` 자동). 예제 `examples/any_graph.py`
+- `fd.compare` 해석: 대조군이 실제 배선보다 유의하게 좋으면 그렇다고 말함 (전에는 "차이를 확인하지 못함"으로 잘못 나옴)
 - **역전파 없는 학습 `fd.ThreeFactor`** (e-prop 방식 3요소 규칙): 시냅스마다 적격 흔적(리셋·불응기 반영) x 시냅스 후
   대리 기울기 x 학습 신호. 피드백 `"random"` / `"connectome"`(실제 연결을 따라 출력에서 퍼지는 오차) / `"none"`.
   출력으로 들어오는 연결은 시간 역전파와 같은 기울기 (테스트). 메모리가 시뮬레이션 길이와 무관 (800 ms에서 41 MB 대

@@ -204,7 +204,11 @@ class CompareReport:
                 out.append(f"실제 배선이 {lo_name}도 이김 → 중요한 구조: {hi_adds}")
             else:
                 out.append(f"실제 배선이 {lo_name}는 이기고 {hi_name}와는 차이가 없음 → 중요한 구조: {hi_adds}")
-        if len(steps) > 1 and not any(lose(n) for n, _ in steps):
+        win = [c for c in self.controls if t.loc[c.name].p < alpha and t.loc[c.name]["diff"] < 0]
+        for c in win:                                                      # 대조군이 실제 배선보다 좋음
+            out.append(f"{c.name}가 실제 배선보다 좋음 → 실제 배선의 이 구조({c.question})가 이 과제에는 오히려 불리 "
+                       "(과제가 그 회로가 실제로 하는 일과 다르면 흔함)")
+        if len(steps) > 1 and not any(lose(n) for n, _ in steps) and not win:
             out.append("어느 대조군과도 차이를 확인하지 못함 → 이 과제에서 배선 구조의 이점은 보이지 않음")
         return out
 

@@ -1,8 +1,9 @@
 """데이터 위치 설정과 다운로드
 
-데이터 묶음 두 가지
+데이터 묶음
   flywire : FlyWire v783 연결·뉴런 목록 (Shiu et al. 2024 모델 저장소) + 세포 유형 주석 (Schlegel et al. 2024)
   door    : DoOR 2.0 냄새 반응 (Münch & Galizia 2016, CC BY-SA 4.0)
+  worm    : 예쁜꼬마선충 자웅동체 커넥톰 (Cook et al. 2019, OpenWorm c302 저장소, MIT) - 기본 다운로드에는 없음
 
 위치를 찾는 순서 (묶음마다)
   1. 함수에 직접 준 경로
@@ -34,6 +35,7 @@ _GH = "https://raw.githubusercontent.com"
 _SHIU = f"{_GH}/philshiu/Drosophila_brain_model/91bdd1e7dcf193f3e7ca5a8933497fcef63b7960"
 _ANN = f"{_GH}/flyconnectome/flywire_annotations/a83b2776d60d5764cef36b927f5f9679c16c47a2"
 _DOOR = f"{_GH}/ropensci/DoOR.data/db323a496577c4b4a72b5c2fcd1859e07521ffb5/data"
+_WORM = f"{_GH}/openworm/c302/49acae1570131b2592220d5d67750dee8d7ff596/c302/data"
 # 파일 이름 → (URL, 바이트 크기, SHA-256)
 SOURCES = {
     "flywire": {
@@ -52,13 +54,19 @@ SOURCES = {
         "odor.csv": (f"{_DOOR}/odor.csv", 155880,
                      "a31d1841cf90ce23ec149760a5efa38eae02de7820bb2300c3a7dba221745940"),
     },
+    "worm": {
+        "herm_full_edgelist.csv": (f"{_WORM}/herm_full_edgelist.csv", 245463,
+                                   "142693f17556148d7f962835b18ac6dd5af18b7467eef61815ebc1dd5474c0ca"),
+    },
 }
 CITATIONS = {
     "flywire": "FlyWire: Dorkenwald et al. 2024, Schlegel et al. 2024 (Nature); "
                "연결 파일: Shiu et al. 2024 (Nature), github.com/philshiu/Drosophila_brain_model (MIT)",
     "door": "DoOR 2.0: Münch & Galizia 2016 (Sci Rep 6:21841), github.com/ropensci/DoOR.data (CC BY-SA 4.0)",
+    "worm": "C. elegans: Cook et al. 2019 (Nature 571:63), github.com/openworm/c302 (MIT); "
+            "GABA 뉴런: McIntire et al. 1993 (Nature 364:337)",
 }
-_ENV = {"flywire": ("FLYDNET_FLYWIRE", "FLYDNET_DATA"), "door": ("FLYDNET_DOOR",)}
+_ENV = {"flywire": ("FLYDNET_FLYWIRE", "FLYDNET_DATA"), "door": ("FLYDNET_DOOR",), "worm": ("FLYDNET_WORM",)}
 
 
 def _config() -> dict:
@@ -82,10 +90,10 @@ def data_dir(kind: str = "flywire", path: str | Path | None = None) -> Path:
     return DEFAULT_ROOT / kind
 
 
-def set_data_dir(flywire: str | Path | None = None, door: str | Path | None = None):
+def set_data_dir(flywire: str | Path | None = None, door: str | Path | None = None, worm: str | Path | None = None):
     """이 컴퓨터에서 쓸 데이터 위치를 ~/.flydnet/config.json에 저장 (None인 항목은 그대로)"""
     cfg = _config()
-    for kind, p in (("flywire", flywire), ("door", door)):
+    for kind, p in (("flywire", flywire), ("door", door), ("worm", worm)):
         if p is not None:
             cfg[kind] = str(Path(p).resolve())
     CONFIG.parent.mkdir(parents=True, exist_ok=True)

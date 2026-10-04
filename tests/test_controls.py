@@ -123,6 +123,19 @@ def test_interpret_ladder():
         assert any(expect in x for x in rep.interpret()), (bonus, rep.interpret())
 
 
+def test_interpret_control_wins():
+    """대조군이 실제 배선보다 유의하게 좋으면 해석이 그것을 말해야 함 ("차이 없음"이라고 하면 안 됨)"""
+    c = _circuit()
+
+    def run(circ, seed):
+        noise = np.random.default_rng(seed).normal(0, 0.003)
+        return 0.8 + noise if "shuffled weights" in circ.name else 0.7 + noise
+    rep = fd.compare(run, c, controls=["shuffled", "shuffled_weights"], seeds=6, verbose=False)
+    text = rep.interpret()
+    assert any("shuffled_weights가 실제 배선보다 좋음" in x for x in text), text
+    assert not any("차이를 확인하지 못함" in x for x in text)
+
+
 # ─────────────── 오류 처리 회귀 테스트 ───────────────
 def test_invalid_labels_raise_clear_errors():
     import flydnet.ganglion as G
@@ -192,6 +205,10 @@ def test_doctor_flags_colab_style_cupy_conflict(monkeypatch, capsys):
     class D:
         def __init__(self, name):
             self.metadata = {"Name": name}
+    try:                                                           # torch는 처음 불릴 때 패키지 목록을 읽음 → 가짜 목록 전에
+        import torch  # noqa: F401
+    except ImportError:
+        pass
     monkeypatch.setattr(cli, "_kernel_check", lambda: 0)           # 가짜 패키지 목록으로는 실제 컴파일 불가
     monkeypatch.setattr(cli, "_driver_cuda", lambda: "13.0")
     monkeypatch.setattr(metadata, "distributions", lambda: [D("cupy-cuda12x"), D("cupy-cuda13x"), D("numpy")])
