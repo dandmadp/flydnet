@@ -130,6 +130,7 @@ def test_membrane_noise():
         _layer(noise=-1)
 
 
+@pytest.mark.filterwarnings("ignore:.*모두 0")                    # 조용한 출력을 잡아내는지 보는 테스트
 def test_gradcheck_flags_silent_output():
     c = _strong()
     L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, trainable=True, device="cpu", input_mode="regular",

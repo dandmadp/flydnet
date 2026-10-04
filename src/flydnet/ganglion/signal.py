@@ -253,16 +253,34 @@ class Signal:
 
     def __pow__(self, p: float):
         if isinstance(p, Signal):
-            raise TypeError("지수는 숫자만")
+            raise TypeError("지수는 숫자만 (신호 지수는 (s * log(base)).exp())")
         x = self.data
+        if p == 0:                                                   # x**0 = 1: 기울기 0 (x = 0에서 0·inf = NaN이 되지 않게)
+            return Signal(self.xp.ones_like(x))._link((self,), lambda g: (self.xp.zeros_like(g),))
         return Signal(x ** p)._link((self,), lambda g: (g * p * x ** (p - 1),))
 
+    def __rpow__(self, base):
+        """숫자 ** 신호 = exp(신호 · log(숫자)), 숫자는 양수"""
+        if isinstance(base, Signal) or not base > 0:
+            raise ValueError(f"숫자 ** 신호의 밑은 양수: {base}")
+        return (self * float(np.log(base))).exp()
+
     def __matmul__(self, o):
+        """행렬 곱. 1차원은 numpy처럼 (n,) @ (n, k) → (k,), (m, n) @ (n,) → (m,), (n,) @ (n,) → 스칼라"""
         o = self._wrap(o)
-        x, y = self.data, o.data
-        if x.ndim != 2 or y.ndim != 2:
-            raise ValueError("@는 2차원끼리만")
-        return Signal(x @ y)._link((self, o), lambda g: (g @ y.T, x.T @ g))
+        if self.ndim not in (1, 2) or o.ndim not in (1, 2):
+            raise ValueError(f"@는 1·2차원끼리만: {self.shape} @ {o.shape} (배치는 reshape로 2차원으로)")
+        a = self if self.ndim == 2 else self.reshape(1, -1)
+        b = o if o.ndim == 2 else o.reshape(-1, 1)
+        x, y = a.data, b.data
+        out = Signal(x @ y)._link((a, b), lambda g: (g @ y.T, x.T @ g))
+        if self.ndim == 1 and o.ndim == 1:
+            return out.reshape(())
+        if self.ndim == 1:
+            return out.reshape(-1)
+        if o.ndim == 1:
+            return out.reshape(-1)
+        return out
 
     def __rmatmul__(self, o):
         return self._wrap(o) @ self
@@ -279,6 +297,15 @@ class Signal:
 
     def __le__(self, o):
         return Signal(self.data <= (o.data if isinstance(o, Signal) else o))
+
+    def __eq__(self, o):
+        """원소별 비교 (numpy처럼). 예전에는 객체 비교라 (s == 0)이 늘 False 하나였음"""
+        return Signal(self.data == (o.data if isinstance(o, Signal) else o))
+
+    def __ne__(self, o):
+        return Signal(self.data != (o.data if isinstance(o, Signal) else o))
+
+    __hash__ = object.__hash__                                       # 딕셔너리·집합에서는 객체 그대로 (같은 신호 = 같은 키)
 
     # ─────────────── 원소별 함수 ───────────────
     def exp(self):
@@ -309,6 +336,9 @@ class Signal:
         return Signal(self.xp.abs(self.data))._link((self,), lambda g: (g * s,))
 
     def clip(self, lo=None, hi=None):
+        """lo·hi: 숫자, 배열(브로드캐스트), Signal. GPU 신호에 numpy 배열 경계도 됨"""
+        bound = lambda b: b.data if isinstance(b, Signal) else B.to(b, self.device) if hasattr(b, "shape") else b
+        lo, hi = bound(lo), bound(hi)
         x = self.data
         if lo is not None and hi is not None and bool(self.xp.any(self.xp.asarray(lo) > self.xp.asarray(hi))):
             raise ValueError(f"clip: lo가 hi보다 큰 곳이 있음 ({lo} > {hi})")
@@ -454,8 +484,12 @@ class Signal:
         return self.reshape(*self.shape[:start], -1)
 
     def transpose(self, *axes):
-        axes = axes or tuple(reversed(range(self.ndim)))
-        inv = np.argsort(axes)
+        if len(axes) == 1 and isinstance(axes[0], (tuple, list)):     # transpose((1, 0))도
+            axes = tuple(axes[0])
+        axes = tuple(int(a) % self.ndim for a in axes) if axes else tuple(reversed(range(self.ndim)))
+        if sorted(axes) != list(range(self.ndim)):
+            raise ValueError(f"transpose 축 {axes}는 0 ~ {self.ndim - 1}을 한 번씩")
+        inv = np.argsort(axes)                                       # 음수 축을 먼저 바꿔야 역순열이 맞음
         return Signal(self.data.transpose(axes))._link((self,), lambda g: (g.transpose(inv),))
 
     @property
@@ -575,6 +609,15 @@ def as_input(x, device: str | None = None) -> Signal:
 
 
 def concat(signals, axis: int = 0) -> Signal:
+    """신호들을 axis로 잇기. numpy·cupy 배열을 섞어도 됨 (첫 신호의 장치로)"""
+    signals = list(signals)
+    if not signals:
+        raise ValueError("concat: 이을 것이 없음")
+    ref = next((s for s in signals if isinstance(s, Signal)), None)
+    dev = ref.device if ref is not None else None
+    signals = [s if isinstance(s, Signal) else as_signal(s, dev) for s in signals]
+    if len({s.device for s in signals}) > 1:
+        raise RuntimeError(f"concat: 장치가 다름 {[s.device for s in signals]}")
     xp = signals[0].xp
     sizes = [s.shape[axis] for s in signals]
     cuts = np.cumsum(sizes)[:-1]

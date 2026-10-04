@@ -79,3 +79,9 @@ def test_learned_scale_exponent_clamped():
     assert np.isfinite(n(x).numpy()).all()
     nz = s0 != 0
     assert (np.sign(n.dense())[nz] == s0[nz]).all()
+
+
+def test_layers_fuzz():
+    """Linear 계열 구조물(Projection·Neuropil·Homeostasis·측억제·활성화·Pathway)의 기울기 = 수치 미분 (CPU·GPU)"""
+    import fuzz_layers
+    assert fuzz_layers.run(40)

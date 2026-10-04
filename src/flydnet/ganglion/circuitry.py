@@ -399,6 +399,14 @@ class ConnectomeLayer(Tissue):
             raise ValueError("입력에 NaN·무한대가 있음 (그대로 두면 스파이크가 안 생겨 출력이 조용히 0이 됨)")
         if self.neuron != "graded" and x.data.size and bool((x.data < 0).any()):
             raise ValueError(f"입력 발화율은 0 이상 (Hz): 최소 {float(x.data.min()):.3g} - 음수는 스파이크가 안 생겨 조용히 0이 됨")
+        if self.neuron != "graded" and x.data.size and not getattr(self, "_sat_warned", False):
+            top = float(x.data.max())
+            if top * self.p["dt"] / 1000.0 > 0.2:                        # 스텝당 확률 0.2 넘으면 포화가 시작됨
+                import warnings
+                self._sat_warned = True
+                warnings.warn(f"입력 발화율 최대 {top:.4g} Hz가 커서 입력 뉴런이 포화됨 (dt {self.p['dt']} ms면 두 스텝에 한 번, "
+                              f"최대 약 {1000 / (2 * self.p['dt']):.0f} Hz까지만 전달되고 역전파는 포화를 모름). "
+                              "입력을 Hz 단위 0~수백으로 (fd.RateEncoder(max_rate=100) 등)", stacklevel=3)
         if self.neuron == "graded":
             return self._forward_graded(x, return_all, record, seed)
         if not isinstance(self.neuron, str):
@@ -749,6 +757,7 @@ class ConnectomeLayer(Tissue):
         _C.pos("step", step)
         _C.pos("tol", tol)
         _C.optional(_C.pos, "relay_hz", relay_hz)
+        self._silent_checked = True                                     # 바로 이것을 고치는 중 - "출력이 모두 0" 경고는 안 냄
         tgt = {g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
         for g, v in tgt.items():
             if not (v > 0 and np.isfinite(v)):
@@ -898,6 +907,7 @@ class ConnectomeLayer(Tissue):
         hop = np.full(c.N, np.inf)
         frontier = np.unique(B.numpy(self.in_idx))
         hop[frontier] = 0
+        self._silent_checked = True                                     # 진단 중 - 경고 대신 아래 표로 알림
         d = 0
         while len(frontier):
             d += 1

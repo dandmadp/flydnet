@@ -167,6 +167,7 @@ def test_ablate_removes_edges():
     assert (r[:, :3] == 0).all() and r[:, 3:].mean() > 5
 
 
+@pytest.mark.filterwarnings("ignore:seed .*개로는")                    # 빠르게 돌리려고 seed를 적게
 def test_screen_table():
     c = _chain()
     L = _layer(c, outputs=("O",), t_ms=100)

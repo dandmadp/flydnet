@@ -518,6 +518,7 @@ def test_device_env_override_and_check():
 
 
 # ─────────────── timing="brian": Shiu et al. 2024 Brian2 모델과 같은 한 스텝 ───────────────
+@pytest.mark.filterwarnings("ignore:입력 발화율 최대")              # 10 kHz로 스파이크 시각을 강제
 def test_brian_timing_matches_brian2_spike_times():
     """원본 Brian2 모델(model.py, 같은 식·매개변수)에서 기록한 입력 5개 → 표적 1개: 표적 스파이크 시각이 스텝 단위로 같음.
     tests/data/brian2_toy_trace.npz = Brian2 2.9.0, 300 ms, 입력 각 100 Hz 포아송, 시냅스 40개씩"""
@@ -588,7 +589,9 @@ def test_brian_timing_trains_neuron_params():
     c = _tiny()
     L = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, train_neurons=True, trainable=True, device="cpu")
     x = fd.Signal(np.full((2, 5), 150.0, np.float32))
+    L.calibrate(x, {"OUT": 20})                                           # 기본 세기로는 출력이 0 Hz
     out = L(x, seed=0)
+    assert float(out.data.mean()) > 5
     out.sum().retrograde()
     assert np.abs(L.log_t_mbr.retro).sum() > 0 and np.abs(L.bias.retro).sum() > 0
     assert np.isfinite(L.log_t_mbr.retro).all()

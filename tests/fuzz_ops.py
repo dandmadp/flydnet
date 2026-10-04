@@ -103,8 +103,45 @@ def _cases():
 
     def tr(r):
         x = r.standard_normal(_shape(r, int(r.integers(2, 4))))
-        return [x], dict(axes=tuple(r.permutation(x.ndim).tolist()))
+        ax = [a - x.ndim if r.random() < 0.4 else a for a in r.permutation(x.ndim).tolist()]   # 음수 축 섞음
+        return [x], dict(axes=tuple(ax))
     C["transpose(axes)"] = (tr, lambda s, k: s.transpose(*k["axes"]), lambda x, k: x.transpose(k["axes"]))
+
+    def mm1(r):
+        n, k = int(r.integers(1, 5)), int(r.integers(1, 5))
+        kind = int(r.integers(3))
+        shapes = [((k,), (k, n)), ((n, k), (k,)), ((k,), (k,))][kind]
+        return [r.standard_normal(shapes[0]), r.standard_normal(shapes[1])]
+    C["matmul 1차원"] = (mm1, lambda xs: xs[0] @ xs[1], lambda xs: xs[0] @ xs[1])
+
+    def pw(r):
+        x = np.abs(r.standard_normal(_shape(r))) + 0.3
+        return [x], dict(p=float(r.choice([0, 1, 2, 3, -1, 0.5, 2.5])))
+    C["pow"] = (pw, lambda s, k: s ** k["p"], lambda x, k: x ** k["p"])
+
+    def rp(r):
+        return [r.standard_normal(_shape(r))], dict(base=float(r.choice([0.5, 2.0, np.e, 10.0])))
+    C["숫자 ** 신호"] = (rp, lambda s, k: k["base"] ** s, lambda x, k: k["base"] ** x)
+
+    def sq(r):
+        x = r.standard_normal(_shape(r, int(r.integers(1, 4))))
+        ones = [i for i, d in enumerate(x.shape) if d == 1]
+        ax = None if not ones or r.random() < 0.3 else (ones[0] - x.ndim if r.random() < 0.5 else ones[0])
+        return [x], dict(axis=ax)
+    C["squeeze"] = (sq, lambda s, k: s.squeeze(k["axis"]), lambda x, k: x.squeeze(k["axis"]))
+
+    def fl(r):
+        x = r.standard_normal(_shape(r, int(r.integers(2, 4))))
+        return [x], dict(start=int(r.integers(0, x.ndim)))
+    C["flatten"] = (fl, lambda s, k: s.flatten(k["start"]), lambda x, k: x.reshape(*x.shape[:k["start"]], -1))
+
+    def cl(r):
+        x = r.standard_normal(_shape(r, 2)) * 2
+        lo = -np.abs(r.standard_normal(x.shape[-1])) - 0.05
+        hi = np.abs(r.standard_normal(x.shape[-1])) + 0.05
+        x = np.where(np.minimum(np.abs(x - lo), np.abs(x - hi)) < 0.02, x + 0.1, x)   # 경계에서 떨어뜨림
+        return [x], dict(lo=lo, hi=hi)
+    C["clip 배열 경계"] = (cl, lambda s, k: s.clip(k["lo"], k["hi"]), lambda x, k: np.clip(x, k["lo"], k["hi"]))
 
     def rs(r):
         x = r.standard_normal(_shape(r))

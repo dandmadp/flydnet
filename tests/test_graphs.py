@@ -126,6 +126,7 @@ def test_tools_work_on_any_graph():
     tf = fd.ThreeFactor(L, feedback="random")
     o = tf(x, seed=1); (o * 0.01).sum().retrograde(); tf.assign(o)
     assert np.abs(L.log_scale.retro).sum() > 0
-    run = lambda circuit, seed: float(fd.ConnectomeLayer(circuit, "in", "out", t_ms=40, device="cpu")(x, seed=seed).numpy().mean())
+    run = lambda circuit, seed: float(fd.ConnectomeLayer(circuit, "in", "out", t_ms=60, device="cpu")(x, seed=seed).numpy().mean())
+    assert run(c, 0) > 0                                                   # 실제 회로가 발화해야 비교가 의미 있음
     rep = fd.compare(run, c, controls=["shuffled", "randomized"], seeds=2, verbose=False)
     assert "randomized" in str(rep)

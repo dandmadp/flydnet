@@ -73,6 +73,7 @@ def test_group_t_mbr_equal_to_tau_matches_scalar(tm):
     np.testing.assert_allclose(grp, ref, rtol=1e-5)
 
 
+@pytest.mark.filterwarnings("ignore:.*경로가 없는 출력")                    # 일부러 경로 없는 그룹
 def test_calibrate_group_without_inputs_raises():
     """들어오는 연결이 없는 그룹은 배율로 보정할 수 없음 - 예전엔 아무것도 못 바꾸고 조용히 끝남"""
     c = fd.Circuit.from_edges([0, 0], [1, 1], [20.0, 20.0], groups={"IN": [0], "H": [1], "L": [2]}, n=3)
@@ -125,6 +126,7 @@ def test_normalized_zero_input_is_zero_not_nan():
 
 
 # ─────────────── genetics · explain · gradcheck · compare ───────────────
+@pytest.mark.filterwarnings("ignore:seed .*개로는")                    # 측정 전에 멈추는지만
 def test_screen_checks_all_lines_before_running():
     c = _strong()
     layer = fd.Connectome(c, "IN", "O", t_ms=20, device="cpu")
@@ -230,6 +232,7 @@ def test_path_warnings_at_construction():
         fd.Connectome(c, "IN", "O", t_ms=2.0, device="cpu")
 
 
+@pytest.mark.filterwarnings("ignore:t_ms")                    # 짧은 t_ms는 일부러
 def test_silent_warning_blames_inputs_when_they_never_fire():
     c, _ = _deep()
     layer = fd.Connectome(c, "in", "out", device="cpu", t_ms=5)
@@ -237,6 +240,7 @@ def test_silent_warning_blames_inputs_when_they_never_fire():
         layer(np.full((2, 20), 0.01, np.float32), seed=0)
 
 
+@pytest.mark.filterwarnings("ignore:.*모두 0")                    # 아주 작은 입력은 일부러
 def test_hash_random_never_zero_at_seed_zero():
     """splitmix64는 0 → 0: seed 0·스텝 0·칸 0이 늘 0.0이라 그 입력 뉴런이 발화율과 상관없이 처음에 발화했음"""
     from flydnet.ganglion.physiology import hash_uniform

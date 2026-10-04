@@ -20,12 +20,13 @@ def _L(**kw):
 
 # ─────────────── 입력 ───────────────
 def test_single_sample_input():
-    L = _L()
+    L = _L(t_ms=100)
     with fd.quiescent():
-        one = L(X[0], seed=3)
-        many = L(X[:1], seed=3)
-        out, trace = L(X[0], seed=3, record=[0, 1])
-    assert one.shape == (5,) and trace.shape[0] == 300 and out.shape == (5,)
+        one = L(X[1], seed=3)
+        many = L(X[1:2], seed=3)
+        out, trace = L(X[1], seed=3, record=[0, 1])
+    assert one.shape == (5,) and trace.shape[0] == 1000 and out.shape == (5,)
+    assert one.numpy().any()                                               # 0 = 0 비교가 되지 않게 (발화하는 시료)
     np.testing.assert_array_equal(one.numpy(), many.numpy()[0])
 
 
@@ -266,6 +267,7 @@ def test_data_size_check(tmp_path):
     lambda b: b.astype(np.int32), lambda b: np.clip(b, 0, 255).astype(np.uint8), lambda b: b > 100,
     lambda b: b.tolist(), lambda b: __import__("pandas").DataFrame(b),
 ])
+@pytest.mark.filterwarnings("ignore:.*모두 0")                    # 불리언 입력은 0/1 Hz - 자료형만 확인
 def test_any_input_dtype_computes_in_float32(make):
     base = np.random.default_rng(0).uniform(0, 200, (4, 6))
     x = make(base)

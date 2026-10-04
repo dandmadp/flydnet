@@ -25,6 +25,7 @@ def _circuit():
 
 
 # ─────────────── 예전 버전이 저장한 파일 ───────────────
+@pytest.mark.filterwarnings("ignore:.*모두 0")                    # 0.1.15 파일의 작은 입력 - 불러오기만 확인
 @pytest.mark.parametrize("ver", sorted(p.name for p in LEGACY.glob("v*")))
 def test_legacy_files_still_load(ver):
     """예전 flydnet이 저장한 파일을 지금 버전이 읽고 같은 결과를 냄 (새 버전 파일은 make_legacy.py로 추가)"""
@@ -146,6 +147,7 @@ def test_clip_limits_total_norm():
         fd.Plasticity(syn, clip=0)
 
 
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")                    # 일부러 발산시킴
 def test_clip_rescues_divergent_training():
     """학습률이 너무 크면 발산해 guard가 멈추고, clip을 쓰면 끝까지 유한"""
     rng = np.random.default_rng(0)
