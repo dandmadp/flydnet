@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 from .ganglion import backend as B
@@ -55,6 +56,10 @@ class STDP(Monitor):
 
     def __init__(self, layer, a_plus: float = 0.01, a_minus: float = 0.012, tau_plus: float = 20.0,
                  tau_minus: float = 20.0):
+        _C.nonneg('a_plus', a_plus)
+        _C.nonneg('a_minus', a_minus)
+        _C.pos('tau_plus', tau_plus)
+        _C.pos('tau_minus', tau_minus)
         super().__init__(layer)
         if not getattr(layer, "trainable", False):
             raise ValueError("학습하는 연결이 있는 ConnectomeLayer에서만 (trainable=...)")

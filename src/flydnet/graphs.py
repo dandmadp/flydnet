@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 from .circuit import Circuit
@@ -34,6 +35,10 @@ def _finish(n, pre, post, weight, inhibitory, groups, seed, name):
 
 def erdos_renyi(n: int, p: float, weight: float = 10.0, inhibitory: float = 0.2, groups=None, seed: int = 0) -> Circuit:
     """무작위 방향 그래프: 모든 순서쌍이 확률 p로 연결 (평균 차수 p(n-1))"""
+    _C.integer('n', n)
+    _C.unit('p', p)
+    _C.unit('inhibitory', inhibitory)
+    _C.finite('weight', weight)
     rng = np.random.default_rng(seed)
     m = rng.binomial(n * (n - 1), p)
     flat = rng.choice(n * n, size=min(int(m * 1.05) + 10, n * n), replace=False)
@@ -46,6 +51,11 @@ def erdos_renyi(n: int, p: float, weight: float = 10.0, inhibitory: float = 0.2,
 def watts_strogatz(n: int, k: int, beta: float, weight: float = 10.0, inhibitory: float = 0.2, groups=None,
                    seed: int = 0) -> Circuit:
     """작은 세상망: 고리에서 각 노드가 앞뒤 k//2개 이웃으로 (양방향), 각 연결의 받는 쪽을 확률 beta로 무작위로 다시 잇기"""
+    _C.integer('n', n)
+    _C.integer('k', k)
+    _C.unit('beta', beta)
+    _C.unit('inhibitory', inhibitory)
+    _C.finite('weight', weight)
     if k % 2 or k >= n:
         raise ValueError("k는 n보다 작은 짝수")
     rng = np.random.default_rng(seed)
@@ -61,6 +71,11 @@ def barabasi_albert(n: int, m: int, weight: float = 10.0, inhibitory: float = 0.
                     reciprocal: float = 0.0) -> Circuit:
     """척도 없는 망: 노드를 하나씩 더하며 이미 있는 노드에 연결 수에 비례한 확률로 m개 연결 (새 노드 → 기존 노드).
     reciprocal: 그 연결의 반대 방향도 만들 확률"""
+    _C.integer('n', n)
+    _C.integer('m', m)
+    _C.unit('inhibitory', inhibitory)
+    _C.unit('reciprocal', reciprocal)
+    _C.finite('weight', weight)
     if not 1 <= m < n:
         raise ValueError("1 ≤ m < n")
     rng = np.random.default_rng(seed)
@@ -80,6 +95,8 @@ def barabasi_albert(n: int, m: int, weight: float = 10.0, inhibitory: float = 0.
 def stochastic_block(sizes: dict, p, weight: float = 10.0, inhibitory: float = 0.2, seed: int = 0) -> Circuit:
     """블록 구조: sizes = {그룹: 노드 수}, p = 숫자 행렬 (그룹 순서, p[a][b] = a → b 확률) 또는
     {("A", "B"): 확률} (없는 쌍은 0). 그룹 = 블록"""
+    _C.unit('inhibitory', inhibitory)
+    _C.finite('weight', weight)
     names = list(sizes)
     if isinstance(p, dict):
         P = np.array([[float(p.get((a, b), 0.0)) for b in names] for a in names])
@@ -106,6 +123,9 @@ def stochastic_block(sizes: dict, p, weight: float = 10.0, inhibitory: float = 0
 
 def layered(sizes, p: float, weight: float = 10.0, inhibitory: float = 0.0, seed: int = 0) -> Circuit:
     """앞먹임 층: sizes = [입력, 숨은..., 출력], 인접한 층 사이만 확률 p로. 그룹 in, h1, h2, ..., out"""
+    _C.unit('p', p)
+    _C.unit('inhibitory', inhibitory)
+    _C.finite('weight', weight)
     names = ["in"] + [f"h{i}" for i in range(1, len(sizes) - 1)] + ["out"]
     P = {(names[i], names[i + 1]): p for i in range(len(sizes) - 1)}
     c = stochastic_block(dict(zip(names, sizes)), P, weight=weight, inhibitory=inhibitory, seed=seed)

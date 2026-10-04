@@ -1,6 +1,7 @@
 """값 → 입력 뉴런 발화율(Hz) 변환 (자체 엔진판, torch 없음). '설탕 뉴런 150Hz 자극'을 일반 데이터로 확장한 것"""
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 from .ganglion import backend as B
@@ -25,6 +26,10 @@ class RateEncoder(Tissue):
 
     def __init__(self, n_in: int, n_out: int, max_rate: float = 100.0, k: int = 20, seed: int = 0,
                  projection: str | None = "random", device: str | None = None):
+        _C.integer('n_in', n_in)
+        _C.integer('n_out', n_out)
+        _C.nonneg('max_rate', max_rate)
+        _C.integer('k', k)
         super().__init__()
         dev = B.check(device) if device is not None else B.default_device()
         self.n_in, self.n_out, self.max_rate = n_in, n_out, max_rate
@@ -63,6 +68,7 @@ class GlomerularEncoder(Tissue):
     """
 
     def __init__(self, circuit, group: str = "PN", max_rate: float = 100.0, device: str | None = None):
+        _C.nonneg('max_rate', max_rate)
         super().__init__()
         if circuit.meta is None:
             raise ValueError("circuit.meta(세포 주석)가 필요함 - Circuit.from_flywire()로 만든 회로를 쓸 것")

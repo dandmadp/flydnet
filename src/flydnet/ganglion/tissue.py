@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+from .. import _check as _C
 import numpy as np
 
 from . import backend as B
@@ -235,6 +236,8 @@ class Projection(Tissue):
     """축삭 투사: 모든 입력이 모든 출력에 연결 (nn.Linear). 초기값은 ±1/√n_in 균등 (torch와 같은 방식)"""
 
     def __init__(self, n_in: int, n_out: int, bias: bool = True, seed: int | None = None, device: str | None = None):
+        _C.integer('n_in', n_in)
+        _C.integer('n_out', n_out)
         super().__init__()
         dev = _device(device)
         rng = np.random.default_rng(seed)
@@ -382,6 +385,8 @@ class AxonHillock(Tissue):
     """축삭 둔덕: 문턱을 넘으면 스파이크 1 (대리 기울기)"""
 
     def __init__(self, threshold: float = 0.0, slope: float = 10.0):
+        _C.finite('threshold', threshold)
+        _C.pos('slope', slope)
         super().__init__()
         self.threshold, self.slope = threshold, slope
 
@@ -397,6 +402,7 @@ class Homeostasis(Tissue):
     발화율(Hz)처럼 크기가 큰 활동을 리드아웃에 넣기 전에. eps: 모두 같은 값일 때 0으로 나누지 않게"""
 
     def __init__(self, eps: float = 1e-5):
+        _C.nonneg('eps', eps)
         super().__init__()
         self.eps = eps
 
@@ -431,6 +437,9 @@ class MushroomBodyOutput(Tissue):
     learn(x, y): 정답 클래스의 가장 잘 맞는 원형 하나만 강화 (누적 평균). forward(x) = 클래스 점수 (코사인 최대)"""
 
     def __init__(self, n_in: int, n_classes: int, per_class: int = 1, binary: bool = False, device: str | None = None):
+        _C.integer('n_in', n_in)
+        _C.integer('n_classes', n_classes)
+        _C.integer('per_class', per_class)
         super().__init__()
         dev = _device(device)
         xp = B.xp(dev)

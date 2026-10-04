@@ -11,6 +11,7 @@ model: Tissue (Pathway 등) 또는 함수 f(x) → 로짓 Signal. seed를 받는
 """
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 from ._console import say
@@ -57,6 +58,9 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
     loss:     loss(logits, y_batch) → 값 하나인 Signal (기본 교차 엔트로피)
     synapses: 바꿀 시냅스 (기본 model.named_synapses())
     반환: dict(loss=[에폭별 평균 손실], val_acc=[에폭별 정확도], train_acc=마지막, rule=가소성 규칙)"""
+    _C.nonneg('rate', rate)
+    _C.nonneg('decay', decay)
+    _C.optional(_C.pos, 'clip', clip)
     X = _rows(X)
     y = B.labels(y)
     if len(X) != len(y):
@@ -103,6 +107,8 @@ def door_task(n_odors: int = 12, samples: int = 24, noise: float = 0.8, backgrou
     시료 = 냄새의 사구체 반응 x 로그 정규 잡음(noise) + 배경 잡음 (0 ~ background), [0, 1]로 자름.
     glomeruli: 사구체 순서 (기본: 오른쪽 버섯체 GlomerularEncoder의 순서 - FlyWire 데이터 필요)
     반환: Xtr, ytr, Xte, yte (X는 (시료, 사구체) float32). 냄새 이름은 door_task.names에"""
+    _C.nonneg('noise', noise)
+    _C.nonneg('background', background)
     from .datasets import door_odors
     if glomeruli is None:
         from .circuit import Circuit

@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+from . import _check as _C
 import re
 
 import numpy as np
@@ -206,6 +207,7 @@ def block(layer, line: Line) -> Expression:
 def activate(layer, line: Line, hz: float = 100.0, level: float | None = None) -> Expression:
     """CsChrimson·P2X2: 스파이킹 뉴런에 hz의 포아송 자극 (자극 하나 = 입력 스파이크 하나, 불응기 없음 - Shiu et al. 2024).
     연속값 뉴런(graded)은 활동을 level로 고정 (기본 1.0)"""
+    _C.optional(_C.finite, 'level', level)
     if hz <= 0:
         raise ValueError("hz는 양수")
     if layer.neuron == "graded":
@@ -301,6 +303,7 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     effector: "silence" / "block" / "activate"
     반환 표: 집단, 뉴런 수, 기준 평균, 조작 평균, 변화, 변화 비율, p (부호 뒤집기 순열 검정),
             p_holm (집단 수만큼 여러 번 시험한 것을 보정), 변화가 큰 순. seed 6개 미만이면 p < 0.05가 불가능해 경고"""
+    _C.pos('hz', hz)
     from ._console import say
     from .controls import sign_flip_p
     make = {"silence": silence, "block": block, "activate": lambda L, l: activate(L, l, hz=hz)}

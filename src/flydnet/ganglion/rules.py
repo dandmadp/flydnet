@@ -13,6 +13,7 @@ synapses에 tissue.named_synapses()를 주면 오류 메시지에 이름이 나�
 """
 from __future__ import annotations
 
+from .. import _check as _C
 import numpy as np
 
 from . import backend as B
@@ -27,6 +28,7 @@ def _to_device(state, device):
 
 class _Rule:
     def __init__(self, synapses, rate: float, clip: float | None = None, guard: bool = True):
+        _C.optional(_C.pos, 'clip', clip)
         items = list(synapses)
         if not items:
             raise ValueError("바꿀 시냅스가 없음")
@@ -86,6 +88,8 @@ class Plasticity(_Rule):
 
     def __init__(self, synapses, rate: float = 0.01, momentum: float = 0.0, decay: float = 0.0,
                  clip: float | None = None, guard: bool = True):
+        _C.unit('momentum', momentum, hi_open=True)
+        _C.nonneg('decay', decay)
         super().__init__(synapses, rate, clip, guard)
         self.momentum, self.decay = momentum, decay
 
@@ -104,6 +108,10 @@ class AdaptivePlasticity(_Rule):
 
     def __init__(self, synapses, rate: float = 1e-3, betas=(0.9, 0.999), eps: float = 1e-8, decay: float = 0.0,
                  clip: float | None = None, guard: bool = True):
+        _C.unit('betas[0]', betas[0], hi_open=True)
+        _C.unit('betas[1]', betas[1], hi_open=True)
+        _C.pos('eps', eps)
+        _C.nonneg('decay', decay)
         super().__init__(synapses, rate, clip, guard)
         self.b1, self.b2 = betas
         self.eps, self.decay = eps, decay

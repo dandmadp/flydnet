@@ -11,6 +11,7 @@ flydnet 0.1의 torch판(flydnet.layers.ConnectomeLayer)과 같은 모델·같은
 """
 from __future__ import annotations
 
+from .. import _check as _C
 import json
 
 import numpy as np
@@ -104,6 +105,13 @@ class ConnectomeLayer(Tissue):
                  count_from_ms: float = 0.0, neuron: str = "lif", timing: str = "brian",
                  surrogate_damp: float | str | None = None, truncate: int | None = None, noise: float = 0.0,
                  damp=None, ckpt: int | None = None):
+        _C.pos('slope', slope)
+        _C.nonneg('count_from_ms', count_from_ms)
+        _C.optional(_C.integer, 'checkpoint_every', checkpoint_every)
+        _C.optional(_C.integer, 'ckpt', ckpt)
+        _C.nonneg('noise', noise)
+        _C.lif_params(params, DEFAULT_PARAMS)
+        _C.finite('t_ms', t_ms) if not isinstance(t_ms, bool) else None
         super().__init__()
         if damp is not None:                                     # 짧은 이름: damp = surrogate_damp, ckpt = checkpoint_every
             if surrogate_damp is not None:

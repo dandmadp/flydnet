@@ -1,6 +1,7 @@
 """발화율 특징 위에 학습하는 리드아웃 (자체 엔진판, torch 없음). 결과는 numpy"""
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 from ._console import say
@@ -33,6 +34,7 @@ def _accepts_seed(fn) -> bool:
 
 def extract(layer, encoder, X, batch: int = 256, seed: int = 0, log_every: int = 0) -> np.ndarray:
     """데이터 X 전체를 (encoder →) layer에 통과시켜 출력 특징 (n, n_out)을 numpy로. encoder=None이면 X를 바로"""
+    _C.integer('batch', batch)
     out = []
     takes_seed = _accepts_seed(layer)
     with quiescent():
@@ -54,6 +56,10 @@ def train_linear(Xtr, ytr, Xte, yte, n_classes=None, epochs: int = 30, lr: float
            "feature" = 특징별 표준화
     seed:  가중치 초기화와 샘플 순서
     """
+    _C.integer('epochs', epochs, lo=0)
+    _C.nonneg('lr', lr)
+    _C.nonneg('wd', wd)
+    _C.integer('batch', batch)
     dev = B.check(device) if device is not None else B.default_device()
     Xtr, Xte = _np(Xtr).astype(np.float32), _np(Xte).astype(np.float32)
     ytr, yte = B.labels(ytr), B.labels(yte)

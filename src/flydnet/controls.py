@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+from . import _check as _C
 import itertools
 import math
 import time
@@ -306,6 +307,8 @@ def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None 
     ceiling:   모든 점수가 이 이상이면 '과제가 너무 쉬움' 경고 (None이면 안 함)
     check_repeat: 실제 회로·첫 seed를 한 번 더 돌려 재현되는지 확인 (실행 한 번 추가)
     """
+    _C.optional(_C.unit, 'ceiling', ceiling)
+    _C.nonneg('floor_margin', floor_margin)
     controls = [_as_control(c) for c in controls]
     if not controls:
         raise ValueError("대조군이 없음 - 예: controls=['shuffled', 'randomized']")

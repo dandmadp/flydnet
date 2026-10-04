@@ -10,6 +10,7 @@ torch판(flydnet.torch.KCExpansion)과 투영의 무작위 선택은 다름 (난
 """
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 from .circuit import Circuit
@@ -33,6 +34,7 @@ class KCExpansion(Tissue):
     def __init__(self, circuit: Circuit, n_in: int | None = None, pre: str = "PN", post: str = "KC",
                  k_in: int = 20, k_frac: float = 0.05, center: bool = True, binary: bool = False,
                  projection: str = "sparse", seed: int = 0, device: str | None = None):
+        _C.unit('k_frac', k_frac, lo_open=True)
         super().__init__()
         dev = B.check(device) if device is not None else B.default_device()
         P, K = circuit.groups[pre], circuit.groups[post]

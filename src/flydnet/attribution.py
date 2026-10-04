@@ -18,6 +18,7 @@ score(layer, seed) -> 스칼라 Signal: 설명할 값 (예: 정답 클래스 로
 """
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 import pandas as pd
 
@@ -99,6 +100,7 @@ def explain(score, layer, by: str | None = None, pathways: bool = False, verify:
     pathways: 연결 종류(by 이름 pre > post)별 기여도 (연결마다 기울기 - 전체 뇌면 메모리가 더 듦)
     verify:   예측이 큰 유형 k개 + 나머지(예측 0 제외)에서 순위를 고르게 k개를 실제로 꺼서 확인 (k x 2 x seed 수 만큼 순전파)
     seeds:    정수(개수) 또는 목록. 예측·확인 모두 seed 평균"""
+    _C.integer('verify', verify, lo=0)
     from . import genetics as G
     if not hasattr(layer, "_probe"):
         raise TypeError("ConnectomeLayer에서만 (fd.ConnectomeLayer)")

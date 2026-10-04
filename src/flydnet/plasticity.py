@@ -14,6 +14,7 @@ DA_c = 출력 c를 담당하는 도파민 뉴런의 신호 (정답/오답에서 
 """
 from __future__ import annotations
 
+from . import _check as _C
 import json
 
 import numpy as np
@@ -72,6 +73,9 @@ class DopamineReadout(_Saveable):
         ltp     : 정답 출력에 보상 도파민 (항상)
         binary  : True면 KC 활동을 켜짐/꺼짐(0/1)으로
         """
+        _C.integer('n_in', n_in)
+        _C.integer('n_classes', n_classes)
+        _C.nonneg('lr', lr)
         if mode not in self.MODES:
             raise ValueError(mode)
         self.mode, self.lr, self.binary, self.homeostasis = mode, lr, binary, homeostasis
@@ -182,6 +186,9 @@ class AssocReadout(DopamineReadout):
 
     def __init__(self, n_in: int, n_classes: int, per_class: int = 1, binary: bool = False,
                  device: str | None = None):
+        _C.integer('n_in', n_in)
+        _C.integer('n_classes', n_classes)
+        _C.integer('per_class', per_class)
         self.n_classes, self.k, self.binary = n_classes, per_class, binary
         self.mode, self.homeostasis, self.lr = "assoc", False, 0.0
         self.device = B.check(device) if device is not None else B.default_device()
@@ -198,4 +205,5 @@ class AssocReadout(DopamineReadout):
         return recall(a, self.W, self.count).reshape(len(a), self.n_classes, self.k).max(axis=2)
 
     def step(self, X, y, classes=None):
+        """정답 클래스의 원형만 강화 (classes는 학습에 영향 없음 - 예측의 경쟁 범위에만 쓰임: predict(X, classes))"""
         reinforce_(self.W, self.count, self.activity(X), y, self.k)

@@ -17,6 +17,7 @@ score(layer, seed) -> 값 하나인 Signal.
 """
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 import pandas as pd
 
@@ -69,6 +70,7 @@ class GradCheck:
 
 def gradcheck(score, layer, eps: float = 0.05, seed: int = 0, min_edges: int = 1, seeds=None) -> GradCheck:
     """연결 종류마다 역전파 기울기 대 유한 차분 (seeds면 그 seed들의 평균 출력으로). layer는 trainable인 ConnectomeLayer"""
+    _C.pos('eps', eps)
     seed_list = [seed] if seeds is None else (list(range(seeds)) if isinstance(seeds, int) else list(seeds))
     if not getattr(layer, "trainable", False):
         raise ValueError("학습하는 연결이 있는 ConnectomeLayer에서만 (trainable=...)")

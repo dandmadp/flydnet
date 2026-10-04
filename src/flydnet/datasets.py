@@ -1,6 +1,7 @@
 """시험용 데이터 (자체 엔진판, torch 없음, 결과는 numpy). torch판(flydnet.torch)과 난수 생성기가 달라 값은 다름"""
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 
@@ -13,6 +14,9 @@ def synthetic_odors(n_classes: int, n_glomeruli: int, n_train: int, n_test: int,
     샘플:     클래스의 원형 하나 × exp(N(0, noise)) + |N(0, add_noise)|
     반환: (Xtr, ytr, Xte, yte), X는 (n, n_glomeruli) float32, 클래스당 n_train / n_test 개
     """
+    _C.integer('n_classes', n_classes)
+    _C.integer('n_glomeruli', n_glomeruli)
+    _C.nonneg('noise', noise)
     rng = np.random.default_rng(seed)
     P = n_classes * protos_per_class
     on = rng.random((P, n_glomeruli)) < active_frac

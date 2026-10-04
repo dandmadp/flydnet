@@ -30,6 +30,7 @@ step 안에서는 Signal 연산(+, *, exp, where, fire ...)만 쓰면 역전파�
 """
 from __future__ import annotations
 
+from . import _check as _C
 import numpy as np
 
 from .ganglion.physiology import fire
@@ -95,6 +96,7 @@ class LIF(NeuronModel):
     state = ("V", "G", "refr")
 
     def __init__(self, slope: float = 10.0):
+        _C.pos('slope', slope)
         super().__init__(slope=slope)
 
     def init(self, ctx):
@@ -133,6 +135,9 @@ class Izhikevich(NeuronModel):
 
     def __init__(self, a: float = 0.02, b: float = 0.2, c: float = -65.0, d: float = 8.0, tau_syn: float = 5.0,
                  gain: float = 1.0, slope: float = 1.0):
+        _C.pos('tau_syn', tau_syn)
+        _C.pos('slope', slope)
+        _C.finite('gain', gain)
         super().__init__(a=a, b=b, c=c, d=d, tau_syn=tau_syn, gain=gain, slope=slope)
 
     def init(self, ctx):

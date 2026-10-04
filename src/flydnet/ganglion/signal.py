@@ -332,7 +332,8 @@ class Signal:
         if out is not None:
             raise TypeError("Signal.mean은 out=을 받지 않음")
         n = self.data.size if axis is None else int(np.prod([self.shape[a] for a in np.atleast_1d(axis)]))
-        return self.sum(axis, keepdims) / float(n)               # x (1/n)보다 정확 (float32에서 1/3 등의 반올림 오차)
+        out = self.sum(axis, keepdims) / float(n)                # x (1/n)보다 정확 (float32에서 1/3 등의 반올림 오차)
+        return out if dtype is None else out.astype(dtype)      # numpy처럼 결과 자료형 지정
 
     def min(self, axis=None, keepdims: bool = False):
         """최솟값 (같은 값이 여럿이면 기울기를 나눠 가짐)"""
