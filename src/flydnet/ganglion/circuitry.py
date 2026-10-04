@@ -374,6 +374,8 @@ class ConnectomeLayer(Tissue):
             rates = np.zeros((batch, self.n_in), np.float32)
         if seed is not None and not (isinstance(seed, (int, np.integer)) and not isinstance(seed, bool)):
             raise TypeError(f"seed는 정수: {seed!r}")
+        if seed is not None and seed < 0:
+            raise ValueError(f"seed는 0 이상: {seed}")
         if np.ndim(rates.data if isinstance(rates, Signal) else rates) == 1:   # 시료 하나 (n_in,) → 출력도 (n_out,)
             one = rates[None] if isinstance(rates, Signal) else np.asarray(rates)[None]
             res = self.forward(one, seed=seed, return_all=return_all, record=record)

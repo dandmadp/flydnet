@@ -169,7 +169,7 @@ def test_compare_errors_have_context():
         fd.compare(lambda circ, s: 1 / 0 if "shuffled" in circ.name else 0.5, c, seeds=2, verbose=False)
     with pytest.raises(ValueError, match="nan"):
         fd.compare(lambda circ, s: float("nan"), c, seeds=2, verbose=False)
-    with pytest.raises(RuntimeError, match="xy 모양"):
+    with pytest.raises(ValueError, match="xy 모양"):
         fd.compare(lambda circ, s: 0.5, c, controls=[fd.controls.Local(np.zeros((3, 2)), 2)], seeds=2, verbose=False)
 
 

@@ -138,6 +138,8 @@ def hash_uniform(xp, seed: int, step: int, shape) -> object:
 # ─────────────── 발화 · 억제 ───────────────
 def fire(v, threshold: float = 0.0, slope: float = 10.0) -> Signal:
     """발화: v > threshold면 1. 역전파는 g / (1 + slope·|v - threshold|)² (대리 기울기, SuperSpike)"""
+    from .. import _check as _C
+    _C.pos("slope", slope)
     v = as_signal(v)
     d = v.data - threshold
     out = (d > 0).astype(v.data.dtype)
@@ -149,10 +151,15 @@ def inhibit(x, k: int | None = None, frac: float | None = None) -> Signal:
     k번째 값과 같은 값이 여럿이면 모두 남음"""
     if (k is None) == (frac is None):
         raise ValueError("k와 frac 중 하나만")
+    from .. import _check as _C
+    if frac is not None:
+        _C.unit("frac", frac, lo_open=True)
+    else:
+        _C.integer("k", k)
     x = as_signal(x)
     n = x.shape[-1]
     k = int(round(frac * n)) if k is None else int(k)
-    k = max(1, min(n, k))
+    k = max(1, min(n, k))                                            # frac이 아주 작으면 1개, k가 뉴런 수보다 크면 전부
     xp = x.xp
     kth = -xp.partition(-x.data, k - 1, axis=-1)[..., k - 1:k]   # k번째로 큰 값
     m = x.data >= kth
@@ -174,7 +181,14 @@ def surprise(logits, y) -> Signal:
     """놀람 = 정답 확률의 -log, 묶음 평균 (교차 엔트로피, F.cross_entropy). y: 정수 클래스 배열"""
     logits = as_signal(logits)
     xp = logits.xp
-    y = B.to(B.check_labels(y, logits.shape[-1]), logits.device)
+    if logits.ndim != 2:
+        raise ValueError(f"logits는 (시료, 클래스) 2차원: {logits.shape} - 시료 하나면 logits.reshape(1, -1)")
+    yl = B.check_labels(y, logits.shape[-1])
+    if yl.ndim != 1 or len(yl) != logits.shape[0]:
+        raise ValueError(f"라벨 {yl.shape}과 로짓의 시료 수 {logits.shape[0]}가 다름")
+    if len(yl) == 0:
+        raise ValueError("빈 배치 (시료 0개) - 손실이 정의되지 않음")
+    y = B.to(yl, logits.device)
     lp = log_softmax(logits)
     picked = lp[xp.arange(len(y)), y]
     return -picked.mean()

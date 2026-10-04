@@ -130,6 +130,7 @@ def driver(circuit, group: str | None = None, root_ids=None, name: str | None = 
 def lines(circuit, by: str | None = None, min_size: int = 1, within: Line | None = None) -> dict[str, Line]:
     """주석 열 by의 값마다 드라이버 (GAL4 모음). by="group"이면 회로 그룹마다, None이면 cell_type 주석이 있으면 그것,
     없으면 group. within을 주면 그 집단 안에서만"""
+    _C.integer('min_size', min_size)
     from .attribution import default_by
     by = by or default_by(circuit)
     if by == "group":
@@ -303,6 +304,10 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     effector: "silence" / "block" / "activate"
     반환 표: 집단, 뉴런 수, 기준 평균, 조작 평균, 변화, 변화 비율, p (부호 뒤집기 순열 검정),
             p_holm (집단 수만큼 여러 번 시험한 것을 보정), 변화가 큰 순. seed 6개 미만이면 p < 0.05가 불가능해 경고"""
+    if hasattr(seeds, "__len__") and not len(seeds):
+        raise ValueError("seeds 목록이 비어 있음")
+    if not hasattr(seeds, "__len__"):
+        _C.integer("seeds", seeds)
     _C.pos('hz', hz)
     from ._console import say
     from .controls import sign_flip_p

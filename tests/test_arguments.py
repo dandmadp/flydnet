@@ -111,3 +111,99 @@ def test_valid_numpy_scalars_accepted():
 def test_mean_dtype_honored():
     s = fd.Signal(np.ones((2, 3), np.float32))
     assert s.mean(dtype=np.float64).data.dtype == np.float64 and s.mean().data.dtype == np.float32
+
+
+# ─────────────── 2차: 1차 표에 없던 공개 함수 ───────────────
+G = fd.genetics
+BAD2 = {"pos": [0, -1, float("nan"), float("inf")], "int_pos": [0, -1, 2.5, "3"], "group": ["없는그룹", 3]}
+mb = None
+
+
+def _mb():
+    global mb
+    if mb is None:
+        mb = fd.flywire()
+    return mb
+
+
+TABLE2 = [
+    ("Neuropil train", lambda v: fd.Neuropil(c, "IN", "H", train=v, device="cpu"), ["foo", 3]),
+    ("Neuropil init", lambda v: fd.Neuropil(c, "IN", "H", init=v, device="cpu"), ["foo", 3, None]),
+    ("Neuropil pre 그룹", lambda v: fd.Neuropil(c, v, "H", device="cpu"), "group"),
+    ("Projection seed", lambda v: fd.Projection(3, 2, seed=v, device="cpu"), [1.5, "a"]),
+    ("Circuit.shuffled seed", lambda v: c.shuffled(seed=v), [1.5, "a"]),
+    ("Circuit.shuffled pairs 없는 종류", lambda v: c.shuffled(pairs=[v]), ["Q>Z"]),
+    ("Circuit.shuffled local 반경", lambda v: c.shuffled(local=(np.random.rand(c.N, 2), v)), "pos"),
+    ("Circuit.randomized seed", lambda v: c.randomized(seed=v), [1.5, "a"]),
+    ("Circuit.subset 없는 그룹", lambda v: c.subset([v]), ["없는그룹"]),
+    ("Circuit.with_sign sign", lambda v: c.with_sign(["IN"], v), [0, 2, -3, 0.5]),
+    ("Circuit.with_sign 없는 그룹", lambda v: c.with_sign([v], 1), ["없는그룹"]),
+    ("Circuit.regroup 범위 밖", lambda v: c.regroup({"x": [v]}), [999, -1]),
+    ("from_edges weight 길이", lambda v: fd.Circuit.from_edges([0, 1], [1, 2], [1.0] * v), [1, 3]),
+    ("driver 없는 그룹", lambda v: G.driver(c, group=v), ["없는그룹"]),
+    ("lines min_size", lambda v: G.lines(c, min_size=v), "int_pos"),
+    ("activate hz", lambda v: G.activate(L(inputs=None), G.driver(c, group="H"), hz=v), "pos"),
+    ("mosaic by", lambda v: G.mosaic(L(), by=v), ["없는열", 3]),
+    ("screen effector", lambda v: G.screen(lambda l, s: 1.0, L(), G.lines(c), effector=v, seeds=2, verbose=False), ["foo"]),
+    ("screen seeds", lambda v: G.screen(lambda l, s: 1.0, L(), G.lines(c), seeds=v, verbose=False), [0, -1, 1.5]),
+    ("ThreeFactor feedback", lambda v: fd.ThreeFactor(L(trainable=True), feedback=v), ["foo", 3]),
+    ("ThreeFactor seed", lambda v: fd.ThreeFactor(L(trainable=True), seed=v), [1.5, "a"]),
+    ("tune candidates 범위 밖", lambda v: fd.tune(lambda l, s: l(X, seed=s).sum(), L(trainable=True, share="pair"),
+                                               candidates=(v,), verbose=False), [0, -1, 2.0, "x"]),
+    ("gradcheck seeds", lambda v: fd.gradcheck(lambda l, s: l(X, seed=s).sum(), L(trainable=True, share="pair"), seeds=v), [0, -1]),
+    ("compare seeds", lambda v: fd.compare(lambda cc, s: 0.5 + 0.01 * s, c, seeds=v, verbose=False), [1.5, "a", -3]),
+    ("compare chance", lambda v: fd.compare(lambda cc, s: 0.5 + 0.01 * s, c, seeds=3, chance=v, verbose=False), [-0.1, 1.5, float("nan")]),
+    ("compare 대조군 이름", lambda v: fd.compare(lambda cc, s: 0.5, c, controls=[v], seeds=3, verbose=False), ["shuffle", 3]),
+    ("Local radius", lambda v: fd.controls.Local(np.random.rand(c.N, 2), v), "pos"),
+    ("Local xy 모양", lambda v: fd.compare(lambda cc, s: 0.5, c, controls=[fd.controls.Local(np.random.rand(v, 2), 1.0)], seeds=3, verbose=False), [3]),
+    ("door_odors min_measured", lambda v: fd.door_odors(fd.Glomeruli(_mb(), device="cpu").glomeruli, min_measured=v), [-1, 2.5]),
+    ("biconditional_mixtures n", lambda v: fd.biconditional_mixtures(np.random.rand(10, 5), [(0, 1, 2, 3)], v), [0, -1, 2.5]),
+    ("drifting_grating frames", lambda v: fd.drifting_grating(np.random.rand(10, 2), [0], t_ms=50, frames=v), "int_pos"),
+    ("drifting_grating t_ms", lambda v: fd.drifting_grating(np.random.rand(10, 2), [0], t_ms=v, frames=5), "pos"),
+    ("drifting_grating wavelength", lambda v: fd.drifting_grating(np.random.rand(10, 2), [0], t_ms=50, frames=5, wavelength=v), "pos"),
+    ("column_map smooth", lambda v: fd.column_map(fd.visual_circuit(), smooth=v), [-1, 2.5]),
+    ("Glomeruli 없는 그룹", lambda v: fd.Glomeruli(_mb(), group=v, device="cpu"), ["없는그룹"]),
+    ("KCExpansion 없는 그룹", lambda v: fd.KCExpansion(_mb(), pre=v, device="cpu"), ["없는그룹"]),
+    ("RateEncoder seed", lambda v: fd.RateEncoder(6, 4, seed=v, device="cpu"), [1.5, "a"]),
+    ("evaluate batch", lambda v: fd.evaluate(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], batch=v), "int_pos"),
+    ("train schedule", lambda v: fd.train(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], schedule=v, epochs=1, verbose=False), ["linear", 3]),
+    ("train val 모양", lambda v: fd.train(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], val=v, epochs=1, verbose=False), [(X,), (X, [0, 1])]),
+    ("Connectome forward seed 음수", lambda v: L()(X, seed=v), [-1]),
+    ("Connectome record 실수", lambda v: L()(X, record=v), [[0.5], ["a"]]),
+    ("Connectome input_mode", lambda v: L(input_mode=v), ["foo", 3]),
+    ("Connectome trainable 문자열 하나", lambda v: L(trainable=v), ["IN>H"]),
+    ("Connectome timing", lambda v: L(timing=v), ["foo", 3]),
+    ("Connectome v_init", lambda v: L(v_init=v), ["foo", 3]),
+    ("Connectome neuron", lambda v: L(neuron=v), ["foo", 3]),
+    ("calibrate 입력 모양", lambda v: L(outputs=("H", "O")).calibrate(np.ones((2, v), np.float32), {"H": 10}), [5]),
+    ("Homeostasis 0차원", lambda v: fd.Homeostasis()(np.float32(v)), [3.0]),
+]
+
+ALLOWED = {("compare chance", -0.1), ("compare chance", 1.5)}                  # 점수가 정확도가 아닐 수 있어 범위는 열어 둠
+CASES2 = [(name, f, v) for name, f, rule in TABLE2 for v in (BAD2[rule] if isinstance(rule, str) else rule)
+          if not (name == "compare chance" and isinstance(v, float) and (name, v) in ALLOWED)]
+DATA2 = ("door_odors", "Glomeruli", "KCExpansion", "column_map")
+
+
+@pytest.mark.parametrize("name,f,v", CASES2, ids=[f"{n}={v!r}" for n, _, v in CASES2])
+def test_bad_argument_rejected_2(name, f, v):
+    if any(k in name for k in DATA2) and (missing("flywire") or missing("door")):
+        pytest.skip("데이터 없음")
+    with pytest.raises((ValueError, TypeError, KeyError, IndexError)):
+        f(v)
+
+
+@pytest.mark.parametrize("make,match", [
+    (lambda: fd.Signal(np.ones((3, 4), np.float32)).clip(5, 2), "lo"),
+    (lambda: fd.Signal(np.ones((3, 4), np.float32)).var(ddof=12), "ddof"),
+    (lambda: fd.ganglion.fire(fd.Signal(np.ones(3, np.float32)), 0.0, -1.0), "slope"),
+    (lambda: fd.ganglion.inhibit(np.ones((2, 5)), k=0), "k"),
+    (lambda: fd.surprise(fd.Signal(np.zeros((3, 2), np.float32)), [0, 1]), "시료 수"),
+    (lambda: fd.surprise(fd.Signal(np.zeros((0, 3), np.float32)), np.zeros(0, int)), "빈 배치"),
+    (lambda: fd.surprise(fd.Signal(np.zeros(3, np.float32)), [0]), "2차원"),
+    (lambda: fd.Activation("foo"), "relu"),
+    (lambda: fd.Pathway(3), "부를 수 있는"),
+])
+def test_op_argument_errors(make, match):
+    with pytest.raises((ValueError, TypeError), match=match):
+        make()

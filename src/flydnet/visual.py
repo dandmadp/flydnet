@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import _check as _C
 import numpy as np
 import scipy.sparse as sps
 
@@ -50,6 +51,7 @@ def column_map(circuit: Circuit, anchor: str = "Mi1", smooth: int = 3, columnar=
     3) 기둥 세포끼리 연결(시냅스 수 가중)을 따라 smooth번 이웃 평균 → 고르지 않은 대표 점을 다듬음
     4) anchor 좌표를 등방(공분산 = 단위행렬 배수)으로 맞추고, anchor 하나가 넓이 1을 차지하도록 크기 조정
        → 단위 ≈ 기둥 간격"""
+    _C.integer('smooth', smooth, lo=0)
     if circuit.pos is None:
         raise ValueError("회로에 뉴런 위치(pos)가 없음 (Circuit.from_flywire로 만든 회로 필요)")
     columnar = COLUMNAR if columnar is None else columnar
@@ -94,6 +96,10 @@ def drifting_grating(xy, directions, t_ms: float, frames: int, wavelength: float
     """움직이는 사인파 격자. 밝기 (B, frames, n), -contrast ~ +contrast (onset 전은 0 = 회색)
     xy: (n, 2) 시야 좌표 (기둥 간격 단위) / directions: (B,) 도 (0 = +x 방향)
     wavelength: 기둥 수 / temporal_hz: 한 점에서 밝기가 바뀌는 빈도 (속도 = wavelength × temporal_hz 기둥/s)"""
+    _C.pos('t_ms', t_ms)
+    _C.integer('frames', frames)
+    _C.pos('wavelength', wavelength)
+    _C.finite('temporal_hz', temporal_hz)
     xy = np.nan_to_num(np.asarray(xy, np.float32))
     th = np.asarray(directions, np.float32).reshape(-1) * np.float32(np.pi / 180)
     B = len(th)

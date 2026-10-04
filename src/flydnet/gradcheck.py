@@ -125,6 +125,9 @@ def tune_surrogate(score, layer, candidates=("auto", 1.0, 0.3, 0.1, 0.03), eps: 
     """surrogate_damp 후보마다 gradcheck → 방향 일치(cos)가 가장 높은 값 (같으면 크기 비율이 1에 가까운 것).
     apply면 layer에 적용. 기준(차분)이 어느 후보에서도 성립하지 않으면 고르지 않고 None (층은 그대로) -
     그때는 input_mode="poisson"과 seeds=16 등으로 평균 출력의 기울기를 기준으로 다시"""
+    for d in candidates:                                       # "auto" 또는 (0, 1]의 감쇠 값
+        if d != "auto":
+            _C.unit("candidates의 값", d, lo_open=True)
     from ._console import say
     old = layer.surrogate_damp
     best, key, reliable = None, None, False

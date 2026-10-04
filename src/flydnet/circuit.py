@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import _check as _C
 import numpy as np
 import pandas as pd
 
@@ -358,6 +359,7 @@ class Circuit:
                  받는 뉴런이 원래 다른 아형으로 가던 연결도 받게 됨 → 아형별 배선 차이(방향 구조)가 사라짐.
                  pairs/exclude는 별칭이 아닌 원래 그룹 이름 기준
         """
+        _C.optional(_C.pos, 'local 반경', local[1] if local is not None else None)
         rng = np.random.default_rng(seed)
         g = self.group_of()
         post = self.post.copy()

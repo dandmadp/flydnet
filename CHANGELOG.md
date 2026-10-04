@@ -17,6 +17,15 @@
   - `checkpoint_every` 0·실수·문자열, 음수 발화율·학습률·잡음, 범위 밖 비율(`k_frac`, `inhibitory`, `beta`, `p`)
   - 정적 분석(받기만 하고 안 쓰는 인자): `Signal.mean(dtype=)`이 무시되던 것을 적용. 234개 함수·메서드의 문서와 실제 인자 일치 확인
   - 예제 22개 다시 끝까지 실행 (검증이 정상 사용을 막지 않음)
+- **연산·인자 점검 2차**: 1차 표에 없던 공개 함수 49개 인자 (`argfuzz` 2차)에서 35건이 조용히 통과 → 33건 오류로
+  (`compare(chance=)` 범위 밖 2건은 손실 기준값도 되므로 의도적으로 허용). 조용히 틀린 값을 내던 연산:
+  - `Signal.var(ddof)`: ddof ≥ 원소 수이면 1로 나눠 틀린 값 → 오류. `clip(lo > hi)` → 오류
+  - `surprise`(교차 엔트로피): **라벨 수 ≠ 시료 수여도 조용히 0.693**을 돌려주던 것, 빈 배치(NaN), 1차원 로짓 → 오류
+  - `fire(slope ≤ 0)` (기울기 부호 뒤집힘), `inhibit(k=0, frac>1)`, 음수 forward `seed` → 오류
+  - `Pathway`에 부를 수 없는 것을 넣으면 만들 때 바로 오류. `Activation` 종류 오류 메시지
+  - 그 밖: `screen(seeds)`·`lines(min_size)`·`activate(hz)`·`tune(candidates)`·`Local(radius)`·`drifting_grating`·
+    `column_map(smooth)`·`door_odors`·`biconditional_mixtures`·`evaluate(batch)` 등 검증
+  - `compare`: 대조군을 만들다 난 인자 오류는 종류(ValueError 등)를 유지 (예전: 모두 RuntimeError)
 - **수학 연산·자료구조 반복 검토** (`tests/fuzz_ops.py`, `tests/fuzz_sparse.py`): 연산 35가지를 무작위 모양·축·브로드캐스팅으로
   값(numpy float64 기준)과 기울기(수치 미분) 대조 - CPU 약 12,000번·GPU 약 2,600번, 희소 배선·전용 GPU 커널을 밀집 행렬과
   대조 - 약 500번. 찾아서 고친 것:

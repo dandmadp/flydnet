@@ -36,6 +36,7 @@ def _rows(X):
 
 def evaluate(model, X, y, batch: int = 256, seed: int = 10 ** 6) -> float:
     """정확도 (역전파 경로 없이, 배치로)"""
+    _C.integer('batch', batch)
     X = _rows(X)
     y = B.labels(y)
     if len(X) != len(y):

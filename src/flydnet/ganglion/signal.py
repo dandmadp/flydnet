@@ -304,6 +304,8 @@ class Signal:
         return Signal(self.xp.abs(self.data))._link((self,), lambda g: (g * s,))
 
     def clip(self, lo=None, hi=None):
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError(f"clip: lo({lo})가 hi({hi})보다 큼")
         x = self.data
         m = self.xp.ones_like(x, dtype=bool)
         if lo is not None:
@@ -342,6 +344,8 @@ class Signal:
     def var(self, axis=None, keepdims: bool = False, ddof: int = 0):
         """분산 (ddof=1이면 표본 분산)"""
         n = self.data.size if axis is None else int(np.prod([self.shape[a] for a in np.atleast_1d(axis)]))
+        if not 0 <= ddof < n:
+            raise ValueError(f"ddof({ddof})는 0 이상, 모으는 원소 수({n})보다 작아야 함")
         d = self - self.mean(axis=axis, keepdims=True)
         return (d * d).sum(axis=axis, keepdims=keepdims) / float(max(n - ddof, 1))
 

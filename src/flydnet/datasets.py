@@ -45,6 +45,7 @@ def door_odors(glomeruli, data_dir=None, min_measured: int = 20):
     반환 dict: X (n_odors, n_glomeruli) 반응 - 자발 발화(SFR), 0 아래는 0 / measured 측정 여부 /
               names, classes (화학 계열), inchikey. min_measured 이상 사구체가 측정된 냄새만
     """
+    _C.integer('min_measured', min_measured, lo=0)
     import pandas as pd
     from .data import require
 
@@ -77,6 +78,7 @@ def biconditional_mixtures(X0, sets, n: int, noise: float = 0.5, add_noise: floa
     혼합물 = 포화(Σ 성분 × exp(N(0, noise)) + |N(0, add_noise)|), 포화(x) = x / (x + sat)
     반환: (x, y, 묶음 번호), 묶음·혼합물마다 n개. rng: numpy Generator (없으면 seed로 만듦)
     """
+    _C.integer('n', n)
     rng = rng if rng is not None else np.random.default_rng(seed)
     X0 = np.asarray(X0, np.float32)
     xs, ys, ps = [], [], []

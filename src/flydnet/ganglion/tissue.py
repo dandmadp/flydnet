@@ -209,6 +209,9 @@ class Pathway(Tissue):
     def __init__(self, *tissues):
         super().__init__()
         for i, t in enumerate(tissues):
+            if not callable(t):
+                raise TypeError(f"Pathway의 {i}번째가 부를 수 있는 것(구조물·함수)이 아님: {t!r}")
+        for i, t in enumerate(tissues):
             setattr(self, str(i), t)
         self._order = list(tissues)
 
@@ -422,7 +425,7 @@ class Activation(Tissue):
     def __init__(self, kind: str = "relu"):
         super().__init__()
         if kind not in ("relu", "tanh", "sigmoid"):
-            raise ValueError(kind)
+            raise ValueError(f"Activation 종류는 'relu', 'tanh', 'sigmoid': {kind!r}")
         self.kind = kind
 
     def forward(self, x):
