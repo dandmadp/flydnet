@@ -41,6 +41,8 @@ def evaluate(model, X, y, batch: int = 256, seed: int = 10 ** 6) -> float:
     y = B.labels(y)
     if len(X) != len(y):
         raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
+    if len(X) == 0:
+        raise ValueError("데이터가 비어 있음 (시료 0개)")
     hits = 0
     with quiescent():
         for i in range(0, len(X), batch):
@@ -66,12 +68,19 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
     y = B.labels(y)
     if len(X) != len(y):
         raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
+    if len(X) == 0:
+        raise ValueError("데이터가 비어 있음 (시료 0개)")
     if not (isinstance(batch, (int, np.integer)) and batch >= 1):
         raise ValueError(f"batch는 1 이상의 정수: {batch}")
     if not (isinstance(epochs, (int, np.integer)) and epochs >= 0):
         raise ValueError(f"epochs는 0 이상의 정수: {epochs}")
     if schedule not in ("cosine", "constant"):
         raise ValueError(f"schedule은 'cosine' 또는 'constant': {schedule!r}")
+    if val is not None:                                             # 첫 에폭을 다 돈 뒤에 실패하지 않게 미리
+        if not (isinstance(val, (tuple, list)) and len(val) == 2):
+            raise ValueError("val은 (X, y) 두 개")
+        if len(val[0]) != len(B.labels(val[1])) or len(val[0]) == 0:
+            raise ValueError(f"val의 X와 y 개수가 다르거나 비어 있음: {len(val[0])} 대 {len(B.labels(val[1]))}")
     if synapses is None:
         if not hasattr(model, "named_synapses"):
             raise TypeError("함수 모델이면 synapses=[...]를 줄 것")

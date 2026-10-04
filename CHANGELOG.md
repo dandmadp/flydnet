@@ -17,6 +17,42 @@
   - `checkpoint_every` 0·실수·문자열, 음수 발화율·학습률·잡음, 범위 밖 비율(`k_frac`, `inhibitory`, `beta`, `p`)
   - 정적 분석(받기만 하고 안 쓰는 인자): `Signal.mean(dtype=)`이 무시되던 것을 적용. 234개 함수·메서드의 문서와 실제 인자 일치 확인
   - 예제 22개 다시 끝까지 실행 (검증이 정상 사용을 막지 않음)
+- **라이브러리 전체 코드 검토** (자체 엔진 → 회로 → 기능 모듈 → torch판, 약 8,000줄. 역전파 공식은 손으로 다시 유도해 대조,
+  torch판은 같은 입력으로 자체 엔진과 18항목 대조 - 모두 일치). 고친 것 (회귀 테스트 `tests/test_review.py`):
+  - 자동 미분: **두 손실이 중간값을 공유하면 두 번째 retrograde가 기울기를 조용히 버리던 것** → 오류 (한 번에 더하거나
+    keep=True). `retrograde(retro=)` 모양이 다르면 오류 (예전: 브로드캐스트된 틀린 기울기). `quiescent()` 안에서
+    역전파해도 체크포인트 구간 기울기가 0이 되지 않게. `max`의 역전파가 float64로 바뀌던 것. `clip`에 배열 경계
+  - **그룹별 `t_mbr`가 `tau`(5 ms)와 같으면 출력이 0 Hz** (정확한 적분 계수가 0/0) → 안정적인 급수로. 5.001 ms면 9% 틀렸음
+  - **RateEncoder에 1차원 입력(시료 하나)을 주면 모두 max_rate** (특징 1개짜리 시료 n개로 봄) → 시료 하나로.
+    GlomerularEncoder·KCExpansion도 1차원·리스트·pandas를 받고 특징 수를 확인
+  - **explain·gradcheck가 학습 기울기(.retro)를 바꾸던 것**: explain 뒤 rule.step()이 explain의 기울기로 가중치를 바꿈 /
+    gradcheck는 쌓아 둔 기울기를 지움 → 둘 다 원래대로 둠
+  - 회로: `subset`이 오타 난 그룹을 조용히 빼던 것 → 오류. 그룹 밖 뉴런이 있으면 shuffled·randomized가 실패하고
+    summary에서 빠지던 것 → "?" 그룹. **저장하면 주석(meta)이 모두 문자열이 되어 `driver(gaba=True)`가 안 맞던 것** →
+    숫자·참거짓 유지, driver가 값 하나·숫자도 받음. `normalized`가 입력 0인 뉴런에서 NaN
+  - genetics: `activate(hz=NaN·inf)`가 자극을 조용히 없애던 것 → 오류. `screen`이 효과기를 붙일 수 없는 집단을
+    오래 돈 뒤에야 알리던 것 → 시작 전에. Holm 보정이 NaN p를 1로 바꾸던 것
+  - `sign_flip_p`가 1e-8보다 작은 단위의 점수를 모두 "차이 없음"(p = 1)으로 보던 것 → 단위와 무관
+  - `fd.graphs.erdos_renyi`가 노드가 적으면 연결을 덜 만들 수 있던 것 → 정확히 (자기 연결을 뺀 칸에서 바로 뽑음).
+    `layered([n])`·확률 범위 밖·없는 그룹 쌍 → 오류
+  - `forward(batch=0)`, `calibrate(iters·step·tol)`, 들어오는 연결이 없는 그룹의 calibrate, `train(val=)` 모양(첫 에폭
+    뒤에야 실패), 빈 데이터의 `extract`·`train_linear`, `Projection`이 1차원·3차원 입력(nn.Linear처럼)
+  - `fd.download(path=...)`가 묶음이 여러 개면 path를 조용히 무시하고 기본 위치(C 드라이브)에 받던 것 → path/<묶음>
+  - torch판 `gains`의 오타가 조용히 무시되던 것 → 오류
+  - **테스트 자체의 버그**: 인자 점검 표 10줄이 테스트 줄의 호출 실수(인자 중복)로 TypeError가 나서 검사하려던 값은
+    한 번도 시험되지 않았음 → 고치고, 이런 실수는 테스트 실패로 잡히게 함. 그 줄들이 실제 빈틈 8개를 찾음
+- **전체 점검 3차** (정적 분석, 저장·불러오기 왕복 13설정 x CPU/GPU 4쌍, CPU·GPU 일치 14기능, 경계 입력 31가지, 회로 변환 성질):
+  - **Izhikevich 기울기 폭발**: v^2 항의 기울기가 문턱 근처에서 스텝마다 1보다 커서 30 ms에 1e10, 방향도 틀림
+    (gradcheck cos -0.23) → 역전파에서만 그 기울기를 0 이하로 자름 (순전파 값은 그대로). cos +0.90, 크기 비율 0.59
+  - **LIF 플러그인을 여러 층이 함께 쓰면 기울기가 틀림** (최대 3%): init에서 계산한 상수를 모델 객체(self)에 둬서,
+    체크포인팅이 역전파 중에 step을 다시 부를 때 다른 층의 불응기를 씀 → 실행마다 새로 만드는 `ctx.cache`에.
+    사용자 정의 모델도 실행별 값은 `ctx.cache`에 (`fd.neurons` 설명)
+  - **ThreeFactor·STDP로 학습하면 mosaic이 조용히 꺼지던 것**: 역행성 경로 없이 돌아서 "학습 중이 아님"으로 판단됨 →
+    켜짐 (평가·`quiescent()`에서는 예전처럼 꺼짐). gradcheck의 수치 미분도 역전파 쪽과 같은 마스크로 비교
+  - `t_ms`가 `dt`의 배수가 아닐 때 발화율을 실제로 돈 시간으로 환산 (배수면 예전과 같은 값).
+    `count_from_ms`가 반올림으로 `t_ms`와 같아지면 오류 (0으로 나누기)
+  - `fd.train`·`fd.evaluate`에 빈 데이터 → 오류 (예전: ZeroDivisionError / 조용히 0.0), `record=[]` → 빈 기록,
+    `gradcheck(seeds=0)`은 계산 전에 오류
 - **연산·인자 점검 2차**: 1차 표에 없던 공개 함수 49개 인자 (`argfuzz` 2차)에서 35건이 조용히 통과 → 33건 오류로
   (`compare(chance=)` 범위 밖 2건은 손실 기준값도 되므로 의도적으로 허용). 조용히 틀린 값을 내던 연산:
   - `Signal.var(ddof)`: ddof ≥ 원소 수이면 1로 나눠 틀린 값 → 오류. `clip(lo > hi)` → 오류

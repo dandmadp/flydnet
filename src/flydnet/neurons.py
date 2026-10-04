@@ -21,7 +21,9 @@ step 안에서는 Signal 연산(+, *, exp, where, fire ...)만 쓰면 역전파�
     Signal(배열)로 값만 쓰고 기울기는 끊을 것. 발화는 fire(대리 기울기), 리셋은 where(fired, 상수, v)로 기울기를 끊음
   I_syn: 이번 스텝에 도착한 시냅스 입력 (연결 세기 x w_syn mV, 지연 t_dly 뒤) - LIF라면 전류 G에 더할 양
   I_ext: 입력 뉴런·활성화(fd.genetics.activate) 뉴런의 외부 자극 (스파이크 하나 = w_syn x f_poi mV, 다른 뉴런은 0)
-  ctx:   dt (ms), N, batch, inputs (외부 자극을 받는 뉴런 번호), p (층의 매개변수 dict), full(값), zeros()
+  ctx:   dt (ms), N, batch, inputs (외부 자극을 받는 뉴런 번호), p (층의 매개변수 dict), full(값), zeros(),
+         cache (이번 실행에만 쓰는 dict - init에서 미리 계산한 상수는 self가 아니라 여기에 둘 것: 같은 모델 객체를
+         여러 층이 함께 쓰거나, 체크포인팅이 역전파 중에 step을 다시 부를 때 다른 실행의 값이 섞이지 않게)
 저장: register한 모델은 layer.save / ConnectomeLayer.load로 다시 만들어짐 (매개변수는 __init__ 인자 그대로 저장)
 
 내장 모델
@@ -52,6 +54,7 @@ class Context:
 
     def __init__(self, xp, N, batch, dt, inputs, p):
         self.xp, self.N, self.batch, self.dt, self.inputs, self.p = xp, N, batch, dt, inputs, p
+        self.cache = {}                                              # 이번 실행 전용 (init에서 계산한 상수 등)
 
     def full(self, value, dtype=None) -> Signal:
         return Signal(self.xp.full((self.N, self.batch), value, dtype=dtype or self.xp.float32))
@@ -103,26 +106,26 @@ class LIF(NeuronModel):
         p = ctx.p
         rfc = np.full((ctx.N, 1), float(int(round(p["t_rfc"] / ctx.dt))), np.float32)
         rfc[np.asarray(_cpu(ctx.inputs))] = 0                        # 입력·활성화 뉴런은 불응기 없음 (Shiu et al.)
-        self._rfc_set = ctx.xp.asarray(rfc - 1)
         tm, tau, dt = p["t_mbr"], p["tau"], ctx.dt
-        self._ev = float(np.exp(-dt / tm))
-        self._gd = float(np.exp(-dt / tau))
-        self._eg = float(dt / tm * np.exp(-dt / tm)) if abs(tm - tau) < 1e-9 else float(tau / (tau - tm) * (self._gd - self._ev))
+        ev, gd = float(np.exp(-dt / tm)), float(np.exp(-dt / tau))
+        eg = float(dt / tm * np.exp(-dt / tm)) if abs(tm - tau) < 1e-9 else float(tau / (tau - tm) * (gd - ev))
+        ctx.cache["lif"] = (ctx.xp.asarray(rfc - 1), ev, gd, eg)          # self에 두면 층끼리 섞임 (Context 설명)
         return {"V": ctx.full(p["v_0"]), "G": ctx.zeros(), "refr": ctx.zeros()}
 
     def step(self, st, I_syn, I_ext, ctx):
         p, xp = ctx.p, ctx.xp
         V, G, refr = st["V"], st["G"], st["refr"]
+        rfc_set, ev, gd, eg = ctx.cache["lif"]
         act = refr.data <= 0
-        V1 = where(act, (V - p["v_0"]) * self._ev + G * self._eg + p["v_0"], V)
-        G1 = where(act, G * self._gd, G)
+        V1 = where(act, (V - p["v_0"]) * ev + G * eg + p["v_0"], V)
+        G1 = where(act, G * gd, G)
         spk = fire((V1 - p["v_th"]) * (1.0 / (p["v_th"] - p["v_rst"])), 0.0, self.params["slope"])
         G2 = where(act, G1 + I_syn, G1)                               # 불응기 중 도착한 입력은 버림
         V2 = V1 + I_ext
         fired = spk.data > 0
         V3 = where(fired, np.float32(p["v_rst"]), V2)
         G3 = where(fired, np.float32(0), G2)
-        refr = Signal(xp.where(fired, self._rfc_set, refr.data - 1))
+        refr = Signal(xp.where(fired, rfc_set, refr.data - 1))
         return {"V": V3, "G": G3, "refr": refr}, spk
 
 
@@ -148,7 +151,12 @@ class Izhikevich(NeuronModel):
         q, dt = self.params, ctx.dt
         v, u, g = st["v"], st["u"], st["g"]
         g = g * float(np.exp(-dt / q["tau_syn"])) + I_syn * q["gain"]
-        v1 = v + (v * v * 0.04 + v * 5.0 + 140.0 - u + g) * dt + I_ext
+        # 0.04 v^2 + 5 v: 값은 그대로, 역전파 기울기는 0.08 v + 5를 0 이하로 자름. 문턱 근처에서 양수라
+        # 스텝마다 1보다 큰 배율이 곱해져 기울기가 지수적으로 폭발함 (30 ms에 1e10, 방향도 틀림)
+        vd = v.data
+        slope = v.xp.minimum(vd * 0.08 + 5.0, 0).astype(vd.dtype)
+        quad = v * slope + Signal((vd * vd * 0.04 + vd * 5.0 - vd * slope).astype(vd.dtype))
+        v1 = v + (quad + 140.0 - u + g) * dt + I_ext
         u1 = u + (v * q["b"] - u) * (q["a"] * dt)
         spk = fire((v1 - 30.0) * (1.0 / 30.0), 0.0, q["slope"])
         fired = spk.data > 0

@@ -14,6 +14,8 @@ c = fd.Circuit(c.root_ids, c.groups, c.pre, c.post, c.weight * 4)
 X = np.random.default_rng(0).uniform(50, 200, (4, 6)).astype(np.float32)
 P = lambda **k: fd.Projection(6, 3, device="cpu", **k)
 L = lambda **k: fd.Connectome(c, "IN", "O", **dict(dict(t_ms=20, device="cpu"), **k))
+LHO = lambda **k: fd.Connectome(c, "IN", ("H", "O"), **dict(dict(t_ms=20, device="cpu"), **k))   # H도 출력 (calibrate)
+L0 = lambda **k: fd.Connectome(c, None, "O", **dict(dict(t_ms=20, device="cpu"), **k))   # 입력 그룹 없이 (activate로만)
 syn = lambda: fd.Projection(3, 2, device="cpu").synapses()
 NEEDS_DATA = ("Glomeruli", "KCExpansion", "door_task")
 
@@ -37,7 +39,7 @@ TABLE = [
     ("Connectome params t_rfc", lambda v: L(params={"t_rfc": v}), "nonneg"),
     ("Connectome params t_dly", lambda v: L(params={"t_dly": v}), "nonneg"),
     ("Connectome params f_poi", lambda v: L(params={"f_poi": v}), "nonneg"),
-    ("Connectome forward batch", lambda v: L(inputs=None)(None, batch=v), "int_pos"),
+    ("Connectome forward batch", lambda v: L0()(None, batch=v), "int_pos"),
     ("Plasticity rate", lambda v: fd.Plasticity(syn(), rate=v), "nonneg"),
     ("Plasticity momentum", lambda v: fd.Plasticity(syn(), momentum=v), "unit_open"),
     ("Plasticity decay", lambda v: fd.Plasticity(syn(), decay=v), "nonneg"),
@@ -62,14 +64,14 @@ TABLE = [
     ("extract batch", lambda v: fd.extract(L(), None, X, batch=v), "int_pos"),
     ("explain verify", lambda v: fd.explain(lambda l, s: l(X, seed=s).sum(), L(), verify=v), "int_nonneg"),
     ("compare ceiling", lambda v: fd.compare(lambda cc, s: 0.5 + s * 0.01, c, seeds=3, ceiling=v, verbose=False), "unit"),
-    ("screen hz", lambda v: fd.genetics.screen(lambda l, s: 1.0, L(inputs=None), fd.genetics.lines(c), effector="activate", hz=v, seeds=2, verbose=False), "pos"),
+    ("screen hz", lambda v: fd.genetics.screen(lambda l, s: 1.0, L0(), fd.genetics.lines(c), effector="activate", hz=v, seeds=2, verbose=False), "pos"),
     ("activate level", lambda v: fd.genetics.activate(L(neuron="graded"), fd.genetics.driver(c, group="H"), level=v), "finite"),
     ("mosaic p", lambda v: fd.genetics.mosaic(L(), p=v), "unit"),
     ("STDP a_plus", lambda v: fd.STDP(L(trainable=True), a_plus=v), "nonneg"),
     ("STDP tau_plus", lambda v: fd.STDP(L(trainable=True), tau_plus=v), "pos"),
     ("gradcheck eps", lambda v: fd.gradcheck(lambda l, s: l(X, seed=s).sum(), L(trainable=True, share="pair"), eps=v), "pos"),
-    ("calibrate iters", lambda v: L(outputs=("H", "O")).calibrate(X, {"H": 10}, iters=v), "int_nonneg"),
-    ("calibrate step", lambda v: L(outputs=("H", "O")).calibrate(X, {"H": 10}, step=v), "pos"),
+    ("calibrate iters", lambda v: LHO().calibrate(X, {"H": 10}, iters=v), "int_nonneg"),
+    ("calibrate step", lambda v: LHO().calibrate(X, {"H": 10}, step=v), "pos"),
     ("graphs.erdos_renyi p", lambda v: fd.graphs.erdos_renyi(20, v), "unit"),
     ("graphs.erdos_renyi n", lambda v: fd.graphs.erdos_renyi(v, 0.1), "int_pos"),
     ("graphs inhibitory", lambda v: fd.graphs.erdos_renyi(20, 0.1, inhibitory=v), "unit"),
@@ -85,12 +87,22 @@ TABLE = [
 CASES = [(name, f, v) for name, f, rule in TABLE for v in BAD[rule]]
 
 
+_CALL_BUG = ("multiple values for argument", "unexpected keyword argument", "positional argument")
+
+
+def _rejects(f, v, kinds):
+    """잘못된 값이 알기 쉬운 오류로 막히는지. 테스트 줄 자체의 호출 실수(인자 중복 등)로 난 TypeError는 통과로 치지 않음
+    (예전에 L(inputs=None)이 inputs를 두 번 넘겨, 검사하려던 값은 한 번도 시험되지 않았음)"""
+    with pytest.raises(kinds) as e:
+        f(v)
+    assert not any(k in str(e.value) for k in _CALL_BUG), f"테스트 줄의 호출 실수: {e.value}"
+
+
 @pytest.mark.parametrize("name,f,v", CASES, ids=[f"{n}={v!r}" for n, _, v in CASES])
 def test_bad_argument_rejected(name, f, v):
     if any(k in name for k in NEEDS_DATA) and (missing("flywire") or missing("door")):
         pytest.skip("데이터 없음")
-    with pytest.raises((ValueError, TypeError, KeyError)):
-        f(v)
+    _rejects(f, v, (ValueError, TypeError, KeyError))
 
 
 def test_lif_params_typo_and_threshold():
@@ -142,7 +154,7 @@ TABLE2 = [
     ("from_edges weight 길이", lambda v: fd.Circuit.from_edges([0, 1], [1, 2], [1.0] * v), [1, 3]),
     ("driver 없는 그룹", lambda v: G.driver(c, group=v), ["없는그룹"]),
     ("lines min_size", lambda v: G.lines(c, min_size=v), "int_pos"),
-    ("activate hz", lambda v: G.activate(L(inputs=None), G.driver(c, group="H"), hz=v), "pos"),
+    ("activate hz", lambda v: G.activate(L0(), G.driver(c, group="H"), hz=v), "pos"),
     ("mosaic by", lambda v: G.mosaic(L(), by=v), ["없는열", 3]),
     ("screen effector", lambda v: G.screen(lambda l, s: 1.0, L(), G.lines(c), effector=v, seeds=2, verbose=False), ["foo"]),
     ("screen seeds", lambda v: G.screen(lambda l, s: 1.0, L(), G.lines(c), seeds=v, verbose=False), [0, -1, 1.5]),
@@ -175,7 +187,7 @@ TABLE2 = [
     ("Connectome timing", lambda v: L(timing=v), ["foo", 3]),
     ("Connectome v_init", lambda v: L(v_init=v), ["foo", 3]),
     ("Connectome neuron", lambda v: L(neuron=v), ["foo", 3]),
-    ("calibrate 입력 모양", lambda v: L(outputs=("H", "O")).calibrate(np.ones((2, v), np.float32), {"H": 10}), [5]),
+    ("calibrate 입력 모양", lambda v: LHO().calibrate(np.ones((2, v), np.float32), {"H": 10}), [5]),
     ("Homeostasis 0차원", lambda v: fd.Homeostasis()(np.float32(v)), [3.0]),
 ]
 
@@ -189,8 +201,7 @@ DATA2 = ("door_odors", "Glomeruli", "KCExpansion", "column_map")
 def test_bad_argument_rejected_2(name, f, v):
     if any(k in name for k in DATA2) and (missing("flywire") or missing("door")):
         pytest.skip("데이터 없음")
-    with pytest.raises((ValueError, TypeError, KeyError, IndexError)):
-        f(v)
+    _rejects(f, v, (ValueError, TypeError, KeyError, IndexError))
 
 
 @pytest.mark.parametrize("make,match", [

@@ -17,6 +17,11 @@ def synthetic_odors(n_classes: int, n_glomeruli: int, n_train: int, n_test: int,
     _C.integer('n_classes', n_classes)
     _C.integer('n_glomeruli', n_glomeruli)
     _C.nonneg('noise', noise)
+    _C.integer('protos_per_class', protos_per_class)
+    _C.integer('n_train', n_train)
+    _C.integer('n_test', n_test)
+    _C.unit('active_frac', active_frac)
+    _C.nonneg('add_noise', add_noise)
     rng = np.random.default_rng(seed)
     P = n_classes * protos_per_class
     on = rng.random((P, n_glomeruli)) < active_frac
@@ -79,6 +84,9 @@ def biconditional_mixtures(X0, sets, n: int, noise: float = 0.5, add_noise: floa
     반환: (x, y, 묶음 번호), 묶음·혼합물마다 n개. rng: numpy Generator (없으면 seed로 만듦)
     """
     _C.integer('n', n)
+    _C.nonneg('noise', noise)
+    _C.nonneg('add_noise', add_noise)
+    _C.pos('sat', sat)                                               # 0이면 성분이 0인 사구체에서 0/0
     rng = rng if rng is not None else np.random.default_rng(seed)
     X0 = np.asarray(X0, np.float32)
     xs, ys, ps = [], [], []

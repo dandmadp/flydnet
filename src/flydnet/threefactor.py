@@ -26,6 +26,7 @@ import numpy as np
 from .ganglion import backend as B
 from .ganglion import kernels as K
 from .ganglion.signal import Signal, quiescent
+from .genetics import training
 
 
 class ThreeFactor:
@@ -61,9 +62,10 @@ class ThreeFactor:
         """순전파 (역전파 경로 없이). 돌려주는 신호는 plastic 잎: 리드아웃 손실의 역행성 신호가 여기 쌓임"""
         if seed is None:
             seed = int(np.random.SeedSequence().generate_state(1)[0])
-        with quiescent():
+        with quiescent(), training():                              # mosaic은 켜 둠 (학습 중)
             out = self.layer(rates, seed=seed, batch=batch)
-        self._pending = (rates, seed, batch)
+        keep = Signal(rates.data.copy()) if isinstance(rates, Signal) else rates.copy() if hasattr(rates, "copy") else rates
+        self._pending = (keep, seed, batch)                     # 사본: assign 전에 입력 배열을 바꿔도 같은 순전파를 다시 돎
         return Signal(out.data, plastic=True)
 
     def _signal(self, delta, rate_c):
@@ -100,7 +102,7 @@ class ThreeFactor:
         self._delta = B.to(B.numpy(out.retro), self.layer.device)
         self.layer._observer = self
         try:
-            with quiescent():
+            with quiescent(), training():                          # 같은 seed → 첫 순전파와 같은 mosaic 마스크
                 self.layer(rates, seed=seed, batch=batch)
         finally:
             self.layer._observer = None

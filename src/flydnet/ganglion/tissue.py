@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 from .. import _check as _C
+import contextlib
+
 import numpy as np
 
 from . import backend as B
@@ -194,6 +196,20 @@ class Tissue:
         return head + "\n" + body + "\n)"
 
 
+@contextlib.contextmanager
+def preserved_retro(tissue):
+    """안에서 보낸 역행성 신호가 tissue의 Synapse .retro에 남지 않게 (들어오기 전 값으로 되돌림).
+    분석용 역전파(fd.explain·fd.gradcheck)가 학습용으로 쌓아 둔 기울기를 바꾸거나 지우지 않도록"""
+    saved = [(s, s.retro) for s in tissue.synapses()]
+    for s, _ in saved:
+        s.retro = None
+    try:
+        yield
+    finally:
+        for s, r in saved:
+            s.retro = r
+
+
 def _takes_seed(t) -> bool:
     import inspect
     try:
@@ -253,8 +269,11 @@ class Projection(Tissue):
         x = as_input(x, self.weight.device)
         if x.shape[-1] != self.weight.shape[1]:
             raise ValueError(f"Projection({self.weight.shape[1]} → {self.weight.shape[0]})에 입력 마지막 차원 {x.shape[-1]}")
-        y = x @ self.weight.T
-        return y + self.bias if self.bias is not None else y
+        lead = x.shape[:-1]                                              # (n_in,) · (B, T, n_in)도 nn.Linear처럼
+        x2 = x if x.ndim == 2 else x.reshape(-1, self.n_in)
+        y = x2 @ self.weight.T
+        y = y + self.bias if self.bias is not None else y
+        return y if x.ndim == 2 else y.reshape(*lead, self.n_out)
 
     def extra_repr(self):
         return f"{self.n_in} → {self.n_out}, bias={self.bias is not None}"
@@ -274,7 +293,7 @@ class Neuropil(Tissue):
         if train not in ("pair", "edge", "free", None):
             raise ValueError(f"train은 'pair', 'edge', 'free', None 중 하나: {train}")
         if init not in ("fan_in", "counts"):
-            raise ValueError(init)
+            raise ValueError(f"init은 'fan_in' 또는 'counts': {init!r}")
         dev = _device(device)
         pre = [pre] if isinstance(pre, str) else list(pre)
         post = [post] if isinstance(post, str) else list(post)

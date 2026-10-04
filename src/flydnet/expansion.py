@@ -58,20 +58,31 @@ class KCExpansion(Tissue):
             elif projection == "gaussian":
                 proj = (rng.normal(size=(len(P), n_in)) / np.sqrt(n_in)).astype(np.float32)
             else:
-                raise ValueError(projection)
+                raise ValueError(f"projection은 'sparse' 또는 'gaussian': {projection!r}")
             self.buffer("proj", B.to(proj, dev))
         else:
             self.buffer("proj", None, persistent=False)
         self.name = circuit.name
 
     def forward(self, x, batch: int = 4096) -> Signal:
+        _C.integer("batch", batch)
         xs = x.data if isinstance(x, Signal) else x
         if hasattr(xs, "detach"):
             xs = xs.detach().cpu().numpy()
+        elif hasattr(xs, "to_numpy"):                                     # pandas
+            xs = xs.to_numpy()
+        elif not hasattr(xs, "shape"):                                    # 리스트
+            xs = np.asarray(xs, np.float32)
+        one = xs.ndim == 1                                                # 시료 하나 (n_in,)
+        if one:
+            xs = xs.reshape(1, -1)
+        if xs.ndim != 2 or xs.shape[1] != self.n_in:
+            raise ValueError(f"KCExpansion: 입력은 (시료, {self.n_in}): {tuple(xs.shape)}")
         xp = B.xp(B.device_of(self.W))
         out = [kenyon_code(xs[i:i + batch], self.W, self.k, self.proj, self.center, self.binary)
                for i in range(0, len(xs), batch)]
-        return Signal(xp.concatenate(out))
+        out = xp.concatenate(out)
+        return Signal(out[0] if one else out)
 
     def extra_repr(self):
         return f"{self.name}: in {self.n_in} → PN {self.n_pn} → KC {self.n_out}, 켜짐 {self.k}개 ({self.k / self.n_out:.1%})"

@@ -227,7 +227,10 @@ class ConnectomeLayer(nn.Module):
     def _gain_vec(self) -> torch.Tensor:
         s = np.ones(len(self.edge_key), np.float32)
         for k, v in self.gains.items():
-            s[self.edge_key == k] *= v
+            m = self.edge_key == k
+            if not m.any():                                      # 오타가 조용히 무시되지 않게 (자체 엔진판과 같음)
+                raise ValueError(f"회로에 없는 연결 종류: {k}")
+            s[m] *= v
         return torch.tensor(s, device=self.dev)
 
     def _build(self):

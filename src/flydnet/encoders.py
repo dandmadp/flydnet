@@ -9,6 +9,22 @@ from .ganglion.signal import Signal, as_signal, as_input
 from .ganglion.tissue import Tissue
 
 
+def _samples(x, n: int, what: str, device=None):
+    """입력을 (B, n) Signal로. 1차원 (n,)은 시료 하나 → (신호, True). 특징 수가 다르면 오류
+    (예전: 1차원을 특징 1개짜리 시료 n개로 봐서 모두 max_rate가 나옴)"""
+    x = as_input(x, device)
+    one = x.ndim == 1
+    if one:
+        x = x.reshape(1, -1)
+    elif x.ndim > 2:
+        x = x.flatten(1)
+    if x.shape[-1] != n:
+        raise ValueError(f"{what}: 입력 특징 {x.shape[-1]}개 ≠ {n}개")
+    if x.data.dtype.kind != "f":
+        x = Signal(x.data.astype(np.float32))
+    return x, one
+
+
 def to_rates(x, max_rate: float) -> Signal:
     """음수는 0, 샘플마다 최댓값 = max_rate (전체 세기가 달라도 같은 패턴이면 같은 발화율). 미분 가능"""
     x = as_input(x).flatten(1).relu()
@@ -48,12 +64,11 @@ class RateEncoder(Tissue):
 
     def forward(self, x) -> Signal:
         dev = B.device_of(self.P) if self.P is not None else self._dev
-        x = as_input(x, dev).flatten(1)
-        if x.data.dtype.kind != "f":
-            x = Signal(x.data.astype(np.float32))
+        x, one = _samples(x, self.n_in, "RateEncoder", dev)
         if self.P is not None:
             x = x @ Signal(self.P.T)
-        return to_rates(x, self.max_rate)
+        r = to_rates(x, self.max_rate)
+        return r.reshape(-1) if one else r
 
     def extra_repr(self):
         return f"{self.n_in} → {self.n_out}, 최대 {self.max_rate} Hz"
@@ -89,10 +104,11 @@ class GlomerularEncoder(Tissue):
         return len(self.glomeruli)
 
     def forward(self, odor) -> Signal:
-        x = as_input(odor, B.device_of(self.P))
+        x, one = _samples(odor, self.n_glomeruli, "GlomerularEncoder (사구체 수)", B.device_of(self.P))
         if x.data.dtype != np.float32 and not x.plastic:
             x = Signal(x.data.astype(np.float32))
-        return to_rates(x @ Signal(self.P.T), self.max_rate)
+        r = to_rates(x @ Signal(self.P.T), self.max_rate)
+        return r.reshape(-1) if one else r
 
     def extra_repr(self):
         return f"사구체 {self.n_glomeruli} → PN {self.P.shape[0]}, 최대 {self.max_rate} Hz"

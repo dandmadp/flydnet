@@ -158,6 +158,8 @@ class Signal:
                     "NaN·무한대가 있음: 학습률을 낮추거나 가소성 규칙에 clip=1.0, 입력 확인")
             retro = xp.ones_like(self.data)
         retro = retro.data if isinstance(retro, Signal) else xp.asarray(retro, dtype=self.data.dtype)
+        if tuple(retro.shape) != tuple(self.shape):
+            raise ValueError(f"retro 모양 {tuple(retro.shape)} ≠ 신호 모양 {tuple(self.shape)} - 브로드캐스트하지 않음")
 
         order, seen, stack = [], set(), [(self, False)]      # 위상 정렬 (재귀 없이)
         while stack:
@@ -171,6 +173,9 @@ class Signal:
             stack.append((node, True))
             for p in node._parents:
                 if p.plastic and id(p) not in seen:
+                    if p._spent:                                 # 다른 손실이 먼저 풀어 버린 중간값: 잎처럼 보여 기울기가 사라짐
+                        raise RuntimeError("이 경로의 중간 신호를 다른 손실의 retrograde가 이미 풀었음 - 손실을 더해 한 번에 "
+                                           "보내거나 (loss1 + loss2).retrograde(), 첫 번째에 retrograde(keep=True)")
                     stack.append((p, False))
         with B.oom_hint("역행성 신호(역전파)"):
             self._send(order, retro)
@@ -304,9 +309,9 @@ class Signal:
         return Signal(self.xp.abs(self.data))._link((self,), lambda g: (g * s,))
 
     def clip(self, lo=None, hi=None):
-        if lo is not None and hi is not None and lo > hi:
-            raise ValueError(f"clip: lo({lo})가 hi({hi})보다 큼")
         x = self.data
+        if lo is not None and hi is not None and bool(self.xp.any(self.xp.asarray(lo) > self.xp.asarray(hi))):
+            raise ValueError(f"clip: lo가 hi보다 큰 곳이 있음 ({lo} > {hi})")
         m = self.xp.ones_like(x, dtype=bool)
         if lo is not None:
             m &= x >= lo
@@ -428,7 +433,8 @@ class Signal:
         x = self.data
         out = x.max(axis=axis, keepdims=True)
         m = (x == out)
-        m = m / m.sum(axis=axis, keepdims=True)
+        ft = x.dtype if x.dtype.kind == "f" else np.float32           # bool / int → float64로 승격되지 않게
+        m = m.astype(ft) / m.sum(axis=axis, keepdims=True).astype(ft)
         xp = self.xp
         res = out if keepdims else (out.squeeze(axis) if axis is not None else out.reshape(()))
 
@@ -513,14 +519,18 @@ def checkpoint(fn, *inputs):
 
     def back(packed):
         fresh = [Signal(i.data, plastic=i.plastic) for i in inputs]
-        outs2 = fn(*fresh)
-        total = None
-        for o, g in zip(outs2, packed.parts, strict=True):
-            if g is not None and o.plastic:
-                term = (o * Signal(g)).sum()
-                total = term if total is None else total + term
-        if total is not None:
-            total.retrograde(keep=True)                      # fn 밖에서 온 신호의 경로는 다음 구간도 써야 함
+        prev, _LEARNING[0] = _LEARNING[0], True                    # quiescent() 안에서 retrograde해도 다시 계산할 경로는 필요
+        try:
+            outs2 = fn(*fresh)
+            total = None
+            for o, g in zip(outs2, packed.parts, strict=True):
+                if g is not None and o.plastic:
+                    term = (o * Signal(g)).sum()
+                    total = term if total is None else total + term
+            if total is not None:
+                total.retrograde(keep=True)                  # fn 밖에서 온 신호의 경로는 다음 구간도 써야 함
+        finally:
+            _LEARNING[0] = prev
         return tuple(f.retro if f.plastic else None for f in fresh)
 
     return multi_output(inputs, [o.data for o in outs], back_packed=back, force=True)

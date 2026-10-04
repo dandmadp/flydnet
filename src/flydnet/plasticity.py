@@ -77,7 +77,7 @@ class DopamineReadout(_Saveable):
         _C.integer('n_classes', n_classes)
         _C.nonneg('lr', lr)
         if mode not in self.MODES:
-            raise ValueError(mode)
+            raise ValueError(f"mode는 {self.MODES} 중 하나: {mode!r}")
         self.mode, self.lr, self.binary, self.homeostasis = mode, lr, binary, homeostasis
         self.device = B.check(device) if device is not None else B.default_device()
         xp = B.xp(self.device)

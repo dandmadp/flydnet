@@ -144,11 +144,15 @@ def verify(kind: str = "flywire", path=None) -> dict:
 
 
 def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quiet: bool = False) -> dict:
-    """없거나 내용이 다른 파일만 받음. 받은 파일은 크기와 SHA-256으로 확인. 반환: {묶음: 폴더}"""
+    """없거나 내용이 다른 파일만 받음. 받은 파일은 크기와 SHA-256으로 확인. 반환: {묶음: 폴더}
+    path: 묶음 하나면 그 폴더, 여러 개면 path/<묶음> (예전: 여러 개면 path를 조용히 무시하고 기본 위치에 받음)"""
     kinds = [kinds] if isinstance(kinds, str) else list(kinds)
+    unknown = [k for k in kinds if k not in SOURCES]
+    if unknown:
+        raise ValueError(f"모르는 데이터 묶음: {unknown} (있는 것: {list(SOURCES)})")
     out = {}
     for kind in kinds:
-        d = data_dir(kind, path if len(kinds) == 1 else None)
+        d = data_dir(kind, path if (path is None or len(kinds) == 1) else Path(path).expanduser() / kind)
         d.mkdir(parents=True, exist_ok=True)
         state = verify(kind, d)
         for name, (url, size, sha) in SOURCES[kind].items():
@@ -177,6 +181,8 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
             tmp.replace(f)
         if not quiet:
             say(f"[{kind}] {d}\n  출처: {CITATIONS[kind]}")
+            if path is not None and d.resolve() != data_dir(kind).resolve():
+                say(f"  이 위치를 기본으로 쓰려면: flydnet.set_data_dir({kind}=r'{d}')")
         out[kind] = d
     return out
 

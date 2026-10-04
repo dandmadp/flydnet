@@ -35,6 +35,8 @@ def _accepts_seed(fn) -> bool:
 def extract(layer, encoder, X, batch: int = 256, seed: int = 0, log_every: int = 0) -> np.ndarray:
     """데이터 X 전체를 (encoder →) layer에 통과시켜 출력 특징 (n, n_out)을 numpy로. encoder=None이면 X를 바로"""
     _C.integer('batch', batch)
+    if len(X) == 0:
+        raise ValueError("데이터가 비어 있음 (시료 0개)")
     out = []
     takes_seed = _accepts_seed(layer)
     with quiescent():
@@ -63,6 +65,8 @@ def train_linear(Xtr, ytr, Xte, yte, n_classes=None, epochs: int = 30, lr: float
     dev = B.check(device) if device is not None else B.default_device()
     Xtr, Xte = _np(Xtr).astype(np.float32), _np(Xte).astype(np.float32)
     ytr, yte = B.labels(ytr), B.labels(yte)
+    if len(Xtr) == 0 or len(Xte) == 0:
+        raise ValueError(f"데이터가 비어 있음: 학습 {len(Xtr)}개, 평가 {len(Xte)}개")
     if len(Xtr) != len(ytr) or len(Xte) != len(yte):
         raise ValueError(f"특징과 라벨의 개수가 다름: 학습 {len(Xtr)} 대 {len(ytr)}, 평가 {len(Xte)} 대 {len(yte)}")
     n_classes = n_classes or int(max(ytr.max(), yte.max())) + 1

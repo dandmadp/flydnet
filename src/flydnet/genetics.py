@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 from . import _check as _C
+import contextlib
 import re
 
 import numpy as np
@@ -80,8 +81,10 @@ def _match(values: pd.Series, want) -> np.ndarray:
     s = values.astype("string")
     if isinstance(want, re.Pattern):
         return s.str.fullmatch(want).fillna(False).to_numpy(bool)
-    wants = [want] if isinstance(want, str) else list(want)
-    return s.isin(wants).fillna(False).to_numpy(bool)
+    wants = list(want) if isinstance(want, (list, tuple, set, frozenset, np.ndarray, pd.Index, pd.Series)) else [want]
+    raw = values.isin(wants).to_numpy(bool)                              # 같은 자료형끼리 (True, 3 == 3.0 등)
+    text = s.isin([str(w) for w in wants]).fillna(False).to_numpy(bool)  # 문자열로 저장된 값 ('True', 예전 파일)
+    return raw | text
 
 
 def driver(circuit, group: str | None = None, root_ids=None, name: str | None = None, missing: str = "error",
@@ -209,8 +212,7 @@ def activate(layer, line: Line, hz: float = 100.0, level: float | None = None) -
     """CsChrimson·P2X2: 스파이킹 뉴런에 hz의 포아송 자극 (자극 하나 = 입력 스파이크 하나, 불응기 없음 - Shiu et al. 2024).
     연속값 뉴런(graded)은 활동을 level로 고정 (기본 1.0)"""
     _C.optional(_C.finite, 'level', level)
-    if hz <= 0:
-        raise ValueError("hz는 양수")
+    _C.pos("hz", hz)                                                 # NaN·무한대면 자극이 조용히 사라짐
     if layer.neuron == "graded":
         level = 1.0 if level is None else level
     return Expression(layer, "activate", line, hz=float(hz), level=level)
@@ -245,11 +247,25 @@ def mosaic(layer, p: float = 0.1, by: str | None = None, within: Line | None = N
     return e
 
 
+_TRAINING = [0]
+
+
+@contextlib.contextmanager
+def training():
+    """역행성 경로 없이(quiescent) 학습하는 규칙(ThreeFactor·STDP)과 gradcheck의 수치 미분이 mosaic을 켜 두게.
+    없으면 mosaic이 학습 중인지 learning_enabled()로만 판단해 이 경우 조용히 꺼짐"""
+    _TRAINING[0] += 1
+    try:
+        yield
+    finally:
+        _TRAINING[0] -= 1
+
+
 def mosaic_mask(layer, seed: int, batch: int):
     """순전파용 모자이크 마스크 (N, batch) 또는 None (학습 중이 아니거나 mosaic이 없으면)"""
     from .ganglion.signal import learning_enabled
     mos = [e for e in getattr(layer, "_effects", ()) if e.kind == "mosaic" and e.p > 0]
-    if not mos or not learning_enabled():
+    if not mos or not (learning_enabled() or _TRAINING[0]):
         return None
     rng = np.random.default_rng([int(seed) % (1 << 63), 0x3051C])
     m = np.ones((layer.circuit.N, batch), np.float32)
@@ -320,6 +336,11 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     if min_p > 0.05:
         warnings.warn(f"seed {len(seeds)}개로는 p가 {min_p:.3g} 아래로 내려갈 수 없음 - 효과가 커도 유의하지 않게 나옴. "
                       "seeds=6 이상 (p < 0.05가 가능한 최소)", stacklevel=2)
+    for name, line in lines_.items():                               # 오래 돌기 전에 붙일 수 있는지 (입력 뉴런 활성화 등)
+        try:
+            make[effector](layer, line).remove()
+        except ValueError as e:
+            raise ValueError(f"screen: 집단 '{name}'에 {effector}를 발현할 수 없음 - {e}") from None
     if active(layer):
         warnings.warn(f"층에 이미 켜진 효과기가 있음 ({active(layer)}) - 기준·조작 모두에 적용됨", stacklevel=2)
     base = np.array([float(measure(layer, s)) for s in seeds])
@@ -347,10 +368,10 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
 
 def _holm(p: np.ndarray) -> np.ndarray:
     """Holm 보정 (여러 집단을 한꺼번에 시험할 때의 p)"""
-    order = np.argsort(p)
-    adj = np.empty_like(p, dtype=float)
+    adj = np.full(len(p), np.nan)
+    ok = np.nonzero(np.isfinite(p))[0]                               # p가 없는(NaN) 집단은 빼고 보정
     run = 0.0
-    for k, i in enumerate(order):
-        run = max(run, min(1.0, (len(p) - k) * p[i]))
+    for k, i in enumerate(ok[np.argsort(p[ok])]):
+        run = max(run, min(1.0, (len(ok) - k) * p[i]))
         adj[i] = run
     return adj

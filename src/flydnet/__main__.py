@@ -125,6 +125,10 @@ def main(argv=None):
     elif cmd == "download":
         download(argv or ("flywire", "door"))
     elif cmd == "verify":
+        unknown = [k for k in argv if k not in SOURCES]
+        if unknown:
+            say(f"모르는 데이터 묶음: {unknown} (있는 것: {list(SOURCES)})")
+            return 1
         bad = 0
         for kind in argv or SOURCES:
             for name, st in verify(kind).items():

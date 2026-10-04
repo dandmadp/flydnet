@@ -123,7 +123,7 @@ def sign_flip_p(d: np.ndarray, n_perm: int = 20000, seed: int = 0) -> float:
     """짝 차이 d의 평균이 0인지 부호 뒤집기 순열 검정 (양측). n ≤ 14면 모든 경우를 셈 (정확한 p)"""
     d = np.asarray(d, float)
     n = len(d)
-    if n == 0 or np.allclose(d, 0):
+    if n == 0 or not np.any(d):                                     # 단위와 상관없이 (allclose는 1e-8보다 작은 점수를 0으로 봄)
         return 1.0
     obs = abs(d.mean())
     if n <= 14:
@@ -131,7 +131,7 @@ def sign_flip_p(d: np.ndarray, n_perm: int = 20000, seed: int = 0) -> float:
     else:
         signs = np.random.default_rng(seed).choice([-1, 1], size=(n_perm, n))
     null = np.abs((signs * d).mean(1))
-    return float(((null >= obs - 1e-12).sum()) / len(null))
+    return float(((null >= obs * (1 - 1e-9)).sum()) / len(null))        # 같은 값의 반올림 차이만 허용 (상대)
 
 
 def _ci95(x: np.ndarray):

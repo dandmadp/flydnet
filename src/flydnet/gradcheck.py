@@ -23,6 +23,8 @@ import pandas as pd
 
 from .ganglion import backend as B
 from .ganglion.signal import Signal, quiescent
+from .genetics import training
+from .ganglion.tissue import preserved_retro
 
 
 class GradCheck:
@@ -72,6 +74,8 @@ def gradcheck(score, layer, eps: float = 0.05, seed: int = 0, min_edges: int = 1
     """연결 종류마다 역전파 기울기 대 유한 차분 (seeds면 그 seed들의 평균 출력으로). layer는 trainable인 ConnectomeLayer"""
     _C.pos('eps', eps)
     seed_list = [seed] if seeds is None else (list(range(seeds)) if isinstance(seeds, int) else list(seeds))
+    if not seed_list:
+        raise ValueError(f"seeds는 1개 이상: {seeds!r}")
     if not getattr(layer, "trainable", False):
         raise ValueError("학습하는 연결이 있는 ConnectomeLayer에서만 (trainable=...)")
     dev = layer.device
@@ -81,21 +85,20 @@ def gradcheck(score, layer, eps: float = 0.05, seed: int = 0, min_edges: int = 1
     kinds, inv = np.unique(names, return_inverse=True)
     # 연결 종류 → log_scale 칸 (share="pair"면 칸 하나, "edge"면 여러 칸)
     slots = [np.unique(which[inv == k]) for k in range(len(kinds))]
-    layer.log_scale.retro = None
-    for sd in seed_list:                                            # 평균 출력의 기울기 = seed마다 기울기의 평균
-        val = score(layer, sd)
-        if not isinstance(val, Signal) or val.data.size != 1:
-            raise TypeError("score(layer, seed)는 값 하나인 Signal")
-        (val * (1.0 / len(seed_list))).retrograde()
-    g_all = B.numpy(layer.log_scale.retro)
-    layer.log_scale.retro = None
+    with preserved_retro(layer):                                    # 사용자가 쌓아 둔 학습 기울기는 그대로
+        for sd in seed_list:                                        # 평균 출력의 기울기 = seed마다 기울기의 평균
+            val = score(layer, sd)
+            if not isinstance(val, Signal) or val.data.size != 1:
+                raise TypeError("score(layer, seed)는 값 하나인 Signal")
+            (val * (1.0 / len(seed_list))).retrograde()
+        g_all = B.numpy(layer.log_scale.retro) if layer.log_scale.retro is not None else             np.zeros(layer.log_scale.shape, np.float32)
 
     def mean_score():
         return float(np.mean([float(score(layer, sd).data.reshape(-1)[0]) for sd in seed_list]))
     base = layer.log_scale.data.copy()
     rows = []
     try:
-        with quiescent():
+        with quiescent(), training():                       # 역전파 쪽과 같은 mosaic 마스크로 비교
             for k, sl in enumerate(slots):
                 if len(sl) < min_edges:
                     continue

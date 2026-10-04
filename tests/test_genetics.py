@@ -260,3 +260,23 @@ def test_mosaic_spiking_checkpoint_and_explain():
         withm = fd.explain(s, L).groups.set_index("name").pred_drop
         assert len(fd.genetics.active(L)) == 1                           # explain 뒤에도 그대로
     np.testing.assert_allclose(plain.sort_index(), withm.sort_index())   # 설명할 때는 드롭아웃 끔
+
+
+def test_mosaic_applies_during_bio_learning_rules():
+    """ThreeFactor·STDP는 역행성 경로 없이(quiescent) 돌아서 mosaic이 조용히 꺼지던 것 - 학습 중이면 켜져야 함.
+    ThreeFactor의 두 번째 순전파(assign)도 첫 순전파와 같은 마스크"""
+    from test_threefactor import _rec
+    c = _rec(feedback_edges=True)
+    c = fd.Circuit(c.root_ids, c.groups, c.pre, c.post, c.weight * 4)
+    X = np.random.default_rng(0).uniform(50, 200, (3, 6)).astype(np.float32)
+    layer = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True)
+    tf, st = fd.ThreeFactor(layer, seed=0), fd.STDP(layer)
+    plain_tf, plain_st = tf(X, seed=2).data.copy(), st(X, seed=2).data.copy()
+    with fd.genetics.mosaic(layer, p=0.9):
+        out = tf(X, seed=2)
+        assert not np.array_equal(plain_tf, out.data)
+        assert not np.array_equal(plain_st, st(X, seed=2).data)
+        with fd.ganglion.quiescent():
+            assert np.array_equal(plain_tf, layer(X, seed=2).data)      # 평가(quiescent)에서는 꺼짐 - 예전과 같음
+        out.sum().retrograde()
+        tf.assign(out)

@@ -31,6 +31,19 @@ def _repair(pre: np.ndarray, post: np.ndarray, N: int, rng, max_iter: int = 200)
     raise RuntimeError(f"중복 연결을 {max_iter}번 안에 없애지 못함 ({bad.sum()}개 남음)")
 
 
+def _json_value(v):
+    """주석 값 하나를 JSON으로: 참거짓·정수·실수는 그대로, 빈 값은 None, 나머지는 문자열"""
+    if v is None or (not isinstance(v, (str, bytes)) and pd.isna(v)):
+        return None
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        return float(v)
+    return str(v)
+
+
 class Circuit:
     """뉴런 N개와 부호 있는 시냅스 목록 (pre → post, weight = ±시냅스 수)
 
@@ -65,8 +78,9 @@ class Circuit:
         return len(self.pre)
 
     def group_of(self) -> np.ndarray:
-        """뉴런별 그룹 이름 (그룹이 겹치지 않는다고 가정)"""
-        g = np.empty(self.N, dtype=object)
+        """뉴런별 그룹 이름 (그룹이 겹치지 않는다고 가정). 어느 그룹에도 없는 뉴런은 "?" (ConnectomeLayer와 같음 -
+        None이면 shuffled 등에서 문자열을 잇다가 실패하고 summary에서 조용히 빠짐)"""
+        g = np.full(self.N, "?", dtype=object)
         for k, v in self.groups.items():
             g[v] = k
         return g
@@ -419,6 +433,7 @@ class Circuit:
         member = {}
         for gname, idx in self.groups.items():
             member[gname] = np.asarray(idx)
+        member.setdefault("?", np.nonzero(self.group_of() == "?")[0])
         new_pre, new_post = self.pre.copy(), self.post.copy()
         for k, idx in self._pair_index().items():
             a, _, b = k.partition(">")
@@ -450,7 +465,10 @@ class Circuit:
 
     def subset(self, groups) -> "Circuit":
         """지정한 그룹들의 뉴런만 남긴 회로 (그 사이 연결만)"""
-        groups = [g for g in groups if g in self.groups]
+        groups = list(dict.fromkeys([groups] if isinstance(groups, str) else groups))   # 이름 하나·중복도
+        unknown = [g for g in groups if g not in self.groups]
+        if unknown or not groups:
+            raise KeyError(f"회로에 없는 그룹: {unknown} (있는 것: {list(self.groups)[:20]})" if unknown else "그룹을 하나 이상")
         keep = np.concatenate([self.groups[g] for g in groups])
         new = np.full(self.N, -1, np.int64); new[keep] = np.arange(len(keep))
         m = (new[self.pre] >= 0) & (new[self.post] >= 0)
@@ -466,7 +484,8 @@ class Circuit:
         """받는 뉴런마다 입력 시냅스 수 합(|weight|)이 1이 되도록 나눈 회로.
         입력 비율(누가 얼마나 주는지)은 그대로, 입력이 많은 뉴런과 적은 뉴런의 총입력 크기만 맞춤"""
         tot = np.bincount(self.post, weights=np.abs(self.weight), minlength=self.N)
-        w = (self.weight / tot[self.post]).astype(np.float32)
+        t = tot[self.post]
+        w = np.where(t > 0, self.weight / np.where(t > 0, t, 1), 0).astype(np.float32)   # 입력이 모두 0인 뉴런은 0 (NaN 아님)
         return Circuit(self.root_ids, self.groups, self.pre, self.post, w, name=f"{self.name} [정규화]",
                        meta=self.meta, pos=self.pos)
 
@@ -487,7 +506,7 @@ class Circuit:
         g = self.group_of()
         df = pd.DataFrame({"pre": g[self.pre], "post": g[self.post], "w": self.weight})
         return df.groupby(["pre", "post"]).agg(edges=("w", "size"), exc_syn=("w", lambda x: x[x > 0].sum()),
-                                               inh_syn=("w", lambda x: -x[x < 0].sum()))
+                                               inh_syn=("w", lambda x: (-x[x < 0]).sum()))
 
     def __repr__(self):
         gs = ", ".join(f"{k} {len(v)}" for k, v in self.groups.items())
@@ -500,7 +519,7 @@ class Circuit:
                prefix + "weight": self.weight}
         info = dict(name=self.name, groups=list(self.groups))
         if self.meta is not None:
-            info["meta"] = {c: [None if pd.isna(v) else str(v) for v in self.meta[c]] for c in self.meta.columns}
+            info["meta"] = {str(c): [_json_value(v) for v in self.meta[c]] for c in self.meta.columns}
         out[prefix + "info"] = np.array(json.dumps(info, ensure_ascii=False))
         for i, g in enumerate(self.groups.values()):
             out[f"{prefix}group{i}"] = g

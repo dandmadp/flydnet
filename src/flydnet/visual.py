@@ -100,10 +100,14 @@ def drifting_grating(xy, directions, t_ms: float, frames: int, wavelength: float
     _C.integer('frames', frames)
     _C.pos('wavelength', wavelength)
     _C.finite('temporal_hz', temporal_hz)
+    _C.finite('contrast', contrast)
+    _C.nonneg('onset_ms', onset_ms)
     xy = np.nan_to_num(np.asarray(xy, np.float32))
     th = np.asarray(directions, np.float32).reshape(-1) * np.float32(np.pi / 180)
     B = len(th)
     phase = np.zeros(B, np.float32) if phase is None else np.asarray(phase, np.float32).reshape(-1)
+    if len(phase) not in (1, B):
+        raise ValueError(f"phase는 방향마다 하나 ({B}개) 또는 하나: {len(phase)}개")
     t = (np.arange(frames, dtype=np.float32) + 0.5) * t_ms / frames              # ms, 프레임 중앙
     k = np.stack([np.cos(th), np.sin(th)], 1) * np.float32(2 * np.pi / wavelength)  # (B, 2)
     proj = k @ xy.T                                                              # (B, n)

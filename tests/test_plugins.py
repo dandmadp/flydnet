@@ -157,3 +157,44 @@ def test_stdp_works_with_custom_neurons():
     stdp = fd.STDP(L)
     stdp(X, seed=0)
     assert np.abs(stdp.assign()).sum() > 0
+
+
+def _retro(layer):
+    return np.concatenate([np.ravel(B.numpy(s.retro)) for s in layer.synapses() if s.retro is not None])
+
+
+@pytest.mark.parametrize("make", [fd.neurons.LIF, fd.neurons.Izhikevich])
+def test_shared_model_object_does_not_leak_between_layers(make):
+    """같은 모델 객체를 두 층이 쓰고, 한 층의 forward와 역전파 사이에 다른 층이 돌아도 기울기가 같아야 함
+    (예전: LIF 플러그인이 init의 상수를 self에 둬서 체크포인팅 재계산이 다른 층의 불응기를 씀 - 3% 틀림)"""
+    c = _strong()
+    X = np.random.default_rng(0).uniform(50, 200, (3, 6)).astype(np.float32)
+
+    def grads(interleave):
+        m = make()
+        a = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, neuron=m, checkpoint_every=20)
+        b = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, neuron=m, checkpoint_every=20,
+                          params={"t_rfc": 0.5})
+        loss = a(X, seed=1).sum()
+        if interleave:
+            b(X, seed=1)
+        loss.retrograde()
+        return _retro(a)
+
+    np.testing.assert_array_equal(grads(False), grads(True))
+
+
+def test_izhikevich_gradient_does_not_explode():
+    """v^2 항의 양의 기울기가 스텝마다 곱해져 30 ms에 1e10까지 폭발하고 방향도 틀리던 것"""
+    c = _strong()
+    X = np.random.default_rng(0).uniform(50, 200, (3, 6)).astype(np.float32)
+    big = []
+    for t in (10, 60):
+        layer = fd.Connectome(c, "IN", "O", t_ms=t, device="cpu", trainable=True, neuron=fd.neurons.Izhikevich())
+        layer(X, seed=1).sum().retrograde()
+        big.append(np.abs(_retro(layer)).max())
+    assert np.all(np.isfinite(big)) and big[1] < 10 * big[0] and big[1] < 1e5
+    layer = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair",
+                          neuron=fd.neurons.Izhikevich())
+    r = fd.gradcheck(lambda l, s: l(X, seed=s).sum(), layer, seeds=3)
+    assert r.cos > 0.6

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from .. import _check as _C
 import json
+import math
 
 import numpy as np
 
@@ -371,6 +372,7 @@ class ConnectomeLayer(Tissue):
         """record: 회로 뉴런 번호 목록이면 스텝별 활동도 → (출력, (B, steps, k) numpy). 체크포인팅과 같이 쓰지 않음
         rates=None: 입력 없음 (모두 0), batch개 시행 - fd.genetics.activate로만 자극할 때"""
         if rates is None:
+            _C.integer("batch", batch)
             rates = np.zeros((batch, self.n_in), np.float32)
         if seed is not None and not (isinstance(seed, (int, np.integer)) and not isinstance(seed, bool)):
             raise TypeError(f"seed는 정수: {seed!r}")
@@ -382,6 +384,8 @@ class ConnectomeLayer(Tissue):
             return (res[0][0], res[1][0]) if isinstance(res, tuple) else res[0]
         if record is not None:
             r = np.asarray(record)
+            if r.size == 0:                                              # 빈 목록 → (B, steps, 0)
+                record = r = r.astype(np.int64)
             if r.size and (r.min() < 0 or r.max() >= self.circuit.N):
                 raise IndexError(f"record의 뉴런 번호는 0 ~ {self.circuit.N - 1}: 범위 밖 {r[(r < 0) | (r >= self.circuit.N)][:5].tolist()}")
         x = as_input(rates, self.device)
@@ -412,10 +416,14 @@ class ConnectomeLayer(Tissue):
         if brian:                                   # 정확한 선형 적분 계수 (a = dt/t_mbr). t_mbr = tau면 극한값
             tau = p["tau"]
             if isinstance(a, Signal):
+                # e_g = tau/(tau - t_mbr)·(gd - e_v) = a·e^-a·h(a - dt/tau),  h(d) = (e^d - 1)/d = Σ d^n/(n+1)!
+                # (t_mbr = tau 근처에서 0/0이 되지 않게 - 예전엔 출력이 0 Hz까지 틀어짐). |d| ≤ 1이라 13항이면 float32 정밀도
                 e_v = (-a).exp()
-                den = a * tau - dt
-                den = where(den.data >= 0, den + 1e-6, den - 1e-6)
-                e_g = (a * tau / den) * (e_v * -1.0 + gd)
+                d = a - dt / tau
+                h = Signal(xp.full(d.shape, 1.0 / math.factorial(13), dtype=xp.float32))
+                for n in range(11, -1, -1):
+                    h = h * d + 1.0 / math.factorial(n + 1)
+                e_g = a * e_v * h
             else:
                 e_v = float(np.exp(-a))
                 e_g = float(a * np.exp(-a)) if abs(a * tau - dt) < 1e-9 else float(a * tau / (a * tau - dt) * (gd - e_v))
@@ -457,7 +465,7 @@ class ConnectomeLayer(Tissue):
             obs.begin(dict(e_v=e_v, e_g=e_g, gd=gd, dly=dly, steps=steps, s_cnt=s_cnt, scale=consts["scale"],
                            slope=self.slope, damp=resolve_damp(self.surrogate_damp, steps, dly), batch=Bn, gain=gain,
                            blocked=blocked,
-                           rate_c=1000.0 / (self.t_ms - s_cnt * dt)))
+                           rate_c=1000.0 / self._span(steps, s_cnt, dt)))
 
         damp, trunc, sigma = resolve_damp(self.surrogate_damp, steps, dly), self.truncate, self.noise
         noise_seed = (int(seed) * 0x9E3779B97F4A7C15 + 0x0015E) % (1 << 63)
@@ -518,9 +526,16 @@ class ConnectomeLayer(Tissue):
         phase0 = Signal(xp.broadcast_to(self.phase0[:, None], (self.n_in, Bn)).copy())
         state = (V0, z(), z(), z(), phase0, *[z() for _ in range(R)])
         state = self._run(run, state, steps, x, record)
-        rate = state[3].T * (1000.0 / (self.t_ms - s_cnt * dt))            # (B, N) Hz
+        rate = state[3].T * (1000.0 / self._span(steps, s_cnt, dt))            # (B, N) Hz
         out = rate if return_all else rate[:, self.out_idx]
         return (out, self._trace(rec)) if record is not None else out
+
+    def _span(self, steps, s_cnt, dt):
+        """발화율을 세는 시간 (ms). t_ms가 dt의 배수면 t_ms를 그대로 (예전과 같은 값), 아니면 실제로 돈 스텝 수 x dt"""
+        t = self.t_ms if abs(steps * dt - self.t_ms) < 1e-6 * max(1.0, self.t_ms) else steps * dt
+        if s_cnt >= steps:
+            raise ValueError(f"count_from_ms({self.count_from_ms})를 dt 단위로 반올림하면 t_ms와 같아져 셀 스텝이 없음")
+        return t - s_cnt * dt
 
     def _run(self, run, state, steps, x, record):
         """구간 나눠 실행 (학습 중이고 checkpoint_every면 구간마다 다시 계산)"""
@@ -578,7 +593,7 @@ class ConnectomeLayer(Tissue):
                 if m is not None:
                     gain = m if gain is None else gain * m
             obs.begin(dict(dly=dly, steps=steps, s_cnt=s_cnt, batch=Bn, gain=gain, blocked=blocked, dt=dt,
-                           rate_c=1000.0 / (self.t_ms - s_cnt * dt), model=model))
+                           rate_c=1000.0 / self._span(steps, s_cnt, dt), model=model))
         zeros = xp.zeros((N, Bn), dtype=xp.float32)
 
         damp, trunc = resolve_damp(self.surrogate_damp, steps, dly), self.truncate
@@ -622,7 +637,7 @@ class ConnectomeLayer(Tissue):
         phase0 = Signal(xp.broadcast_to(self.phase0[:, None], (self.n_in, Bn)).copy())
         state = (z(), phase0, *[init[k] for k in names], *[z() for _ in range(R)])
         state = self._run(run, state, steps, x, record)
-        rate = state[0].T * (1000.0 / (self.t_ms - s_cnt * dt))
+        rate = state[0].T * (1000.0 / self._span(steps, s_cnt, dt))
         out = rate if return_all else rate[:, self.out_idx]
         return (out, self._trace(rec)) if record is not None else out
 
@@ -633,6 +648,7 @@ class ConnectomeLayer(Tissue):
         r_max = p.get("r_max", 10.0)
         frame = self._frames(x)
         s_cnt = int(round(self.count_from_ms / dt))
+        self._span(steps, s_cnt, dt)                                       # 셀 스텝이 있는지 (0으로 나누기 방지)
         if self.neuron_params:
             b, a = self._neuron_terms(dt)
             b, a = b.reshape(-1, 1), a.reshape(-1, 1)
@@ -722,6 +738,9 @@ class ConnectomeLayer(Tissue):
         반복마다 배율 x (목표 / 현재)^step (발화가 없으면 x 2), 모든 그룹이 목표의 ±tol 안이면 멈춤.
         층의 gains가 바뀜 (저장됨). 반환: 그룹별 처음·마지막 발화율과 배율 표"""
         import pandas as pd
+        _C.integer("iters", iters, lo=0)
+        _C.pos("step", step)
+        _C.pos("tol", tol)
         tgt = {g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
         for g, v in tgt.items():
             if not (v > 0 and np.isfinite(v)):
@@ -735,6 +754,9 @@ class ConnectomeLayer(Tissue):
         code = np.unique(self._edge_code)
         n = len(self._group_names)
         incoming = {g: [self._edge_names([c])[0] for c in code if c % n == gid[g]] for g in tgt}
+        none = [g for g in tgt if not incoming[g]]
+        if none:
+            raise ValueError(f"들어오는 연결이 없는 그룹은 배율로 보정할 수 없음: {none}")
         idx = {g: B.to(self.circuit.groups[g], self.device) for g in tgt}
         factor = {g: 1.0 for g in tgt}
 

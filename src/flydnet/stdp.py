@@ -17,6 +17,7 @@ import numpy as np
 
 from .ganglion import backend as B
 from .ganglion.signal import quiescent
+from .genetics import training
 
 
 class Monitor:
@@ -32,7 +33,7 @@ class Monitor:
             seed = int(np.random.SeedSequence().generate_state(1)[0])
         self.layer._observer = self
         try:
-            with quiescent():
+            with quiescent(), training():                          # mosaic은 켜 둠 (학습 중)
                 return self.layer(rates, seed=seed, batch=batch)
         finally:
             self.layer._observer = None

@@ -24,6 +24,7 @@ import pandas as pd
 
 from .ganglion import backend as B
 from .ganglion.signal import Signal, quiescent
+from .ganglion.tissue import preserved_retro
 
 
 def default_by(circuit) -> str:
@@ -120,6 +121,8 @@ def explain(score, layer, by: str | None = None, pathways: bool = False, verify:
     mos = [e for e in layer._effects if e.kind == "mosaic"]               # 세포 유형 드롭아웃은 학습용 - 설명할 때는 끔
     for e in mos:
         e.remove()
+    keep = preserved_retro(layer)                                         # 층의 학습 기울기(.retro)를 건드리지 않게
+    keep.__enter__()
     try:
         for s in seeds:
             pn = Signal(xp.ones((circuit.N, 1), dtype=xp.float32), plastic=True)
@@ -142,6 +145,7 @@ def explain(score, layer, by: str | None = None, pathways: bool = False, verify:
     finally:
         layer._probe = {}
         layer._effects.extend(m for m in mos if m not in layer._effects)
+        keep.__exit__(None, None, None)
     g_n /= len(seeds)
     base_mean = float(np.mean(base))
     drop = np.bincount(inv, weights=g_n, minlength=len(names))

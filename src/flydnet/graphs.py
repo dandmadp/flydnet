@@ -41,10 +41,9 @@ def erdos_renyi(n: int, p: float, weight: float = 10.0, inhibitory: float = 0.2,
     _C.finite('weight', weight)
     rng = np.random.default_rng(seed)
     m = rng.binomial(n * (n - 1), p)
-    flat = rng.choice(n * n, size=min(int(m * 1.05) + 10, n * n), replace=False)
-    pre, post = flat // n, flat % n
-    keep = pre != post
-    pre, post = pre[keep][:m], post[keep][:m]
+    flat = rng.choice(n * (n - 1), size=m, replace=False)          # 자기 연결을 뺀 칸에서 바로 (연결 수가 정확히 m)
+    pre, r = flat // (n - 1), flat % (n - 1)
+    post = r + (r >= pre)
     return _finish(n, pre, post, weight, inhibitory, groups, seed, f"Erdos-Renyi (n {n}, p {p})")
 
 
@@ -98,12 +97,21 @@ def stochastic_block(sizes: dict, p, weight: float = 10.0, inhibitory: float = 0
     _C.unit('inhibitory', inhibitory)
     _C.finite('weight', weight)
     names = list(sizes)
+    if not names:
+        raise ValueError("sizes가 비어 있음")
+    for k in names:
+        _C.integer(f"sizes[{k!r}]", sizes[k])
     if isinstance(p, dict):
+        unknown = [ab for ab in p if not (isinstance(ab, tuple) and len(ab) == 2 and ab[0] in sizes and ab[1] in sizes)]
+        if unknown:
+            raise KeyError(f"p에 sizes에 없는 그룹 쌍: {unknown[:5]}")
         P = np.array([[float(p.get((a, b), 0.0)) for b in names] for a in names])
     else:
         P = np.asarray(p, float)
         if P.shape != (len(names), len(names)):
             raise ValueError(f"p는 {len(names)}x{len(names)}")
+    if not (np.isfinite(P).all() and (P >= 0).all() and (P <= 1).all()):
+        raise ValueError("p의 확률은 0 ~ 1")
     rng = np.random.default_rng(seed)
     start = np.cumsum([0] + [sizes[k] for k in names])
     n = int(start[-1])
@@ -126,6 +134,9 @@ def layered(sizes, p: float, weight: float = 10.0, inhibitory: float = 0.0, seed
     _C.unit('p', p)
     _C.unit('inhibitory', inhibitory)
     _C.finite('weight', weight)
+    sizes = list(sizes)
+    if len(sizes) < 2:
+        raise ValueError(f"sizes는 [입력, ..., 출력] 2개 이상: {sizes}")
     names = ["in"] + [f"h{i}" for i in range(1, len(sizes) - 1)] + ["out"]
     P = {(names[i], names[i + 1]): p for i in range(len(sizes) - 1)}
     c = stochastic_block(dict(zip(names, sizes)), P, weight=weight, inhibitory=inhibitory, seed=seed)
