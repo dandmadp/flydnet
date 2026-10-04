@@ -161,6 +161,12 @@ class ConnectomeLayer(Tissue):
             raise ValueError(f"share는 'edge'(연결마다) 또는 'pair'(연결 종류마다): {share!r}")
         if not t_ms > 0:
             raise ValueError(f"t_ms는 양수 (ms): {t_ms}")
+        if dt is not None and not dt > 0:
+            raise ValueError(f"dt는 양수 (ms): {dt}")
+        for k, v in (gains or {}).items():
+            if not (v >= 0 and np.isfinite(v)):
+                raise ValueError(f"gains[{k!r}]는 0 이상 ({v}) - 흥분·억제 부호를 바꾸려면 Circuit.with_sign, "
+                                 "연결을 끊으려면 0")
         if not 0 <= count_from_ms < t_ms:
             raise ValueError("count_from_ms는 0 이상 t_ms 미만")
         if t_ms < (dt if dt is not None else DEFAULT_PARAMS["dt"]):
@@ -296,6 +302,8 @@ class ConnectomeLayer(Tissue):
         self._build()
 
     def set_gain(self, key: str, value: float):
+        if not (value >= 0 and np.isfinite(value)):
+            raise ValueError(f"gain은 0 이상: {value}")
         self.gains[key] = value
         self._build()
 
@@ -705,6 +713,9 @@ class ConnectomeLayer(Tissue):
         층의 gains가 바뀜 (저장됨). 반환: 그룹별 처음·마지막 발화율과 배율 표"""
         import pandas as pd
         tgt = {g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
+        for g, v in tgt.items():
+            if not (v > 0 and np.isfinite(v)):
+                raise ValueError(f"목표 발화율은 양수 (Hz): {g}={v} - 그룹을 끄려면 fd.genetics.silence")
         for g in tgt:
             if g not in self.circuit.groups:
                 raise KeyError(f"회로에 없는 그룹: {g}")

@@ -365,6 +365,10 @@ class LateralInhibition(Tissue):
         super().__init__()
         if (k is None) == (frac is None):
             raise ValueError("k와 frac 중 하나만")
+        if frac is not None and not 0 < frac <= 1:
+            raise ValueError(f"frac은 0 초과 1 이하 (남길 비율): {frac}")
+        if k is not None and not (isinstance(k, (int, np.integer)) and k >= 1):
+            raise ValueError(f"k는 1 이상의 정수: {k}")
         self.k, self.frac = k, frac
 
     def forward(self, x):

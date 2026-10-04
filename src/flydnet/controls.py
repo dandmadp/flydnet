@@ -307,6 +307,8 @@ def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None 
     check_repeat: 실제 회로·첫 seed를 한 번 더 돌려 재현되는지 확인 (실행 한 번 추가)
     """
     controls = [_as_control(c) for c in controls]
+    if not controls:
+        raise ValueError("대조군이 없음 - 예: controls=['shuffled', 'randomized']")
     names = [c.name for c in controls]
     if len(set(names)) != len(names):
         raise ValueError(f"대조군 이름이 겹침: {names} (name=으로 구분)")

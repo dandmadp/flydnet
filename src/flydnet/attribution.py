@@ -103,6 +103,8 @@ def explain(score, layer, by: str | None = None, pathways: bool = False, verify:
     if not hasattr(layer, "_probe"):
         raise TypeError("ConnectomeLayer에서만 (fd.ConnectomeLayer)")
     seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    if not seeds:
+        raise ValueError("seeds는 1개 이상")
     circuit, dev = layer.circuit, layer.device
     by = by or default_by(circuit)
     xp = B.xp(dev)

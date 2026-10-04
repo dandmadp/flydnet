@@ -61,6 +61,10 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
     y = B.labels(y)
     if len(X) != len(y):
         raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
+    if not (isinstance(batch, (int, np.integer)) and batch >= 1):
+        raise ValueError(f"batch는 1 이상의 정수: {batch}")
+    if not (isinstance(epochs, (int, np.integer)) and epochs >= 0):
+        raise ValueError(f"epochs는 0 이상의 정수: {epochs}")
     if schedule not in ("cosine", "constant"):
         raise ValueError(f"schedule은 'cosine' 또는 'constant': {schedule!r}")
     if synapses is None:
@@ -104,8 +108,9 @@ def door_task(n_odors: int = 12, samples: int = 24, noise: float = 0.8, backgrou
         from .circuit import Circuit
         from .encoders import GlomerularEncoder
         glomeruli = GlomerularEncoder(Circuit.from_flywire(), device="cpu").glomeruli
-    if samples < 1:
-        raise ValueError(f"samples는 1 이상: {samples}")
+    for nm, v, lo in (("n_odors", n_odors, 2), ("samples", samples, 1)):
+        if not (isinstance(v, (int, np.integer)) and v >= lo):
+            raise ValueError(f"{nm}는 {lo} 이상의 정수: {v}")
     door = door_odors(glomeruli, data_dir=data_dir)
     if len(door["X"]) < 2:
         raise ValueError(f"쓸 수 있는 냄새가 {len(door['X'])}개 - 사구체 {len(glomeruli)}개 중 측정된 것이 적음 "

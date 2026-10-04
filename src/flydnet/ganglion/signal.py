@@ -75,6 +75,7 @@ class Signal:
         self.retro = None
         self._parents: tuple = ()
         self._back = None                                  # g → 부모마다의 역행성 신호
+        self._spent = False                                # 이 신호에서 이미 역행성 신호를 보내 경로를 풀었음
 
     # ─────────────── 기본 정보 ───────────────
     @property
@@ -144,6 +145,9 @@ class Signal:
         keep=True면 경로를 풀지 않음 (같은 경로로 다시 보낼 때, retain_graph)"""
         if not self.plastic:
             raise RuntimeError("plastic이 아닌 신호에서는 역행성 신호를 보낼 수 없음")
+        if self._spent:
+            raise RuntimeError("이미 역행성 신호를 보내 경로를 푼 신호 - 같은 경로로 다시 보내려면 첫 번째에 "
+                               "retrograde(keep=True), 아니면 순전파부터 다시")
         xp = self.xp
         if retro is None:
             if self.data.size != 1:
@@ -174,6 +178,7 @@ class Signal:
             for node in order:                               # 경로 풀기 (메모리 해제)
                 if node._back is not None:
                     node._parents, node._back = (), None
+                    node._spent = True
 
     def _send(self, order, retro):
         grads = {id(self): retro}

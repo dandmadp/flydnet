@@ -8,6 +8,13 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- 오류 점검 5차:
+  - **같은 손실로 retrograde를 두 번 하면 오류** (전에는 두 번째가 조용히 아무것도 안 함 - 기울기가 쌓였다고 착각하기 쉬움).
+    다시 보내려면 첫 번째에 `keep=True` (torch와 같은 규칙)
+  - 조용히 틀리던 것을 오류로: `calibrate` 목표 음수(배율이 NaN), 음수 `gains`·`set_gain`(흥분·억제가 뒤집힘 -
+    부호는 `with_sign`), 음수 `dt`, `explain(seeds=0)`(모두 NaN), 대조군 없는 `compare`, `Inhibition(frac>1)`
+  - 알기 쉬운 메시지: `fd.train(batch=0, epochs<0)`, `door_task`의 정수 아닌 개수, `Inhibition(k<1)`
+  - 확인만 함 (맞음): 브로드캐스팅·불리언 마스크·음수 인덱스·간격 슬라이스·중복 고급 인덱싱·같은 층 재사용의 기울기
 - **입력 자료형 자유롭게**: 층(Projection, Connectome, Homeostasis, Neuropil, 인코더 등)·`fd.train`이 정수·불리언·uint8·
   float16·torch bfloat16·리스트·pandas·torch·CuPy 모두 받고 float32로 계산 (numpy·torch·CuPy float64를 넣으면 정밀도를
   위해 그대로). 전에는 bfloat16이 모든 곳에서 실패하고, 정수 입력은 float64로 승격되어 느리고 메모리를 두 배로 씀.

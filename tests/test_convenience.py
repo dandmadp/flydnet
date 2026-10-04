@@ -116,7 +116,11 @@ def test_door_task():
         pytest.skip("DoOR 데이터 없음")
     glom = [f"G{i}" for i in range(3)]
     with pytest.raises(ValueError, match="쓸 수 있는 냄새"):                 # 사구체가 적어 측정된 냄새가 없음
+        fd.door_task(n_odors=2, glomeruli=glom)
+    with pytest.raises(ValueError, match="n_odors"):
         fd.door_task(n_odors=1, glomeruli=glom)
+    with pytest.raises(ValueError, match="n_odors"):
+        fd.door_task(n_odors=3.5, glomeruli=glom)
     with pytest.raises(ValueError, match="samples"):
         fd.door_task(samples=0, glomeruli=glom)
     if missing("flywire"):
@@ -297,3 +301,36 @@ def test_label_dtypes():
         fd.surprise(z, [0, 1.7, 1])
     with pytest.raises(ValueError, match="np.unique"):
         fd.surprise(z, ["a", "b", "a"])
+
+
+
+# ─────────────── 5차 오류 점검 ───────────────
+def test_double_retrograde_errors():
+    p = fd.Projection(3, 2, device="cpu")
+    loss = (p(np.ones((2, 3), np.float32)) ** 2).sum()
+    loss.retrograde()
+    with pytest.raises(RuntimeError, match="keep=True"):
+        loss.retrograde()
+    p.clear_retro()
+    loss2 = (p(np.ones((2, 3), np.float32)) ** 2).sum()
+    loss2.retrograde(keep=True)
+    g = p.weight.retro.copy()
+    loss2.retrograde()                                                     # keep=True면 다시 보낼 수 있음 (기울기 두 배)
+    np.testing.assert_allclose(p.weight.retro, 2 * g)
+
+
+@pytest.mark.parametrize("make,match", [
+    (lambda: _L(dt=-0.1), "dt는 양수"),
+    (lambda: _L(gains={"IN>H": -2.0}), "0 이상"),
+    (lambda: _L().set_gain("IN>H", -1), "0 이상"),
+    (lambda: fd.Connectome(_c(), "IN", ("H", "O"), t_ms=30, device="cpu").calibrate(X, {"H": -5}), "양수"),
+    (lambda: fd.explain(lambda l, s: l(X, seed=s).sum(), _L(), seeds=0), "seeds"),
+    (lambda: fd.compare(lambda c, s: 0.5, _c(), controls=[], seeds=3, verbose=False), "대조군이 없음"),
+    (lambda: fd.train(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], batch=0, verbose=False), "batch"),
+    (lambda: fd.train(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], epochs=-1, verbose=False), "epochs"),
+    (lambda: fd.Inhibition(frac=1.5), "frac"),
+    (lambda: fd.Inhibition(k=0), "k는"),
+])
+def test_bad_numbers_rejected(make, match):
+    with pytest.raises(ValueError, match=match):
+        make()
