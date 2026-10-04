@@ -224,3 +224,56 @@ def test_fused_inverse_cache_not_fooled_by_reused_gpu_memory(monkeypatch):
     for a, b in zip(fast, slow):
         np.testing.assert_array_equal(a, b)
     assert fast[4][0, H[:5]].mean() > fast[4][0, H[5:10]].mean()          # 두 번째 A: A 뉴런이 자극됨
+
+
+# ─────────────── 전체 검토 2회차 ───────────────
+def test_stdp_sees_post_spikes_of_blocked_neurons():
+    """Shibire(block)는 발화는 그대로 두고 전달만 막음 - STDP의 시냅스 후 흔적은 실제 발화로 (예전: 0이 되어 학습 없음)"""
+    c = _rec(feedback_edges=True, strong=True)
+    X = np.random.default_rng(0).uniform(50, 200, (4, 6)).astype(np.float32)
+    layer = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu", trainable=True)
+    st = fd.STDP(layer)
+    onto = np.isin(B.numpy(layer.wiring.post)[B.numpy(layer.train_pos)], c.groups["O"])
+    with fd.genetics.block(layer, fd.genetics.driver(c, group="O")):
+        st(X, seed=1)
+        d = st.assign()
+    assert np.abs(B.numpy(d)[onto]).sum() > 0
+
+
+def test_tune_surrogate_restores_layer_on_failure():
+    layer = fd.Connectome(_rec(strong=True), "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair")
+    n = [0]
+
+    def score(l, s):
+        n[0] += 1
+        if n[0] > 3:
+            raise RuntimeError("score 실패")
+        return l(np.full((2, 6), 100, np.float32), seed=s).sum()
+    with pytest.raises(RuntimeError):
+        fd.tune(score, layer, verbose=False)
+    assert layer.surrogate_damp == "auto"
+
+
+def test_load_state_is_all_or_nothing():
+    a = fd.Pathway(fd.Projection(4, 3, device="cpu", seed=0), fd.Projection(3, 2, device="cpu", seed=1))
+    st = a.state()
+    bad = dict(st, **{"0.weight": st["0.weight"] + 1, "1.weight": np.zeros((5, 5), np.float32)})
+    with pytest.raises(ValueError, match="1.weight"):
+        a.load_state(bad)
+    np.testing.assert_array_equal(a.state()["0.weight"], st["0.weight"])  # 앞 값도 그대로
+
+
+def test_calibrate_restores_gains_when_interrupted():
+    c = fd.graphs.layered([20, 100, 10], 0.15, seed=0)
+    layer = fd.Connectome(c, "in", "out", device="cpu")
+    n, orig = [0], layer.forward
+
+    def flaky(*a, **k):
+        n[0] += 1
+        if n[0] == 4:
+            raise KeyboardInterrupt
+        return orig(*a, **k)
+    layer.forward = flaky
+    with pytest.raises(KeyboardInterrupt):
+        layer.calibrate(np.full((4, 20), 100, np.float32), {"out": 10})
+    assert layer.gains == {}

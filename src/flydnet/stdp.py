@@ -3,7 +3,8 @@
 관찰자 규격 (fd.ThreeFactor, fd.STDP가 따름 - 같은 방식으로 직접 만들 수 있음)
   begin(info)                    순전파 시작: info = dict(steps, s_cnt, batch, dt, dly, gain, rate_c, ...)
   step(s, spikes, **extra)       스텝마다: spikes = 이번 스텝에 시냅스로 나간 스파이크 (N, 배치) 배열
-                                 내장 LIF면 extra에 u (문턱까지 거리), act (적분 중인지)
+                                 extra: fired (실제 발화 - Shibire(block)로 전달이 막혀도 1), 내장 LIF면 u (문턱까지 거리),
+                                 act (적분 중인지)
   층에 붙이기: layer._observer = 관찰자 (Monitor.run이 대신 해 줌)
 
   stdp = fd.STDP(layer, a_plus=0.01, a_minus=0.012)
@@ -79,14 +80,15 @@ class STDP(Monitor):
         self._bn = Bn
 
     def step(self, s, spikes, **extra):
-        S = spikes
+        S = spikes                                                     # 시냅스 전: 실제로 전달된 스파이크
+        F = extra.get("fired", spikes)                                 # 시냅스 후: 실제 발화 (전달이 막혀도 발화는 함)
         self._x *= self._dp
         self._y *= self._dm
         pre, post = self._pre, self._post
-        self._d += (self.a_plus * (self._x[pre] * S[post]).sum(axis=1)
+        self._d += (self.a_plus * (self._x[pre] * F[post]).sum(axis=1)
                     - self.a_minus * (self._y[post] * S[pre]).sum(axis=1)) / self._bn
         self._x += S
-        self._y += S
+        self._y += F
 
     def run(self, rates=None, seed=None, batch: int = 1):
         out = super().run(rates, seed, batch)

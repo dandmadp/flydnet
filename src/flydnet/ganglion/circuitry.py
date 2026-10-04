@@ -564,7 +564,7 @@ class ConnectomeLayer(Tissue):
                 sent = spk if blocked is None else scaled(spk, blocked)    # Shibire: 발화는 하지만 전달 없음
                 buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring, binary=binary)
                 if obs is not None:
-                    obs.step(s, sent.data, u=uu[0], act=act)
+                    obs.step(s, sent.data, u=uu[0], act=act, fired=spk.data)     # fired: Shibire로 막혀도 실제 발화
                 release(spk, sent, spk_raw)
             return (V, G, refr, counts, phase, *buf)
 
@@ -681,7 +681,7 @@ class ConnectomeLayer(Tissue):
                 sent = spk if blocked is None else spk * blocked
                 buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
                 if obs is not None:
-                    obs.step(s, sent.data)
+                    obs.step(s, sent.data, fired=spk.data)
             return (counts, phase, *[st[k] for k in names], *buf)
 
         z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))
@@ -838,6 +838,31 @@ class ConnectomeLayer(Tissue):
         if measure.inputs is not None and measure.inputs < 1:
             raise ValueError(self._quiet_inputs_msg(rates, measure.inputs) + " - 연결 배율로는 고칠 수 없어 보정하지 않음")
         capped = set()
+        saved = dict(self.gains)
+        try:
+            now = self._calibrate_loop(iters, groups, tgt, relay, relay_hz, tol, step, max_gain, factor, capped, incoming,
+                                       now, measure, done, verbose)
+        except BaseException:                                       # 도중에 실패·중단하면 배율을 원래대로 (반쯤 바뀐 채 남지 않게)
+            self.gains = saved
+            self._build()
+            raise
+        miss = {g: now[g] for g in tgt if abs(now[g] - tgt[g]) > tol * tgt[g]}
+        if miss:
+            import warnings
+            why = (f" 배율이 상한 max_gain={max_gain:g}에 닿음 ({sorted(capped & set(miss)) or sorted(capped)})" if capped else
+                   f" 반복이 모자랐을 수 있음 (iters={iters})")
+            warnings.warn("보정 뒤에도 목표에 못 닿은 그룹: " +
+                          ", ".join(f"{g} {v:.3g} Hz (목표 {tgt[g]:g})" for g, v in miss.items()) + " -" + why +
+                          ". layer.reach(rates)로 어디서 끊기는지 확인 (경로가 억제뿐이거나 t_ms가 짧거나 입력이 약할 수 있음)",
+                          stacklevel=2)
+        return pd.DataFrame({"group": groups, "role": ["목표"] * len(tgt) + ["중계"] * len(relay),
+                             "target_hz": [tgt.get(g, relay_hz) for g in groups],
+                             "before_hz": [first[g] for g in groups], "after_hz": [now[g] for g in groups],
+                             "gain_factor": [factor[g] for g in groups]})
+
+    def _calibrate_loop(self, iters, groups, tgt, relay, relay_hz, tol, step, max_gain, factor, capped, incoming, now,
+                        measure, done, verbose):
+        """calibrate의 반복 (배율을 바꾸며 다시 잼). 마지막 측정값을 돌려줌"""
         for it in range(iters):
             if done(now):
                 break
@@ -862,19 +887,7 @@ class ConnectomeLayer(Tissue):
             if verbose:
                 from .._console import say
                 say(f"  보정 {it + 1}: " + ", ".join(f"{g} {now[g]:.1f} Hz" for g in groups), flush=True)
-        miss = {g: now[g] for g in tgt if abs(now[g] - tgt[g]) > tol * tgt[g]}
-        if miss:
-            import warnings
-            why = (f" 배율이 상한 max_gain={max_gain:g}에 닿음 ({sorted(capped & set(miss)) or sorted(capped)})" if capped else
-                   f" 반복이 모자랐을 수 있음 (iters={iters})")
-            warnings.warn("보정 뒤에도 목표에 못 닿은 그룹: " +
-                          ", ".join(f"{g} {v:.3g} Hz (목표 {tgt[g]:g})" for g, v in miss.items()) + " -" + why +
-                          ". layer.reach(rates)로 어디서 끊기는지 확인 (경로가 억제뿐이거나 t_ms가 짧거나 입력이 약할 수 있음)",
-                          stacklevel=2)
-        return pd.DataFrame({"group": groups, "role": ["목표"] * len(tgt) + ["중계"] * len(relay),
-                             "target_hz": [tgt.get(g, relay_hz) for g in groups],
-                             "before_hz": [first[g] for g in groups], "after_hz": [now[g] for g in groups],
-                             "gain_factor": [factor[g] for g in groups]})
+        return now
 
     # ─────────────── 신호 경로 ───────────────
     def _group_graph(self, excitatory: bool = False) -> dict:

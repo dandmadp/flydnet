@@ -169,10 +169,12 @@ class Tissue:
                     object.__setattr__(t, n, B.to(np.asarray(state[prefix + n]), dev))
             for n, c in t._tissues.items():
                 walk(c, prefix + n + ".")
+        bad = [f"{n}: 모양 {tuple(np.shape(arr))} ≠ {tuple(syn[n].shape)}" for n, arr in state.items()
+               if n in syn and tuple(np.shape(arr)) != tuple(syn[n].shape)]
+        if bad:                                                 # 모두 먼저 확인 (예전: 앞의 값을 바꾼 뒤에 오류 → 반쯤 불러온 모델)
+            raise ValueError("; ".join(bad))
         for n, arr in state.items():
             if n in syn:
-                if tuple(arr.shape) != tuple(syn[n].shape):
-                    raise ValueError(f"{n}: 모양 {arr.shape} ≠ {syn[n].shape}")
                 syn[n].data = B.to(np.asarray(arr, dtype=syn[n].data.dtype), dev)
         walk(self, "")
         for t in self.tissues():

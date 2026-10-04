@@ -136,7 +136,11 @@ def tune_surrogate(score, layer, candidates=("auto", 1.0, 0.3, 0.1, 0.03), eps: 
     best, key, reliable = None, None, False
     for d in candidates:
         layer.surrogate_damp = d if d == "auto" else float(d)
-        r = gradcheck(score, layer, eps=eps, seed=seed, seeds=seeds)
+        try:
+            r = gradcheck(score, layer, eps=eps, seed=seed, seeds=seeds)
+        except BaseException:
+            layer.surrogate_damp = old                                 # 도중에 실패하면 층을 원래대로 (시험하던 값으로 남지 않게)
+            raise
         if verbose:
             say(f"  surrogate_damp {r.damp:<10} cos {r.cos:+.3f}  크기 비율 {r.ratio:.3g}  기준 신뢰도 {r.fd_consistency:+.2f}",
                 flush=True)

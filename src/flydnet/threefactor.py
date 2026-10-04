@@ -128,7 +128,7 @@ class ThreeFactor:
         self._ring = [None] * info["dly"]                                    # 지연 중인 시냅스 전 스파이크 (s - dly에 보낸 것)
         self._gt = xp.zeros(E, dtype=xp.float32)
 
-    def step(self, s, sent, u=None, act=None):
+    def step(self, s, sent, u=None, act=None, **extra):
         """lif_step_brian과 같은 순서: 적분(act면) → 발화 판정 → 도착(act면) → 리셋(발화면 흔적 0)"""
         i = self._i
         xp = B.xp(self.layer.device)
