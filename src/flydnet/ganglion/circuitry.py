@@ -399,6 +399,14 @@ class ConnectomeLayer(Tissue):
             raise ValueError("입력에 NaN·무한대가 있음 (그대로 두면 스파이크가 안 생겨 출력이 조용히 0이 됨)")
         if self.neuron != "graded" and x.data.size and bool((x.data < 0).any()):
             raise ValueError(f"입력 발화율은 0 이상 (Hz): 최소 {float(x.data.min()):.3g} - 음수는 스파이크가 안 생겨 조용히 0이 됨")
+        if self.neuron != "graded" and self.n_in and x.data.size and not getattr(self, "_unit_warned", False):
+            top = float(x.data.max())
+            if 0 < top <= 1:                                                 # 흔한 실수: 정규화한 값을 그대로
+                import warnings
+                self._unit_warned = True
+                warnings.warn(f"입력 최댓값이 {top:.3g} - ConnectomeLayer의 입력은 발화율(Hz)이라 1 Hz 이하면 {self.t_ms} ms 동안 "
+                              f"입력 뉴런당 스파이크가 평균 {top * self.t_ms / 1000:.2g}번뿐 (거의 입력 없음). 0~1 값이면 x * 100이나 "
+                              "fd.RateEncoder(n, n, max_rate=100, projection=None)로 Hz로 바꿀 것", stacklevel=3)
         if self.neuron != "graded" and x.data.size and not getattr(self, "_sat_warned", False):
             top = float(x.data.max())
             if top * self.p["dt"] / 1000.0 > 0.2:                        # 스텝당 확률 0.2 넘으면 포화가 시작됨
@@ -742,7 +750,7 @@ class ConnectomeLayer(Tissue):
         return layer
 
     def calibrate(self, rates, target=20.0, iters: int = 20, tol: float = 0.1, seed: int = 0, step: float = 0.5,
-                  relay_hz: float | None = 5.0, verbose: bool = False):
+                  relay_hz: float | None = 5.0, max_gain: float = 1000.0, verbose: bool = False):
         """가중치 자동 보정: 그룹마다 평균 발화율이 target이 되도록 그 그룹으로 들어오는 연결 종류의 배율(gains)을 조정
 
         rates:    대표 입력 (B, n_in) - 실제로 쓸 입력과 비슷하게
@@ -750,13 +758,17 @@ class ConnectomeLayer(Tissue):
         relay_hz: 입력 → 목표 그룹의 흥분성 경로 위에 있는 중간 그룹(중계)이 이보다 약하면 이 값까지 올림 (낮추지는 않음).
                   예전에는 목표 그룹으로 들어오는 연결만 키워서, 중간 층이 꺼져 있으면 배율이 256배가 돼도 출력이 0 Hz인
                   채로 끝났음. None이면 중계 그룹은 건드리지 않음
+        max_gain: 그룹마다 이번 보정에서 곱할 수 있는 배율의 상한. 예전에는 상한이 없어, 입력이 거의 발화하지 않을 때
+                  배율이 43억 배(2^32)까지 올라가고도 목표에 못 미친 채 조용히 끝났음
         반복마다 배율 x (목표 / 현재)^step (발화가 없으면 x 2), 모든 그룹이 목표의 ±tol 안이면 멈춤.
+        입력 뉴런이 시행당 한 번도 발화하지 않을 만큼 약하면 (예: 0~1 값을 Hz로) 배율로는 고칠 수 없으므로 바로 오류.
         층의 gains가 바뀜 (저장됨). 반환: 그룹별 역할(목표·중계)·처음·마지막 발화율·배율 표. 목표에 못 닿으면 경고"""
         import pandas as pd
         _C.integer("iters", iters, lo=0)
         _C.pos("step", step)
         _C.pos("tol", tol)
         _C.optional(_C.pos, "relay_hz", relay_hz)
+        _C.pos("max_gain", max_gain)
         self._silent_checked = True                                     # 바로 이것을 고치는 중 - "출력이 모두 0" 경고는 안 냄
         tgt = {g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
         for g, v in tgt.items():
@@ -780,14 +792,20 @@ class ConnectomeLayer(Tissue):
         factor = {g: 1.0 for g in groups}
 
         def measure():
-            with quiescent():
+            import warnings
+            with quiescent(), warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="입력 최댓값이")      # 아래에서 더 정확한 오류로 알림
                 r = self(rates, seed=seed, return_all=True).data
+            measure.inputs = self._input_spikes(r)
             return {g: float(r[:, idx[g]].mean()) for g in groups}
 
         def done(now):
             return all(abs(now[g] - tgt[g]) <= tol * tgt[g] for g in tgt) and \
                 all(now[g] >= relay_hz * (1 - tol) for g in relay)
         first = now = measure()
+        if measure.inputs is not None and measure.inputs < 1:
+            raise ValueError(self._quiet_inputs_msg(rates, measure.inputs) + " - 연결 배율로는 고칠 수 없어 보정하지 않음")
+        capped = set()
         for it in range(iters):
             if done(now):
                 break
@@ -798,6 +816,11 @@ class ConnectomeLayer(Tissue):
                     f = 2.0 if now[g] <= 0 else float(np.clip((relay_hz / now[g]) ** step, 1.0, 4.0))
                 else:
                     continue
+                if factor[g] * f > max_gain:                                 # 상한: 여기서 멈추고 알림
+                    f = max_gain / factor[g]
+                    capped.add(g)
+                    if f <= 1.0:
+                        continue
                 factor[g] *= f
                 for k in incoming[g]:
                     self.gains[k] = self.gains.get(k, 1.0) * f
@@ -807,11 +830,15 @@ class ConnectomeLayer(Tissue):
             if verbose:
                 from .._console import say
                 say(f"  보정 {it + 1}: " + ", ".join(f"{g} {now[g]:.1f} Hz" for g in groups), flush=True)
-        dead = [g for g in tgt if now[g] <= 0]
-        if dead:
+        miss = {g: now[g] for g in tgt if abs(now[g] - tgt[g]) > tol * tgt[g]}
+        if miss:
             import warnings
-            warnings.warn(f"보정 뒤에도 신호가 닿지 않는 그룹: {dead} - layer.reach(rates)로 어디서 끊기는지 확인 "
-                          "(경로가 억제뿐이거나 t_ms가 경로보다 짧을 수 있음)", stacklevel=2)
+            why = (f" 배율이 상한 max_gain={max_gain:g}에 닿음 ({sorted(capped & set(miss)) or sorted(capped)})" if capped else
+                   f" 반복이 모자랐을 수 있음 (iters={iters})")
+            warnings.warn("보정 뒤에도 목표에 못 닿은 그룹: " +
+                          ", ".join(f"{g} {v:.3g} Hz (목표 {tgt[g]:g})" for g, v in miss.items()) + " -" + why +
+                          ". layer.reach(rates)로 어디서 끊기는지 확인 (경로가 억제뿐이거나 t_ms가 짧거나 입력이 약할 수 있음)",
+                          stacklevel=2)
         return pd.DataFrame({"group": groups, "role": ["목표"] * len(tgt) + ["중계"] * len(relay),
                              "target_hz": [tgt.get(g, relay_hz) for g in groups],
                              "before_hz": [first[g] for g in groups], "after_hz": [now[g] for g in groups],
@@ -878,6 +905,27 @@ class ConnectomeLayer(Tissue):
                           f"({min(hops) * self.p['t_dly']:.1f} ms)보다 짧아 출력에 신호가 닿지 않음 - t_ms를 늘릴 것",
                           stacklevel=3)
 
+    def _input_spikes(self, r):
+        """가장 활발한 입력 뉴런이 시행 하나에 내는 평균 스파이크 수 (입력 그룹이 없으면 None).
+        평균이 아니라 최대: 버섯체 PN의 절반처럼 일부러 입력 0인 뉴런이 섞여 있어도 오판하지 않게"""
+        if not self.n_in:
+            return None
+        per = r[:, self.in_idx].mean(axis=0)
+        span = (self.t_ms - self.count_from_ms) / 1000.0
+        return float(per.max()) * span if per.size else 0.0
+
+    def _quiet_inputs_msg(self, rates, spikes) -> str:
+        x = rates.data if isinstance(rates, Signal) else rates
+        try:
+            top = float(B.numpy(x).max()) if not hasattr(x, "detach") else float(x.detach().max())
+        except Exception:                                                # noqa: BLE001 - 안내용
+            top = float("nan")
+        unit = (f" 입력 최댓값이 {top:.3g}라 0~1로 정규화한 값으로 보임 - ConnectomeLayer의 입력은 발화율(Hz): "
+                "x * 100이나 fd.RateEncoder(n_in, n_in, max_rate=100, projection=None)로 Hz로 바꿀 것."
+                if 0 < top <= 1 else "")
+        return (f"입력 뉴런이 거의 발화하지 않음 (가장 활발한 입력 뉴런도 시행당 평균 {spikes:.2g}번, "
+                f"t_ms {self.t_ms} ms).{unit}")
+
     def _check_silent(self, x, rate):
         """처음 순전파 한 번: 입력이 있는데 출력이 모두 0이면 경고 (효과기가 켜져 있으면 의도일 수 있어 건너뜀).
         입력 뉴런조차 발화하지 않았으면 원인이 연결이 아니라 입력이므로 따로 알림"""
@@ -888,10 +936,12 @@ class ConnectomeLayer(Tissue):
             return
         import warnings
         outs = "+".join(self.out_names)
-        if not bool((rate.data[:, self.in_idx] != 0).any()):
-            warnings.warn(f"출력 {outs}이 모두 0 - 입력 뉴런도 한 번도 발화하지 않음: 입력 발화율(Hz)이 너무 낮거나 "
-                          f"t_ms({self.t_ms} ms)가 짧음 (예: 10 Hz면 100 ms에 평균 1번). 입력을 Hz 단위로 키울 것 "
-                          "(fd.RateEncoder·Glomeruli가 0~max_rate Hz로 바꿔 줌)", stacklevel=3)
+        spikes = self._input_spikes(rate.data)
+        if spikes is not None and spikes < 1:
+            if getattr(self, "_unit_warned", False):                    # 0~1 입력 안내가 이미 같은 원인을 말함
+                return
+            warnings.warn(f"출력 {outs}이 모두 0 - " + self._quiet_inputs_msg(x, spikes) +
+                          " 입력이 약하면 연결 배율(calibrate)로는 고칠 수 없음", stacklevel=3)
         else:
             warnings.warn(f"입력이 있는데 출력 {outs}이 모두 0 - 신호가 출력까지 가지 못함 (연결이 약함). "
                           "layer.calibrate(rates)로 세기를 맞추거나 layer.reach(rates)로 어디서 끊기는지 확인. "

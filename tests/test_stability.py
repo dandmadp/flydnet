@@ -26,6 +26,7 @@ def _circuit():
 
 # ─────────────── 예전 버전이 저장한 파일 ───────────────
 @pytest.mark.filterwarnings("ignore:.*모두 0")                    # 0.1.15 파일의 작은 입력 - 불러오기만 확인
+@pytest.mark.filterwarnings("ignore:입력 최댓값이")                    # 0~1 입력 안내도
 @pytest.mark.parametrize("ver", sorted(p.name for p in LEGACY.glob("v*")))
 def test_legacy_files_still_load(ver):
     """예전 flydnet이 저장한 파일을 지금 버전이 읽고 같은 결과를 냄 (새 버전 파일은 make_legacy.py로 추가)"""

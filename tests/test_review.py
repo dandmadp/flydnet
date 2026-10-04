@@ -236,11 +236,15 @@ def test_path_warnings_at_construction():
 def test_silent_warning_blames_inputs_when_they_never_fire():
     c, _ = _deep()
     layer = fd.Connectome(c, "in", "out", device="cpu", t_ms=5)
-    with pytest.warns(UserWarning, match="입력 뉴런도"):
-        layer(np.full((2, 20), 0.01, np.float32), seed=0)
+    with pytest.warns(UserWarning, match="거의 발화하지 않음"):            # 1보다 크지만 5 ms에 스파이크가 거의 없는 입력
+        layer(np.full((2, 20), 3.0, np.float32), seed=0)
+    layer = fd.Connectome(c, "in", "out", device="cpu", t_ms=5)
+    with pytest.warns(UserWarning, match="발화율\(Hz\)"):              # 0~1 값을 그대로 (흔한 실수)
+        layer(np.full((2, 20), 0.5, np.float32), seed=0)
 
 
 @pytest.mark.filterwarnings("ignore:.*모두 0")                    # 아주 작은 입력은 일부러
+@pytest.mark.filterwarnings("ignore:입력 최댓값이")                    # 0~1 입력 안내도
 def test_hash_random_never_zero_at_seed_zero():
     """splitmix64는 0 → 0: seed 0·스텝 0·칸 0이 늘 0.0이라 그 입력 뉴런이 발화율과 상관없이 처음에 발화했음"""
     from flydnet.ganglion.physiology import hash_uniform

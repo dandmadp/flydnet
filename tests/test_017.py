@@ -100,3 +100,38 @@ def test_concat_accepts_arrays():
     y.sum().retrograde()
     np.testing.assert_array_equal(y.data, [[1, 1], [0, 0]])
     np.testing.assert_array_equal(a.retro, [[1, 1]])
+
+
+def _colab():
+    """Colab에서 실제로 쓴 코드: 입력 2개 → 출력 1개, torch.rand(32, 2) (0~1 값)"""
+    c = fd.Circuit([0, 1, 2], {"input_group": [0, 1], "output_group": [2]}, [0, 1], [2, 2], [1.0, 1.0])
+    x = np.random.default_rng(0).random((32, 2)).astype(np.float32)
+    return c, x
+
+
+def test_unit_hint_for_normalized_inputs():
+    """0~1 입력은 Hz로 해석돼 거의 입력이 없음 - 예전에는 "연결이 약함"으로 잘못 안내했음"""
+    c, x = _colab()
+    layer = fd.ConnectomeLayer(c, inputs=["input_group"], outputs=["output_group"], device="cpu")
+    with pytest.warns(UserWarning, match="발화율\(Hz\)") as rec:
+        layer(x)
+    assert not any("연결이 약함" in str(w.message) for w in rec)
+
+
+def test_calibrate_refuses_quiet_inputs_instead_of_huge_gains():
+    """예전: 0~1 입력에 배율을 43억 배까지 올리고 목표 20 Hz 대신 0.6 Hz로 조용히 끝남"""
+    c, x = _colab()
+    layer = fd.ConnectomeLayer(c, inputs=["input_group"], outputs=["output_group"], device="cpu")
+    with pytest.raises(ValueError, match="Hz로 바꿀 것"):
+        layer.calibrate(x)
+    assert layer.gains == {}                                               # 아무것도 바꾸지 않음
+    tab = layer.calibrate(x * 100)                                         # Hz로 바꾸면 맞춰짐
+    assert abs(float(tab.after_hz[0]) - 20) <= 2 and float(tab.gain_factor[0]) < 1000
+
+
+def test_calibrate_warns_when_target_missed_and_caps_gain():
+    c, x = _colab()
+    layer = fd.ConnectomeLayer(c, inputs=["input_group"], outputs=["output_group"], device="cpu")
+    with pytest.warns(UserWarning, match="max_gain"):
+        tab = layer.calibrate(x * 100, target=400, max_gain=5)           # 입력보다 빠른 출력은 불가능
+    assert float(tab.gain_factor[0]) <= 5 + 1e-9

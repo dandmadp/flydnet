@@ -268,6 +268,7 @@ def test_data_size_check(tmp_path):
     lambda b: b.tolist(), lambda b: __import__("pandas").DataFrame(b),
 ])
 @pytest.mark.filterwarnings("ignore:.*모두 0")                    # 불리언 입력은 0/1 Hz - 자료형만 확인
+@pytest.mark.filterwarnings("ignore:입력 최댓값이")                    # 0~1 입력 안내도
 def test_any_input_dtype_computes_in_float32(make):
     base = np.random.default_rng(0).uniform(0, 200, (4, 6))
     x = make(base)
