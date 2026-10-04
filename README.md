@@ -61,6 +61,18 @@ model = fd.Pathway(enc, layer, fd.Homeostasis(), fd.Projection(2597, 12))
 hist = fd.train(model, Xtr, ytr, val=(Xte, yte), epochs=12)         # 평가 정확도 0.96 (찍기 0.083), examples/quickstart.py
 ```
 
+출력이 0 Hz일 때 (신호가 출력까지 가지 않음 - 기본 세기로는 버섯체 MBON의 96%, 합성 그래프는 전부 조용함):
+
+```python
+R = fd.Glomeruli(mb)(Xtr[::3])               # 대표 입력 (Hz)
+layer = fd.Connectome(mb, "PN", "MBON")
+print(layer.reach(R))                      # 그룹마다 입력에서의 홉 수·발화율, 신호가 끊기는 곳
+layer.calibrate(R, {"MBON": 20})           # 출력만 목표로 줘도 경로 위 중간 그룹(KC)까지 함께 깨움 (억제 뉴런 APL은 제외)
+```
+
+처음 순전파에서 입력이 있는데 출력이 모두 0이면 경고가 나온다 (입력 뉴런조차 발화하지 않았으면 입력 쪽 문제로 알려 줌).
+층을 만들 때 입력에서 경로가 없는 출력 그룹, 시냅스 지연보다 짧은 `t_ms`도 경고한다.
+
 | 같은 과제, seed 4개 | 정확도 |
 |---|---|
 | MBON 48개에서 읽기 (배율 3 손으로) | 0.57 |
@@ -225,7 +237,8 @@ c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
 ```
 
 - 주석이 없는 그래프에서는 `explain`·`mosaic`·`genetics.lines`가 그룹 단위로 동작한다 (주석이 있으면 `cell_type`).
-- 세기는 시냅스 수처럼 `w_syn`(0.275 mV)을 곱해 쓴다. 세기가 1 근처인 그래프는 `params={"w_syn": ...}`나 `gains`로 키운다.
+- 세기는 시냅스 수처럼 `w_syn`(0.275 mV)을 곱해 쓴다. 기본 세기로 출력이 조용하면 `layer.calibrate(X, {"out": 10})`
+  (중간 층까지 자동으로 맞춤, 예: `layered([20, 100, 100, 10])` 출력 0 → 11 Hz).
 - `examples/any_graph.py`:
   - 예쁜꼬마선충 감각 뉴런 24개 → 체벽 근육 95개로 패턴 구분 + `fd.compare`: 실제 배선의 이점은 보이지 않고,
     시냅스 세기만 섞은 대조군이 오히려 좋음 (+9.7%p, 6/6, p = 0.031). 임의의 패턴 구분은 이 회로가 하는 일이 아니므로

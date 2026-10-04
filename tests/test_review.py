@@ -83,10 +83,10 @@ def test_calibrate_group_without_inputs_raises():
 
 def test_projection_accepts_1d_and_nd():
     p = fd.Projection(6, 2, device="cpu", seed=0)
-    x = np.random.rand(4, 5, 6).astype(np.float32)
+    x = np.random.default_rng(0).random((4, 5, 6)).astype(np.float32)
     flat = p(x.reshape(-1, 6)).data.reshape(4, 5, 2)
-    np.testing.assert_allclose(p(x).data, flat, rtol=1e-6)
-    np.testing.assert_allclose(p(x[0, 0]).data, flat[0, 0], rtol=1e-6)
+    np.testing.assert_allclose(p(x).data, flat, atol=1e-6)
+    np.testing.assert_allclose(p(x[0, 0]).data, flat[0, 0], atol=1e-6)
 
 
 # ─────────────── Circuit ───────────────
@@ -192,3 +192,57 @@ def test_train_checks_val_before_training():
         fd.train(model, X, [0, 1, 0], val=(X,), epochs=1, verbose=False)
     with pytest.raises(ValueError):
         fd.extract(model, None, np.zeros((0, 6)))
+
+
+# ─────────────── 출력까지 신호가 가는지 ───────────────
+def _deep():
+    return fd.graphs.layered([20, 100, 100, 10], 0.1, seed=0), np.full((4, 20), 100, np.float32)
+
+
+def test_calibrate_output_only_wakes_relays():
+    """출력만 목표로 주면 중간 층이 꺼져 있어 배율 256배에도 0 Hz로 끝나던 것 → 경로 위 중계 그룹도 맞춤"""
+    c, x = _deep()
+    layer = fd.Connectome(c, "in", "out", device="cpu")
+    with pytest.warns(UserWarning, match="출력까지 가지 못함"):
+        assert float(layer(x, seed=0).numpy().max()) == 0
+    rep = layer.reach(x)
+    assert rep.break_at == "h2" and "끊김" in str(rep)
+    tab = layer.calibrate(x, {"out": 10})
+    assert list(tab.group[tab.role == "중계"]) == ["h1", "h2"]
+    with fd.quiescent():
+        assert 7 <= float(layer(x, seed=0).numpy().mean()) <= 13
+    assert layer.reach(x).break_at is None
+
+
+def test_calibrate_skips_inhibitory_relays():
+    """억제를 내보내는 그룹(버섯체 APL처럼)은 키우면 신호를 막으므로 중계로 고르지 않음"""
+    c = fd.Circuit.from_edges([0, 1, 2, 1], [1, 3, 1, 2], [20.0, 20.0, -20.0, 20.0],
+                              groups={"IN": [0], "K": [1], "I": [2], "O": [3]})
+    layer = fd.Connectome(c, "IN", "O", device="cpu")
+    assert layer._relay_groups(["O"]) == ["K"]
+
+
+def test_path_warnings_at_construction():
+    c = fd.Circuit.from_edges([0, 1], [1, 2], [20.0, 20.0], groups={"IN": [0], "H": [1], "O": [2], "Z": [3]}, n=4)
+    with pytest.warns(UserWarning, match="경로가 없는 출력"):
+        fd.Connectome(c, "IN", ("O", "Z"), device="cpu")
+    with pytest.warns(UserWarning, match="t_ms"):
+        fd.Connectome(c, "IN", "O", t_ms=2.0, device="cpu")
+
+
+def test_silent_warning_blames_inputs_when_they_never_fire():
+    c, _ = _deep()
+    layer = fd.Connectome(c, "in", "out", device="cpu", t_ms=5)
+    with pytest.warns(UserWarning, match="입력 뉴런도"):
+        layer(np.full((2, 20), 0.01, np.float32), seed=0)
+
+
+def test_hash_random_never_zero_at_seed_zero():
+    """splitmix64는 0 → 0: seed 0·스텝 0·칸 0이 늘 0.0이라 그 입력 뉴런이 발화율과 상관없이 처음에 발화했음"""
+    from flydnet.ganglion.physiology import hash_uniform
+    assert hash_uniform(np, 0, 0, (1,))[0] > 0
+    c, _ = _deep()
+    with fd.quiescent():
+        r = fd.Connectome(c, "in", "out", device="cpu", t_ms=20)(np.full((1, 20), 1e-6, np.float32),
+                                                                   seed=0, return_all=True).numpy()
+    assert not r.any()

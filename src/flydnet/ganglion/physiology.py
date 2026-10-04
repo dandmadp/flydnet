@@ -128,7 +128,9 @@ def hash_uniform(xp, seed: int, step: int, shape) -> object:
     """(시드, 스텝, 칸 번호) → [0, 1) 균등 난수. 상태가 없어서 다시 계산해도 같고, CPU·GPU 결과도 같음 (splitmix64)"""
     n = int(np.prod(shape))
     z = xp.arange(n, dtype=xp.uint64)
-    z += xp.uint64((int(seed) * 0x9E3779B97F4A7C15 + int(step) * 0xD1B54A32D192ED03) % (1 << 64))
+    # + 황금비 상수 (표준 splitmix64처럼 섞기 전에 더함): 없으면 seed 0·스텝 0·칸 0의 입력이 0 → 난수 0.0이라
+    # 발화율과 상관없이 그 칸이 늘 발화했음 (seed=0인 첫 시료의 첫 입력 뉴런이 시작하자마자 스파이크)
+    z += xp.uint64((int(seed) * 0x9E3779B97F4A7C15 + int(step) * 0xD1B54A32D192ED03 + 0x9E3779B97F4A7C15) % (1 << 64))
     z ^= z >> xp.uint64(30); z *= _M1
     z ^= z >> xp.uint64(27); z *= _M2
     z ^= z >> xp.uint64(31)

@@ -160,7 +160,7 @@ def test_calibrate_reaches_targets_and_saves(tmp_path):
     with pytest.raises(KeyError, match="회로에 없는"):
         L.calibrate(X, {"Q": 10})
     t2 = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu").calibrate(X, 20)   # 숫자 = 출력 그룹 모두
-    assert list(t2.group) == ["O"]
+    assert list(t2.group[t2.role == "목표"]) == ["O"] and list(t2.group[t2.role == "중계"]) == ["H"]   # 경로 위 H도
 
 
 # ─────────────── numpy·torch 습관 ───────────────

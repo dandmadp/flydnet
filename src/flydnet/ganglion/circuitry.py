@@ -271,6 +271,8 @@ class ConnectomeLayer(Tissue):
             else:
                 self.buffer("bias", B.to(b0, dev)); self.buffer("log_t_mbr", B.to(t0, dev))
         self._build()
+        self._silent_checked = False                                # 처음 순전파에서 출력이 모두 0인지 한 번 확인
+        self._check_paths()
 
     # ─────────────── 연결 종류 ───────────────
     def _pair_code(self, name: str):
@@ -528,6 +530,7 @@ class ConnectomeLayer(Tissue):
         state = self._run(run, state, steps, x, record)
         rate = state[3].T * (1000.0 / self._span(steps, s_cnt, dt))            # (B, N) Hz
         out = rate if return_all else rate[:, self.out_idx]
+        self._check_silent(x, rate)
         return (out, self._trace(rec)) if record is not None else out
 
     def _span(self, steps, s_cnt, dt):
@@ -639,6 +642,7 @@ class ConnectomeLayer(Tissue):
         state = self._run(run, state, steps, x, record)
         rate = state[0].T * (1000.0 / self._span(steps, s_cnt, dt))
         out = rate if return_all else rate[:, self.out_idx]
+        self._check_silent(x, rate)
         return (out, self._trace(rec)) if record is not None else out
 
     def _forward_graded(self, x: Signal, return_all: bool, record, seed=None):
@@ -729,18 +733,22 @@ class ConnectomeLayer(Tissue):
         layer._build()
         return layer
 
-    def calibrate(self, rates, target, iters: int = 8, tol: float = 0.1, seed: int = 0, step: float = 0.5,
-                  verbose: bool = False):
+    def calibrate(self, rates, target=20.0, iters: int = 20, tol: float = 0.1, seed: int = 0, step: float = 0.5,
+                  relay_hz: float | None = 5.0, verbose: bool = False):
         """가중치 자동 보정: 그룹마다 평균 발화율이 target이 되도록 그 그룹으로 들어오는 연결 종류의 배율(gains)을 조정
 
-        rates:  대표 입력 (B, n_in) - 실제로 쓸 입력과 비슷하게
-        target: {그룹: Hz} 또는 숫자 (출력 그룹 모두에). 예: {"KC": 5, "MBON": 20}
+        rates:    대표 입력 (B, n_in) - 실제로 쓸 입력과 비슷하게
+        target:   {그룹: Hz} 또는 숫자 (출력 그룹 모두에, 기본 20 Hz). 예: {"KC": 5, "MBON": 20}
+        relay_hz: 입력 → 목표 그룹의 흥분성 경로 위에 있는 중간 그룹(중계)이 이보다 약하면 이 값까지 올림 (낮추지는 않음).
+                  예전에는 목표 그룹으로 들어오는 연결만 키워서, 중간 층이 꺼져 있으면 배율이 256배가 돼도 출력이 0 Hz인
+                  채로 끝났음. None이면 중계 그룹은 건드리지 않음
         반복마다 배율 x (목표 / 현재)^step (발화가 없으면 x 2), 모든 그룹이 목표의 ±tol 안이면 멈춤.
-        층의 gains가 바뀜 (저장됨). 반환: 그룹별 처음·마지막 발화율과 배율 표"""
+        층의 gains가 바뀜 (저장됨). 반환: 그룹별 역할(목표·중계)·처음·마지막 발화율·배율 표. 목표에 못 닿으면 경고"""
         import pandas as pd
         _C.integer("iters", iters, lo=0)
         _C.pos("step", step)
         _C.pos("tol", tol)
+        _C.optional(_C.pos, "relay_hz", relay_hz)
         tgt = {g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
         for g, v in tgt.items():
             if not (v > 0 and np.isfinite(v)):
@@ -753,23 +761,34 @@ class ConnectomeLayer(Tissue):
         gid = {g: i for i, g in enumerate(self._group_names)}
         code = np.unique(self._edge_code)
         n = len(self._group_names)
-        incoming = {g: [self._edge_names([c])[0] for c in code if c % n == gid[g]] for g in tgt}
+        relay = [] if relay_hz is None else [g for g in self._relay_groups(tgt) if g not in tgt]
+        groups = list(tgt) + relay
+        incoming = {g: [self._edge_names([c])[0] for c in code if c % n == gid[g]] for g in groups}
         none = [g for g in tgt if not incoming[g]]
         if none:
             raise ValueError(f"들어오는 연결이 없는 그룹은 배율로 보정할 수 없음: {none}")
-        idx = {g: B.to(self.circuit.groups[g], self.device) for g in tgt}
-        factor = {g: 1.0 for g in tgt}
+        idx = {g: B.to(self.circuit.groups[g], self.device) for g in groups}
+        factor = {g: 1.0 for g in groups}
 
         def measure():
             with quiescent():
                 r = self(rates, seed=seed, return_all=True).data
-            return {g: float(r[:, idx[g]].mean()) for g in tgt}
+            return {g: float(r[:, idx[g]].mean()) for g in groups}
+
+        def done(now):
+            return all(abs(now[g] - tgt[g]) <= tol * tgt[g] for g in tgt) and \
+                all(now[g] >= relay_hz * (1 - tol) for g in relay)
         first = now = measure()
         for it in range(iters):
-            if all(abs(now[g] - tgt[g]) <= tol * tgt[g] for g in tgt):
+            if done(now):
                 break
-            for g in tgt:
-                f = 2.0 if now[g] <= 0 else float(np.clip((tgt[g] / now[g]) ** step, 0.25, 4.0))
+            for g in groups:
+                if g in tgt:
+                    f = 2.0 if now[g] <= 0 else float(np.clip((tgt[g] / now[g]) ** step, 0.25, 4.0))
+                elif now[g] < relay_hz * (1 - tol):                         # 중계: 약할 때만 올림
+                    f = 2.0 if now[g] <= 0 else float(np.clip((relay_hz / now[g]) ** step, 1.0, 4.0))
+                else:
+                    continue
                 factor[g] *= f
                 for k in incoming[g]:
                     self.gains[k] = self.gains.get(k, 1.0) * f
@@ -778,9 +797,128 @@ class ConnectomeLayer(Tissue):
             now = measure()
             if verbose:
                 from .._console import say
-                say(f"  보정 {it + 1}: " + ", ".join(f"{g} {now[g]:.1f} Hz" for g in tgt), flush=True)
-        return pd.DataFrame({"group": list(tgt), "target_hz": [tgt[g] for g in tgt], "before_hz": [first[g] for g in tgt],
-                             "after_hz": [now[g] for g in tgt], "gain_factor": [factor[g] for g in tgt]})
+                say(f"  보정 {it + 1}: " + ", ".join(f"{g} {now[g]:.1f} Hz" for g in groups), flush=True)
+        dead = [g for g in tgt if now[g] <= 0]
+        if dead:
+            import warnings
+            warnings.warn(f"보정 뒤에도 신호가 닿지 않는 그룹: {dead} - layer.reach(rates)로 어디서 끊기는지 확인 "
+                          "(경로가 억제뿐이거나 t_ms가 경로보다 짧을 수 있음)", stacklevel=2)
+        return pd.DataFrame({"group": groups, "role": ["목표"] * len(tgt) + ["중계"] * len(relay),
+                             "target_hz": [tgt.get(g, relay_hz) for g in groups],
+                             "before_hz": [first[g] for g in groups], "after_hz": [now[g] for g in groups],
+                             "gain_factor": [factor[g] for g in groups]})
+
+    # ─────────────── 신호 경로 ───────────────
+    def _group_graph(self, excitatory: bool = False) -> dict:
+        """그룹 사이 연결 {보내는 그룹 번호: {받는 그룹 번호, ...}} (excitatory면 시냅스 수 합이 양수인 쌍만)"""
+        n = len(self._group_names)
+        codes, inv = np.unique(self._edge_code, return_inverse=True)
+        net = np.bincount(inv, weights=B.numpy(self.w_syn).astype(np.float64), minlength=len(codes))
+        out = {}
+        for c, w in zip(codes, net):
+            if not excitatory or w > 0:
+                out.setdefault(int(c) // n, set()).add(int(c) % n)
+        return out
+
+    @staticmethod
+    def _bfs(graph: dict, start) -> dict:
+        """그룹 번호 → start에서의 홉 수"""
+        dist = {s: 0 for s in start}
+        frontier = list(start)
+        while frontier:
+            nxt = []
+            for a in frontier:
+                for b in graph.get(a, ()):
+                    if b not in dist:
+                        dist[b] = dist[a] + 1
+                        nxt.append(b)
+            frontier = nxt
+        return dist
+
+    def _relay_groups(self, targets) -> list:
+        """입력 → targets 흥분성 경로 위의 중간 그룹 (입력 그룹·그룹 밖 뉴런 "?" 제외), 입력에서 가까운 순.
+        억제를 내보내는 그룹(버섯체 APL 등)은 키우면 오히려 신호를 막으므로 들어가지 않음"""
+        if not self.in_names:
+            return []
+        gid = {g: i for i, g in enumerate(self._group_names)}
+        fwd_g = self._group_graph(excitatory=True)
+        rev_g = {}
+        for a, bs in fwd_g.items():
+            for b in bs:
+                rev_g.setdefault(b, set()).add(a)
+        fwd = self._bfs(fwd_g, [gid[g] for g in self.in_names])
+        bwd = self._bfs(rev_g, [gid[g] for g in targets])
+        skip = {gid[g] for g in self.in_names} | {gid[g] for g in targets} | {len(self._group_names) - 1}
+        mid = sorted((i for i in fwd if i in bwd and i not in skip), key=lambda i: (fwd[i], i))
+        return [self._group_names[i] for i in mid]
+
+    def _check_paths(self):
+        """만들 때 확인 (그룹 단위라 싸게): 입력에서 경로가 없는 출력 그룹, 신호가 닿기 전에 끝나는 t_ms"""
+        if not self.in_names:
+            return
+        import warnings
+        gid = {g: i for i, g in enumerate(self._group_names)}
+        dist = self._bfs(self._group_graph(), [gid[g] for g in self.in_names])
+        far = [g for g in self.out_names if g not in self.in_names and gid[g] not in dist]
+        if far:
+            warnings.warn(f"입력 그룹에서 가는 연결 경로가 없는 출력 그룹: {far} - 이 그룹의 출력은 늘 0 "
+                          "(activate로 직접 자극하는 경우가 아니면 입력·출력 그룹 확인)", stacklevel=3)
+        hops = [dist[gid[g]] for g in self.out_names if gid[g] in dist and g not in self.in_names]
+        if hops and self.t_ms <= min(hops) * self.p["t_dly"]:
+            warnings.warn(f"t_ms {self.t_ms} ms가 입력 → 출력 최소 {min(hops)}홉의 시냅스 지연 "
+                          f"({min(hops) * self.p['t_dly']:.1f} ms)보다 짧아 출력에 신호가 닿지 않음 - t_ms를 늘릴 것",
+                          stacklevel=3)
+
+    def _check_silent(self, x, rate):
+        """처음 순전파 한 번: 입력이 있는데 출력이 모두 0이면 경고 (효과기가 켜져 있으면 의도일 수 있어 건너뜀).
+        입력 뉴런조차 발화하지 않았으면 원인이 연결이 아니라 입력이므로 따로 알림"""
+        if self._silent_checked or self._effects or not self.in_names or not x.data.size:
+            return
+        self._silent_checked = True
+        if not bool((x.data > 0).any()) or bool((rate.data[:, self.out_idx] != 0).any()):
+            return
+        import warnings
+        outs = "+".join(self.out_names)
+        if not bool((rate.data[:, self.in_idx] != 0).any()):
+            warnings.warn(f"출력 {outs}이 모두 0 - 입력 뉴런도 한 번도 발화하지 않음: 입력 발화율(Hz)이 너무 낮거나 "
+                          f"t_ms({self.t_ms} ms)가 짧음 (예: 10 Hz면 100 ms에 평균 1번). 입력을 Hz 단위로 키울 것 "
+                          "(fd.RateEncoder·Glomeruli가 0~max_rate Hz로 바꿔 줌)", stacklevel=3)
+        else:
+            warnings.warn(f"입력이 있는데 출력 {outs}이 모두 0 - 신호가 출력까지 가지 못함 (연결이 약함). "
+                          "layer.calibrate(rates)로 세기를 맞추거나 layer.reach(rates)로 어디서 끊기는지 확인. "
+                          "출력이 0이면 역전파 기울기도 거의 0이라 학습이 안 됨", stacklevel=3)
+
+    def reach(self, rates, seed: int = 0):
+        """신호가 어디까지 가는지: 그룹마다 입력에서의 최소 홉 수와 실제 발화율 (경로 순). 출력이 조용할 때 원인 찾기.
+        반환 Reach (print하면 표와 판정, .table은 pandas)"""
+        import pandas as pd
+        import scipy.sparse as sps
+        c = self.circuit
+        A = sps.csr_matrix((np.ones(c.n_edges, np.int8), (c.pre, c.post)), shape=(c.N, c.N))
+        hop = np.full(c.N, np.inf)
+        frontier = np.unique(B.numpy(self.in_idx))
+        hop[frontier] = 0
+        d = 0
+        while len(frontier):
+            d += 1
+            nxt = np.unique(A[frontier].indices)
+            nxt = nxt[~np.isfinite(hop[nxt])]
+            hop[nxt] = d
+            frontier = nxt
+        with quiescent():
+            r = B.numpy(self(rates, seed=seed, return_all=True).data)
+        relay = set(self._relay_groups(self.out_names))
+        rows = []
+        for g, idx in c.groups.items():
+            if not len(idx):
+                continue
+            h = hop[idx]
+            role = "입력" if g in self.in_names else "출력" if g in self.out_names else "중계" if g in relay else ""
+            rows.append(dict(group=g, role=role, n=len(idx), hops=float(h.min()),
+                             unreachable=float((~np.isfinite(h)).mean()), rate_hz=float(r[:, idx].mean()),
+                             active=float((r[:, idx].mean(0) > 0).mean())))
+        t = pd.DataFrame(rows).sort_values(["hops", "group"]).reset_index(drop=True)
+        return Reach(t, list(self.out_names))
 
     def damp_value(self, t_ms: float | None = None) -> float:
         """이 층이 쓰는 대리 기울기 감쇠 값 ("auto"면 t_ms 길이에서 계산된 값)"""
@@ -805,3 +943,46 @@ class ConnectomeLayer(Tissue):
         return (f"{self.circuit.name}: in {self.n_in} ({'+'.join(self.in_names)}) → out {self.n_out} "
                 f"({'+'.join(self.out_names)}), {self.t_ms} ms, dt {self.p['dt']} ms, 입력 {self.input_mode}, "
                 f"장치 {self.device}{tr}")
+
+
+class Reach:
+    """layer.reach()의 결과: 그룹별 입력에서의 홉 수·발화율과, 신호가 끊기는 곳"""
+
+    weak_hz = 1.0                                                     # 출력 평균이 이보다 낮으면 "약함"
+
+    def __init__(self, table, outputs):
+        self.table, self.outputs = table, outputs
+
+    @property
+    def silent_outputs(self) -> list:
+        t = self.table
+        return list(t.group[(t.role == "출력") & (t.rate_hz <= 0)])
+
+    @property
+    def break_at(self):
+        """입력에서 가장 가까운 꺼진 중계·출력 그룹 (신호가 처음 끊기는 곳), 없으면 None"""
+        t = self.table
+        dead = t[t.role.isin(["중계", "출력"]) & (t.rate_hz <= 0) & np.isfinite(t.hops)]
+        return None if dead.empty else str(dead.iloc[0].group)
+
+    def __str__(self):
+        t = self.table
+        show = t[t.role != ""] if (t.role != "").any() else t
+        lines = ["신호 경로 (입력에서의 최소 홉 수 순)",
+                 show.to_string(index=False, float_format=lambda v: f"{v:.3g}"), ""]
+        far = t[(t.role == "출력") & (t.unreachable > 0)]
+        for _, r in far.iterrows():
+            lines.append(f"  ! {r.group}: 뉴런 {r.unreachable:.0%}는 입력에서 가는 경로가 없음 (늘 0)")
+        weak = t[(t.role == "출력") & (t.rate_hz > 0) & (t.rate_hz < self.weak_hz)]
+        if self.break_at is None and weak.empty:
+            lines.append("  → 출력까지 신호가 감")
+        elif self.break_at is None:
+            lines.append(f"  → 출력까지 가지만 약함 ({', '.join(f'{r.group} {r.rate_hz:.2g} Hz, 뉴런 {1 - r.active:.0%}가 0' for _, r in weak.iterrows())}). "
+                         "출력이 약하면 기울기도 작아 학습이 느림: layer.calibrate(rates)")
+        else:
+            lines.append(f"  → 신호가 {self.break_at}에서 끊김 (앞 그룹은 발화하는데 여기는 0 Hz). "
+                         "layer.calibrate(rates)가 경로 위 중계 그룹까지 함께 맞춤")
+        return "\n".join(lines)
+
+    __repr__ = __str__
+

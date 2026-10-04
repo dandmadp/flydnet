@@ -13,6 +13,7 @@
 import argparse
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -84,7 +85,8 @@ if "2" in args.part:
         best = None
         for w in (10, 15, 20, 25, 30, 35, 40, 50, 60):
             c = make(s, w)
-            with fd.quiescent():
+            with fd.quiescent(), warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*출력.*모두 0")      # 약한 세기도 일부러 시험하는 탐색
                 r = float(fd.ConnectomeLayer(c, "in", "out", t_ms=200)(probe, seed=0, return_all=True).numpy().mean())
             if best is None or abs(r - target) < abs(best[1] - target):
                 best = (c, r, w)
