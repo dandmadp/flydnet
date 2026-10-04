@@ -89,7 +89,8 @@ __global__ void poisson_spikes(const float* p, float* out, const unsigned long l
 __global__ void lif_brian_fwd(const float* V, const float* G, const float* I, const bool* act, const int* inv,
                               const float* spikes, float* V3, float* G3, float* spk, float* u_out, bool* fired_out,
                               const float ve, const float ev, const float eg, const float gd, const float poi_w,
-                              const float v_th, const float v_rst, const float inv_scale, const int n, const int nb) {
+                              const float v_th, const float v_rst, const float inv_scale, const int n, const int nb,
+                              const float* refr, const float* rfc_set, float* refr_out, bool* act_out, const int do_refr) {
     const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= (long long)n * nb) return;
     const int row = (int)(i / nb), b = (int)(i % nb);
@@ -107,12 +108,18 @@ __global__ void lif_brian_fwd(const float* V, const float* G, const float* I, co
     spk[i] = f ? 1.0f : 0.0f;
     u_out[i] = u;
     fired_out[i] = f;
+    if (do_refr) {                         // refractory counter and next step's act (where(fired, rfc_set, refr - 1) <= 0)
+        const float r = f ? rfc_set[row] : __fsub_rn(refr[i], 1.0f);
+        refr_out[i] = r;
+        act_out[i] = r <= 0.0f;
+    }
 }
 // Backward of lif_brian_fwd (same rounding as the numpy version). has_v / has_g / has_s: which output gradients exist.
 __global__ void lif_brian_bwd(const float* gV3, const float* gG3, const float* gspk, const bool* fired, const bool* act,
                               const float* u, float* gV, float* gG, float* gI, float* gV2_out,
                               const float ev, const float eg, const float gd, const float inv_scale, const float slope,
-                              const int has_v, const int has_g, const int has_s, const long long total) {
+                              const float damp, const int use_damp, const int has_v, const int has_g, const int has_s,
+                              const long long total) {
     const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= total) return;
     const bool f = fired[i], a = act[i];
@@ -122,7 +129,8 @@ __global__ void lif_brian_bwd(const float* gV3, const float* gG3, const float* g
     float gV1 = gV2;
     if (has_s) {
         const float d = __fadd_rn(1.0f, __fmul_rn(slope, fabsf(u[i])));
-        gV1 = __fadd_rn(gV2, __fmul_rn(gspk[i], __fdiv_rn(inv_scale, __fmul_rn(d, d))));
+        const float gs = use_damp ? __fmul_rn(gspk[i], damp) : gspk[i];
+        gV1 = __fadd_rn(gV2, __fmul_rn(gs, __fdiv_rn(inv_scale, __fmul_rn(d, d))));
     }
     gV[i] = a ? __fmul_rn(gV1, ev) : gV1;
     gG[i] = a ? __fadd_rn(__fmul_rn(gV1, eg), __fmul_rn(gG2, gd)) : gG2;
@@ -328,18 +336,33 @@ def lif_step(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx,
 
 
 def lif_step_brian(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx, v_eq, e_v, e_g, gd: float,
-                   poi_w: float, v_th: float, v_rst: float, scale: float, slope: float, out_u: list | None = None):
+                   poi_w: float, v_th: float, v_rst: float, scale: float, slope: float, out_u: list | None = None,
+                   damp: float = 1.0, refr=None, rfc_set=None, out_refr: list | None = None):
     """LIF 한 스텝, Shiu et al. 2024 Brian2 모델과 같은 순서·적분 (ConnectomeLayer timing="brian")
       V1 = act ? v_eq + e_v·(V - v_eq) + e_g·G : V;  G1 = act ? G·gd : G      (정확한 선형 적분 = Brian 'linear')
       spk = (V1 - v_th)/scale > 0
       G2 = act ? G1 + I : G1          불응기 중에 도착한 시냅스 입력은 버림 (Brian2와 같음)
       V2 = V1 + 입력 스파이크·poi_w    발화 판정 뒤에 더함 → 다음 스텝에 발화, 발화한 스텝에 온 것은 리셋으로 사라짐
       V3 = spk ? v_rst : V2;  G3 = spk ? 0 : G2
-    v_eq, e_v, e_g: 숫자 또는 (N, 1) Signal (세포 유형별 매개변수 - 역전파 됨)"""
+    v_eq, e_v, e_g: 숫자 또는 (N, 1) Signal (세포 유형별 매개변수 - 역전파 됨)
+    damp: 스파이크의 대리 기울기에 곱하는 감쇠 (값은 그대로). 합친 커널이면 역전파 커널 안에서 (노드 하나 줄임)
+    refr, rfc_set, out_refr: 주면 (합친 커널일 때) 불응기 갱신 where(fired, rfc_set, refr - 1)과 다음 스텝의 act를 같이 계산해
+                  out_refr에 (refr_new, act_next)를 넣음. 효과기 마스크로 발화가 바뀌면 쓰지 말 것 (불응기는 바뀐 발화로)"""
     xp = B.xp(B.device_of(V.data))
     if _fused_ok(V, G, I, v_eq, e_v, e_g):
         return _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi_w, v_th, v_rst, scale,
-                                slope, out_u)
+                                slope, out_u, damp, refr, rfc_set, out_refr)
+    V3, G3, spk = _lif_brian_elementwise(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi_w, v_th, v_rst,
+                                         scale, slope, out_u)
+    if damp != 1.0 and spk.plastic:
+        dd = spk.data.dtype.type(damp)
+        spk = Signal(spk.data)._link((spk,), lambda g: (g * dd,))
+    return V3, G3, spk
+
+
+def _lif_brian_elementwise(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi_w, v_th, v_rst, scale, slope,
+                           out_u):
+    xp = B.xp(B.device_of(V.data))
     val = lambda s: s.data if isinstance(s, Signal) else s
     ve, ev, eg = val(v_eq), val(e_v), val(e_g)
     Vd, Gd = V.data, G.data
@@ -406,7 +429,8 @@ def _fused_ok(V, G, I, *coef) -> bool:
     return _gpu_ok(*arrs) and V.data.ndim == 2 and _cuda() is not None
 
 
-def _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi_w, v_th, v_rst, scale, slope, out_u):
+def _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi_w, v_th, v_rst, scale, slope, out_u,
+                     damp: float = 1.0, refr=None, rfc_set=None, out_refr=None):
     """lif_step_brian과 같은 계산을 커널 하나로 (순전파), 역전파도 커널 하나"""
     import cupy as cp
     n, nb = V.data.shape
@@ -418,10 +442,19 @@ def _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi
     fired = cp.empty((n, nb), cp.bool_)
     total = n * nb
     inv_scale = f32(1.0 / scale)
+    do_refr = (out_refr is not None and refr is not None and refr.dtype == cp.float32 and refr.flags.c_contiguous
+               and rfc_set is not None and rfc_set.dtype == cp.float32 and rfc_set.size == n)
+    if do_refr:
+        refr_out, act_out = cp.empty((n, nb), cp.float32), cp.empty((n, nb), cp.bool_)
+        rs = rfc_set if rfc_set.flags.c_contiguous else cp.ascontiguousarray(rfc_set)
+    else:
+        refr_out = act_out = rs = u                                     # 자리만 (do_refr = 0이면 읽지 않음)
     _cuda().get_function("lif_brian_fwd")(((total + 255) // 256,), (256,), (
         V.data, G.data, I.data, act, inv, sp, V3, G3, spk, u, fired,
         f32(v_eq), f32(e_v), f32(e_g), f32(gd), f32(poi_w), f32(v_th), f32(v_rst), inv_scale,
-        np.int32(n), np.int32(nb)))
+        np.int32(n), np.int32(nb), refr if do_refr else u, rs, refr_out, act_out, np.int32(do_refr)))
+    if do_refr:
+        out_refr.append((refr_out, act_out))
     if out_u is not None:
         out_u.append(u)
 
@@ -433,7 +466,7 @@ def _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi
         gV3, gG3, gspk = c(gV3), c(gG3), c(gspk)
         _cuda().get_function("lif_brian_bwd")(((total + 255) // 256,), (256,), (
             z(gV3), z(gG3), z(gspk), fired, act, u, gV, gG, gI, gV2,
-            f32(e_v), f32(e_g), f32(gd), inv_scale, f32(slope),
+            f32(e_v), f32(e_g), f32(gd), inv_scale, f32(slope), f32(damp), np.int32(damp != 1.0),
             np.int32(gV3 is not None), np.int32(gG3 is not None), np.int32(gspk is not None), np.int64(total)))
         g_pin = gV2[in_idx] * poi_w if p_in.plastic else None
         return gV, gG, gI, g_pin

@@ -373,11 +373,11 @@ class ConnectomeLayer(Tissue):
     def _frames(x: Signal):
         """입력 (B, n_in) 또는 (B, T, n_in) → 스텝 s의 (n_in, B) 신호를 주는 함수"""
         if x.ndim == 2:
-            xt = x.T
+            xt = x.T.copy()                                                # 연속 배열로 한 번 (스텝마다 복사하지 않게)
             return lambda s, steps: xt
         if x.ndim == 3:
             T = x.shape[1]
-            xt = x.transpose(1, 2, 0)                                      # (T, n_in, B)
+            xt = x.transpose(1, 2, 0).copy()                               # (T, n_in, B), 연속 배열로 한 번
             return lambda s, steps: xt[s * T // steps]
         raise ValueError("입력은 (B, n_in) 또는 (B, T, n_in)")
 
@@ -502,14 +502,17 @@ class ConnectomeLayer(Tissue):
         noise_seed = (int(seed) * 0x9E3779B97F4A7C15 + 0x0015E) % (1 << 63)
 
         binary = drop is None                                              # 보내는 스파이크가 0/1 (드롭아웃 배율이 없으면)
+        refr_in_kernel = brian and quiet is None and probe_n is None and drop is None   # 불응기도 LIF 커널에서
 
         def run(s0, s1, V, G, refr, counts, phase, *buf):
             buf = list(buf)
+            act_next = None
             for s in range(s0, s1):
                 if trunc and s and s % trunc == 0:                           # 구간 절단: 상태의 과거 경로를 끊음
                     V, G, buf = _cut(V), _cut(G), [_cut(b) for b in buf]
                 ps = frame(s, steps)
-                act = refr.data <= 0
+                act = act_next if act_next is not None else refr.data <= 0
+                act_next = None
                 if sigma:                                                    # 막전위 잡음 (값만, 기울기는 그대로 통과)
                     z = P.hash_uniform(xp, noise_seed, s, (Bn, N, 2))
                     gauss = xp.sqrt(-2 * xp.log(1 - z[..., 0])) * xp.cos(2 * np.pi * z[..., 1])
@@ -530,29 +533,34 @@ class ConnectomeLayer(Tissue):
                 V_in, G_in, I_in = V, G, buf[s % R]
                 if brian:
                     uu = [] if obs is not None else None
+                    rr = [] if refr_in_kernel else None
                     V, G, spk = K.lif_step_brian(V, G, I_in, ps, spikes, act, idx, v_eq, e_v, e_g, out_u=uu,
-                                                 **consts)
+                                                 damp=damp, refr=refr.data, rfc_set=rfc_set, out_refr=rr,
+                                                 **consts)                             # 감쇠·불응기는 안에서
                 else:
                     V, G, spk = K.lif_step(V, G, I_in, ps, spikes, act, idx, v_eq, a, **consts)
                 release(V_in, G_in)                                        # 역전파는 이 값을 쓰지 않음 (커널이 따로 둠)
                 if s < s1 - 1:                                             # 구간 끝 칸은 상태로 넘김
                     release(I_in)
                 spk_raw = spk                                              # 감쇠는 같은 배열을 공유 - 둘 다 놓아야 풀림
-                spk = _damped(spk, damp)
+                if not brian:
+                    spk = _damped(spk, damp)
                 if quiet is not None:                                      # Kir2.1: 발화 없음
                     spk = scaled(spk, quiet)
                 if probe_n is not None:                                    # fd.explain: 뉴런마다 배율 탐침 (값 1, 학습 값)
                     spk = spk * probe_n
                 if drop is not None:
                     spk = scaled(spk, drop)
-                fired = spk.data > 0
                 if s >= s_cnt:
                     old, counts = counts, counts + spk
                     if s > s0:
                         release(old)
                 if rec is not None:
                     rec.append(spk.data[rec_idx].T.copy())
-                refr = Signal(xp.where(fired, rfc_set, refr.data - 1))
+                if brian and rr:                                           # 커널이 계산함 (효과기 마스크 없음)
+                    refr, act_next = Signal(rr[0][0]), rr[0][1]
+                else:
+                    refr = Signal(xp.where(spk.data > 0, rfc_set, refr.data - 1))   # 효과기가 바꾼 발화로
                 sent = spk if blocked is None else scaled(spk, blocked)    # Shibire: 발화는 하지만 전달 없음
                 buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring, binary=binary)
                 if obs is not None:

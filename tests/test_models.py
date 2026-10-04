@@ -91,3 +91,13 @@ def test_mushroom_body_three_lines():
         h = m.fit(Xtr, ytr, val=(Xte, yte), epochs=6, verbose=False)
     assert type(m.encoder).__name__ == "GlomerularEncoder" and m.target_hz == 5.0
     assert h["val_acc"][-1] > 0.6
+
+
+def test_single_sample_before_calibration():
+    """보정 전에 시료 하나(1차원)를 넣으면 특징을 시료로 세던 것 (특징 > 256이면 특징 일부만 골라 보정)"""
+    c = fd.graphs.layered([300, 100, 10], 0.05, seed=0)
+    x = np.random.default_rng(0).random(300).astype(np.float32)
+    m = fd.ConnectomeModel(c, "in", "out", n_in=300, n_classes=2, device="cpu")
+    with pytest.warns(UserWarning, match="보정 전"):
+        out = m(x, seed=0)
+    assert out.shape == (2,) and m.is_calibrated

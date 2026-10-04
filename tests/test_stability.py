@@ -178,6 +178,7 @@ def test_gpu_oom_gets_hint():
     m = fd.Pathway(fd.Projection(64, 64, device="gpu"))
     x = fd.Signal(cp.ones((4096, 64), cp.float32))
     try:
+        pool.free_all_blocks()                                             # 남은 빈 블록을 재사용하면 부족이 안 남
         pool.set_limit(size=pool.used_bytes() + 1024)
         with pytest.raises(B.GPUMemoryError, match="GPU 메모리 부족.*배치 줄이기") as e:
             m(x)

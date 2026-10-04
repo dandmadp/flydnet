@@ -184,3 +184,22 @@ def test_fused_lif_bitwise_equals_elementwise(monkeypatch, kw, effect):
     assert fast[0].mean() > 0
     for a, b in zip(fast, slow):
         np.testing.assert_array_equal(a, b)
+
+
+def test_backward_memory_per_step_stays_small():
+    """순전파가 역전파용으로 붙잡는 메모리: 원소·스텝당 약 7바이트 (u·발화·적분 여부·1바이트 스파이크).
+    예전에는 막전위·전류·스파이크·누적 사슬을 모두 붙잡아 약 34바이트 (전체 뇌 200스텝 6.9 GB)"""
+    _gpu_or_skip()
+    import cupy as cp
+    c = fd.graphs.erdos_renyi(4000, 0.01, weight=20.0, groups={"in": np.arange(100), "out": np.arange(3900, 4000)})
+    X = np.full((16, 100), 80, np.float32)
+    layer = fd.Connectome(c, "in", "out", t_ms=40, device="gpu", trainable=True)
+    pool = cp.get_default_memory_pool()
+    pool.free_all_blocks()
+    base = pool.used_bytes()
+    y = layer(X, seed=0)
+    cp.cuda.Device().synchronize()
+    per = (pool.used_bytes() - base) / (c.N * 16 * 400)
+    assert per < 12, f"원소·스텝당 {per:.1f}바이트"
+    y.sum().retrograde()
+    assert layer.log_scale.retro is not None and bool(cp.isfinite(layer.log_scale.retro).all())

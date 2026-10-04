@@ -81,13 +81,15 @@ if "2" in args.part:
     probe = np.random.default_rng(99).uniform(0, 150, (16, 20)).astype(np.float32)
 
     def matched(make, s, target=20.0):
-        """전체 평균 발화율이 target Hz에 가장 가까운 연결 세기"""
+        """출력 그룹 평균 발화율이 target Hz에 가장 가까운 연결 세기.
+        (예전: 네트워크 전체 평균으로 맞춰서, 블록 구조처럼 출력까지 경로가 약한 그래프는 전체는 18 Hz인데 출력이 꺼진 채로
+        분류해 찍기 수준이 나왔음 - 구조의 차이가 아니라 신호가 출력에 닿지 않은 결과)"""
         best = None
-        for w in (10, 15, 20, 25, 30, 35, 40, 50, 60):
+        for w in (10, 15, 20, 25, 30, 35, 40, 50, 60, 80, 100, 130):
             c = make(s, w)
             with fd.quiescent(), warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*출력.*모두 0")      # 약한 세기도 일부러 시험하는 탐색
-                r = float(fd.ConnectomeLayer(c, "in", "out", t_ms=200)(probe, seed=0, return_all=True).numpy().mean())
+                r = float(fd.ConnectomeLayer(c, "in", "out", t_ms=200)(probe, seed=0).numpy().mean())
             if best is None or abs(r - target) < abs(best[1] - target):
                 best = (c, r, w)
         return best
@@ -99,7 +101,7 @@ if "2" in args.part:
             used[name].append((w, rate))
             acc[name].append(score(c, s, "in", "out"))
     base = np.array(acc["무작위 (Erdos-Renyi)"])
-    print(f"{'구조':<30}{'연결 수':>8}{'세기':>6}{'발화율':>8}{'정확도':>9}   무작위와 짝지은 차이")
+    print(f"{'구조':<30}{'연결 수':>8}{'세기':>6}{'출력 발화율':>10}{'정확도':>9}   무작위와 짝지은 차이")
     for name, make in families.items():
         a = np.array(acc[name])
         d = a - base

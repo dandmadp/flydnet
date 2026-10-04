@@ -145,6 +145,9 @@ class ConnectomeModel(Pathway):
 
     def prepare(self, X, verbose: bool = False):
         """처음 데이터로 연결 세기 보정 (출력 그룹 평균 target_hz). 반환: calibrate 표. fit이 학습 전에 부름"""
+        nd = X.ndim if hasattr(X, "ndim") else np.ndim(X)
+        if nd == 1:                                                         # 시료 하나 (n_in,) - 특징을 시료로 세지 않게
+            X = X[None] if hasattr(X, "shape") else [X]
         n = len(X)
         if n > self.calibrate_samples:                                     # 앞에서 자르면 클래스 순으로 정렬된 데이터
             pick = np.unique(np.linspace(0, n - 1, self.calibrate_samples).round().astype(np.int64))   # (door_task 등)의
