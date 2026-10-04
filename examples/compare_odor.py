@@ -21,6 +21,7 @@ ap.add_argument("--model", default="kc", choices=["kc", "lif"])
 ap.add_argument("--seeds", type=int, default=5)
 ap.add_argument("--classes", type=int, default=30)
 ap.add_argument("--noise", type=float, default=0.8)
+ap.add_argument("--timing", default="brian", choices=["brian", "legacy"], help="LIF 한 스텝 (legacy = 0.1.15까지, REPORT ⑫)")
 args = ap.parse_args()
 
 mb = fd.Circuit.from_flywire()
@@ -34,7 +35,8 @@ def run(circuit, seed):
         kc = fd.KCExpansion(circuit, k_frac=0.05)                     # PN 활동을 바로 받음 (투영 없음)
         f = lambda X: kc(enc(X)).numpy()
     else:
-        layer = fd.ConnectomeLayer(circuit, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 3.0}, input_mode="regular")
+        layer = fd.ConnectomeLayer(circuit, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 3.0}, input_mode="regular",
+                                   timing=args.timing)
         f = lambda X: fd.extract(layer, enc, X, batch=200)
     return fd.train_linear(f(Xtr), ytr, f(Xte), yte, epochs=60, seed=seed)["test_acc"]
 
