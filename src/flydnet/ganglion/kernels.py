@@ -407,17 +407,20 @@ _INV = {}
 
 
 def _inverse(in_idx, n):
-    """뉴런 번호 → in_idx 안의 위치 (없으면 -1), int32. 같은 in_idx면 다시 만들지 않음"""
+    """뉴런 번호 → in_idx 안의 위치 (없으면 -1), int32. 같은 in_idx 배열(객체)이면 다시 만들지 않음.
+    예전에는 GPU 메모리 주소로 캐시해서, 배열이 해제된 뒤 같은 주소에 새로 만든 다른 배열(순전파마다 만드는 입력 +
+    활성화 뉴런 목록)이 옛 역표를 받아 엉뚱한 뉴런을 자극했음 (크기가 같은 집단을 차례로 activate할 때).
+    캐시가 배열을 붙잡고 있으므로 같은 객체인 동안 주소가 다른 배열에 쓰이지 않고, 객체가 같은지로 확인"""
     import cupy as cp
-    key = (int(in_idx.data.ptr) if len(in_idx) else 0, len(in_idx), n)
-    inv = _INV.get(key)
-    if inv is None:
-        if len(_INV) > 64:
-            _INV.clear()
-        inv = cp.full(n, -1, dtype=cp.int32)
-        if len(in_idx):
-            inv[in_idx] = cp.arange(len(in_idx), dtype=cp.int32)
-        _INV[key] = inv
+    hit = _INV.get(id(in_idx))
+    if hit is not None and hit[0] is in_idx and hit[1] == n:
+        return hit[2]
+    if len(_INV) > 64:
+        _INV.clear()
+    inv = cp.full(n, -1, dtype=cp.int32)
+    if len(in_idx):
+        inv[in_idx] = cp.arange(len(in_idx), dtype=cp.int32)
+    _INV[id(in_idx)] = (in_idx, n, inv)
     return inv
 
 

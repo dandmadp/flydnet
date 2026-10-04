@@ -75,7 +75,7 @@ class _Run(torch.autograd.Function):
         dev = owner.tissue.device
         if out.plastic:
             out.retrograde(to_engine(grad, dev).astype(out.data.dtype, copy=False))
-        g_in = [to_torch(s.retro) if (s is not None and s.plastic and s.retro is not None) else None for s in sig]
+        g_in = [to_torch(s.retro).clone() if (s is not None and s.plastic and s.retro is not None) else None for s in sig]
         g_par = []
         for syn in owner.synapses:
             g_par.append(to_torch(syn.retro).clone() if syn.retro is not None else None)

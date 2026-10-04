@@ -176,10 +176,13 @@ def test_gpu_oom_gets_hint():
     pool = cp.get_default_memory_pool()
     old = pool.get_limit()
     m = fd.Pathway(fd.Projection(64, 64, device="gpu"))
-    x = fd.Signal(cp.ones((4096, 64), cp.float32))
+    pool.free_all_blocks()
+    # 풀은 큰 덩어리를 쪼개 쓰므로 일부만 쓰이는 덩어리의 빈 곳은 free_all_blocks로도 반납되지 않음 (앞 테스트에 따라
+    # 수백 MB) → 그보다 큰 출력을 요청해야 상한에 확실히 걸림
+    rows = int((pool.total_bytes() - pool.used_bytes() + 2 ** 22) // (64 * 4)) + 4096
+    x = fd.Signal(cp.ones((rows, 64), cp.float32))
     try:
-        pool.free_all_blocks()                                             # 남은 빈 블록을 재사용하면 부족이 안 남
-        pool.set_limit(size=pool.used_bytes() + 1024)
+        pool.set_limit(size=pool.total_bytes() + 1024)
         with pytest.raises(B.GPUMemoryError, match="GPU 메모리 부족.*배치 줄이기") as e:
             m(x)
         assert isinstance(e.value.__cause__, cp.cuda.memory.OutOfMemoryError)

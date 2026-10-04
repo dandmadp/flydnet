@@ -191,8 +191,8 @@ class Signal:
             g = grads.pop(id(node), None)
             if g is None:
                 continue
-            if node._back is None:                          # 잎: 기울기 쌓기
-                node.retro = g if node.retro is None else node.retro + g
+            if node._back is None:                          # 잎: 기울기 쌓기. 처음엔 사본 (x + y처럼 같은 배열이 두 잎에 가면
+                node.retro = g.copy() if node.retro is None else node.retro + g   # 한쪽을 바꿀 때 다른 쪽도 바뀜)
                 continue
             for p, pg in zip(node._parents, node._back(g), strict=True):   # 연산이 기울기를 덜 돌려주면 바로 오류
                 if pg is None or not p.plastic:

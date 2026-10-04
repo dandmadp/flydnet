@@ -203,3 +203,24 @@ def test_backward_memory_per_step_stays_small():
     assert per < 12, f"원소·스텝당 {per:.1f}바이트"
     y.sum().retrograde()
     assert layer.log_scale.retro is not None and bool(cp.isfinite(layer.log_scale.retro).all())
+
+
+def test_fused_inverse_cache_not_fooled_by_reused_gpu_memory(monkeypatch):
+    """크기가 같은 집단을 차례로 activate하면, GPU 주소로 캐시한 역표가 해제 뒤 같은 주소의 새 목록에 붙어
+    두 번째 A 활성화가 B의 뉴런을 자극했음 (0.1.17 합친 커널에서 생겼다가 고침)"""
+    K = _gpu_or_skip()
+    G = fd.genetics
+    c = _rec(feedback_edges=True, strong=True)
+    H = c.groups["H"]
+    lines = [G.Line(c, H[i:i + 5], str(i)) for i in (0, 5, 10, 15)]
+
+    def run(line):
+        layer = fd.Connectome(c, "IN", "O", t_ms=30, device="gpu")
+        with G.activate(layer, line, hz=300), fd.quiescent():
+            return layer(np.zeros((2, 6), np.float32), seed=1, return_all=True).numpy()
+    fast = [run(ln) for ln in lines * 3]
+    monkeypatch.setattr(K, "_fused_ok", lambda *a, **k: False)
+    slow = [run(ln) for ln in lines * 3]
+    for a, b in zip(fast, slow):
+        np.testing.assert_array_equal(a, b)
+    assert fast[4][0, H[:5]].mean() > fast[4][0, H[5:10]].mean()          # 두 번째 A: A 뉴런이 자극됨
