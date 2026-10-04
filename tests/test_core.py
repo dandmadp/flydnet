@@ -283,7 +283,8 @@ def test_require_explains_missing_files(tmp_path):
         fd.data.require("door", tmp_path)
     for name in fd.data.SOURCES["door"]:
         (tmp_path / name).write_text("x")
-    assert fd.data.require("door", tmp_path) == tmp_path
+    with pytest.raises(ValueError, match="크기가 다름"):                     # 있지만 잘린·다른 파일
+        fd.data.require("door", tmp_path)
 
 
 # ─────────────── 저장 / 불러오기 ───────────────

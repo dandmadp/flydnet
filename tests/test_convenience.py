@@ -115,8 +115,10 @@ def test_door_task():
     if missing("door"):
         pytest.skip("DoOR 데이터 없음")
     glom = [f"G{i}" for i in range(3)]
-    with pytest.raises(ValueError, match="n_odors"):
+    with pytest.raises(ValueError, match="쓸 수 있는 냄새"):                 # 사구체가 적어 측정된 냄새가 없음
         fd.door_task(n_odors=1, glomeruli=glom)
+    with pytest.raises(ValueError, match="samples"):
+        fd.door_task(samples=0, glomeruli=glom)
     if missing("flywire"):
         pytest.skip("FlyWire 데이터 없음")
     Xtr, ytr, Xte, yte = fd.door_task(n_odors=5, samples=4, seed=1)
@@ -219,3 +221,36 @@ def test_hints_do_not_break_copy_pickle_hasattr():
         copy.deepcopy(obj)
         pickle.loads(pickle.dumps(obj))
     assert not hasattr(x, "grad") and not hasattr(p, "parameters") and getattr(p, "nope", 7) == 7
+
+
+# ─────────────── 3차 오류 점검 ───────────────
+def test_train_accepts_lists_and_pandas():
+    import pandas as pd
+    m = fd.Pathway(fd.Projection(6, 2, device="cpu", seed=0))
+    Xl = np.random.default_rng(0).random((10, 6)).tolist()
+    yl = [0, 1] * 5
+    fd.train(m, Xl, yl, epochs=1, verbose=False)
+    fd.train(m, pd.DataFrame(Xl), pd.Series(yl), epochs=1, verbose=False)
+    assert 0 <= fd.evaluate(m, pd.DataFrame(Xl), yl) <= 1
+
+
+def test_duplicate_groups_rejected():
+    with pytest.raises(ValueError, match="같은 이름이 여러 번"):
+        fd.Connectome(_c(), ["IN", "IN"], "O", device="cpu")
+    with pytest.raises(ValueError, match="같은 이름이 여러 번"):
+        fd.Connectome(_c(), "IN", ["O", "O"], device="cpu")
+
+
+def test_data_size_check(tmp_path):
+    from flydnet import data as D
+    if D.missing("door"):
+        pytest.skip("DoOR 데이터 없음")
+    import shutil
+    src = D.data_dir("door")
+    for n in D.SOURCES["door"]:
+        shutil.copy(src / n, tmp_path / n)
+    D.require("door", tmp_path)
+    name = next(iter(D.SOURCES["door"]))
+    (tmp_path / name).write_bytes((tmp_path / name).read_bytes()[:100])            # 잘린 파일
+    with pytest.raises(ValueError, match="크기가 다름"):
+        D.require("door", tmp_path)

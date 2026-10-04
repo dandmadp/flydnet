@@ -170,6 +170,10 @@ class ConnectomeLayer(Tissue):
                  ([outputs] if isinstance(outputs, str) else list(outputs)):
             if g not in circuit.groups:
                 raise KeyError(f"회로에 없는 그룹: {g!r} (있는 것: {list(circuit.groups)[:20]})")
+        for role, gs in (("입력", inputs), ("출력", outputs)):
+            gl = [gs] if isinstance(gs, str) else list(gs or [])
+            if len(set(gl)) != len(gl):
+                raise ValueError(f"{role} 그룹에 같은 이름이 여러 번: {gl} - 뉴런이 중복되어 자극·출력이 틀어짐")
         _ins = set([inputs] if isinstance(inputs, str) else list(inputs or []))
         _outs = set([outputs] if isinstance(outputs, str) else list(outputs))
         if _ins & _outs:

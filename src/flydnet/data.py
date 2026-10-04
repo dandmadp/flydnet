@@ -110,6 +110,12 @@ def require(kind: str = "flywire", path=None) -> Path:
     """데이터 폴더를 돌려주되, 파일이 없으면 무엇을 하면 되는지 알려주는 오류"""
     d = data_dir(kind, path)
     lack = missing(kind, path)
+    if not lack:                                       # 크기 확인 (해시보다 싸고, 받다 끊기거나 다른 버전인 파일을 잡음)
+        bad = [f"{n} ({(d / n).stat().st_size:,} B, 기대 {size:,} B)" for n, (_, size, _) in SOURCES[kind].items()
+               if (d / n).stat().st_size != size]
+        if bad:
+            raise ValueError(f"{kind} 데이터 파일 크기가 다름: {bad}\n  찾은 위치: {d}\n  받다가 끊겼거나 다른 버전 - "
+                             f"다시 받기: python -m flydnet download {kind}  (내용 확인: python -m flydnet verify)")
     if lack:
         raise FileNotFoundError(
             f"{kind} 데이터 파일이 없음: {lack}\n  찾은 위치: {d}\n"
@@ -156,7 +162,13 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
             tmp = f.with_suffix(f.suffix + ".part")
             if not quiet:
                 say(f"  받는 중 {name}", flush=True)
-            _fetch(url, tmp, quiet)
+            try:
+                _fetch(url, tmp, quiet)
+            except (OSError, ValueError) as e:                 # URLError·시간 초과·연결 끊김
+                if tmp.exists():
+                    tmp.unlink()
+                raise IOError(f"{name} 받기 실패 ({type(e).__name__}: {e}) - 인터넷 연결을 확인하고 다시: "
+                              f"python -m flydnet download {kind}  (받은 파일만 건너뜀)") from e
             got = tmp.stat().st_size
             if got != size or _sha256(tmp) != sha:
                 tmp.unlink()

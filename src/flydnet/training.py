@@ -26,8 +26,16 @@ def _call(model, x, seed):
     return model(x, seed=seed) if _takes_seed(model) else model(x)
 
 
+def _rows(X):
+    """배치로 자를 수 있는 형태로 (리스트·pandas → numpy, numpy·cupy·torch·Signal은 그대로)"""
+    if isinstance(X, Signal) or hasattr(X, "shape") and not hasattr(X, "iloc"):
+        return X
+    return np.asarray(X, dtype=np.float32)
+
+
 def evaluate(model, X, y, batch: int = 256, seed: int = 10 ** 6) -> float:
     """정확도 (역전파 경로 없이, 배치로)"""
+    X = _rows(X)
     y = B.labels(y)
     if len(X) != len(y):
         raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
@@ -49,6 +57,7 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
     loss:     loss(logits, y_batch) → 값 하나인 Signal (기본 교차 엔트로피)
     synapses: 바꿀 시냅스 (기본 model.named_synapses())
     반환: dict(loss=[에폭별 평균 손실], val_acc=[에폭별 정확도], train_acc=마지막, rule=가소성 규칙)"""
+    X = _rows(X)
     y = B.labels(y)
     if len(X) != len(y):
         raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
@@ -95,7 +104,12 @@ def door_task(n_odors: int = 12, samples: int = 24, noise: float = 0.8, backgrou
         from .circuit import Circuit
         from .encoders import GlomerularEncoder
         glomeruli = GlomerularEncoder(Circuit.from_flywire(), device="cpu").glomeruli
+    if samples < 1:
+        raise ValueError(f"samples는 1 이상: {samples}")
     door = door_odors(glomeruli, data_dir=data_dir)
+    if len(door["X"]) < 2:
+        raise ValueError(f"쓸 수 있는 냄새가 {len(door['X'])}개 - 사구체 {len(glomeruli)}개 중 측정된 것이 적음 "
+                         "(door_odors의 min_measured=20 기준). glomeruli를 비우면 버섯체 PN의 사구체 전체를 씀")
     if not 2 <= n_odors <= len(door["X"]):
         raise ValueError(f"n_odors는 2 ~ {len(door['X'])}")
     pick = np.argsort(door["X"].sum(1))[::-1][:n_odors]
