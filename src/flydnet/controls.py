@@ -88,8 +88,11 @@ class Local(Control):
 class Custom(Control):
     question = "사용자 정의"
 
-    def __init__(self, fn, name: str | None = None):
+    def __init__(self, fn, name: str | None = None, question: str | None = None):
+        """fn(circuit, seed) → 대조군 회로. question: 결과표에 나올 '묻는 것' 설명"""
         self.fn, self.name = fn, name or getattr(fn, "__name__", "custom")
+        if question is not None:
+            self.question = question
 
     def build(self, circuit, seed):
         return self.fn(circuit, seed)

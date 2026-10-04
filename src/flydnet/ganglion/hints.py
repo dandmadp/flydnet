@@ -24,7 +24,7 @@ TISSUE = {
     "train": "fd.train(model, X, y) (학습 루프) - 층의 상태 전환은 없음",
     "weight": "Projection이면 .weight, Connectome이면 .log_scale (학습 배율) / .weights() (연결마다 실제 세기)",
     "w": "Projection이면 .weight, Connectome이면 .log_scale / .weights()",
-    "num_parameters": ".n_synapses",
+    "num_parameters": ".n_synapses()",
 }
 
 RULE = {

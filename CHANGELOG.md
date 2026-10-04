@@ -8,6 +8,10 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- 기능 점검 2차 (대조군 성질: shuffled 연결 수 유지·중복 없음, randomized 종류별 연결 수, shuffled_weights, local 칸 유지,
+  subset·normalized·with_sign·저장 왕복, 인코더·KC 확장 희소성 5%, 도파민 리드아웃, Neuropil 4방식과 edge 부호 유지,
+  시각계 도구, 명령줄, 예전 예제 13개 끝까지 실행): `controls.Custom(..., question=)` (결과표의 '묻는 것' 설명),
+  이름 안내 `num_parameters` → `.n_synapses()` (괄호 빠졌던 것)
 - 오류 점검 (정적 분석, CPU·GPU 17개 기능 일치, torch·CuPy 없는 환경, 새 예제 11개 끝까지 실행, CPU 전용 전체 테스트):
   - 역전파 핵심 반복문이 연산이 돌려준 기울기 개수를 확인 (전에는 개수가 다르면 그 부모의 기울기가 조용히 사라짐)
   - `gradcheck`: 연결을 바꿔도 출력이 변하지 않으면 (출력 뉴런이 발화하지 않음) "cos 0" 대신 그렇다고 알려 줌

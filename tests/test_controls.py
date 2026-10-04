@@ -239,3 +239,10 @@ def test_doctor_respects_forced_cpu(monkeypatch, capsys):
     cli.doctor()
     out = capsys.readouterr().out
     assert "FLYDNET_DEVICE=cpu로 정함" in out and "GPU 계산이 안 됨" not in out
+
+
+def test_custom_control_question():
+    c = _circuit()
+    ctrl = fd.controls.Custom(lambda circ, s: circ.shuffled(seed=s), name="mine", question="내가 정한 구조")
+    rep = fd.compare(lambda circ, s: 0.5 + 0.01 * s, c, controls=[ctrl], seeds=3, verbose=False)
+    assert "내가 정한 구조" in str(rep) and "mine" in str(rep)

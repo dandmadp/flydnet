@@ -592,3 +592,20 @@ def test_brian_timing_trains_neuron_params():
     out.sum().retrograde()
     assert np.abs(L.log_t_mbr.retro).sum() > 0 and np.abs(L.bias.retro).sum() > 0
     assert np.isfinite(L.log_t_mbr.retro).all()
+
+
+def test_neuropil_edge_keeps_signs_free_does_not():
+    """train="edge"는 원래 세기 x exp(배율)이라 학습해도 흥분·억제 부호가 그대로, "free"는 바뀔 수 있음"""
+    c = _tiny(n_in=8, n_out=30, n_edges=200)
+    x = fd.Signal(np.random.default_rng(0).random((4, 8)).astype(np.float32))
+    t = fd.Signal(np.random.default_rng(1).standard_normal((4, 30)).astype(np.float32))
+    flips = {}
+    for mode in ("edge", "free"):
+        n = G.Neuropil(c, "IN", "OUT", train=mode, device="cpu")
+        s0 = np.sign(n.dense())
+        rule = G.AdaptivePlasticity(n.synapses(), rate=0.1)
+        for _ in range(40):
+            rule.clear(); ((n(x) - t) ** 2).mean().retrograde(); rule.step()
+        nz = s0 != 0
+        flips[mode] = int((np.sign(n.dense())[nz] != s0[nz]).sum())
+    assert flips["edge"] == 0 and flips["free"] > 0
