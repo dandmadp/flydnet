@@ -120,6 +120,25 @@ with G.activate(layer, sugar, hz=100):                            # CsChrimson: 
 모든 조건에서 차이는 시행 간 잡음 안 (p > 0.17). 반응한 뉴런 329개의 발화율 상관 0.9985.
 같은 입력 스파이크면 스파이크 시각까지 같다 (테스트로 고정). 시행당 약 17배 빠름 (GPU).
 
+## 회로 기여도: fd.explain
+
+학습된 모델이 답을 낼 때 **어떤 세포 유형·경로에 기대는지 실제 이름으로**, 그리고 **실제로 꺼서 확인**한다.
+
+```python
+def score(layer, seed):                                   # 설명할 값: 예) 정답 로짓의 합
+    return readout(layer(enc(X), seed=seed))[np.arange(len(y)), y].sum()
+
+rep = fd.explain(score, layer, by="cell_type", pathways=True, verify=5)
+print(rep)          # 유형별·경로별 기여 + 실제로 끈 결과와의 순위 상관
+```
+
+- 방법: 뉴런·연결마다 배율(=1) 탐침을 두고 기울기를 구한다 = "끄면 얼마나 줄어드는가"의 1차 예측.
+  `fd.genetics.silence`와 같은 조작이라, `verify`로 예측을 실제 손상과 바로 비교한다.
+- 실제 냄새(DoOR) 8개를 구분하는 스파이킹 버섯체 모델 (`examples/explain_odor.py`, 정확도 98.8%):
+  - 기여가 큰 유형: KCγ, KCαβ, 그다음 사구체별 PN. APL(억제)은 음수 (끄면 정답 로짓이 오름)
+  - 실제로 꺼서 확인: 예측과 순위 상관 0.92 (크기는 1차 근사라 PN에서 2배 정도 과대)
+  - 냄새마다 모델이 기대는 사구체와 그 냄새에 실제로 반응하는 사구체: 8개 모두 양의 상관 (평균 0.71)
+
 ## 구성 요소
 
 | 무엇 | 이름 |

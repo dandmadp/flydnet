@@ -150,6 +150,7 @@ class ConnectomeLayer(Tissue):
             if len(pos) else None
         self.gains = dict(gains or {})
         self._effects = []                                         # fd.genetics 효과기 (저장 안 됨)
+        self._probe = {}                                           # fd.explain 탐침: "neuron" (N, 1), "edge" (E,) Signal
 
         self.neuron_params = bias is not None or t_mbr is not None or train_neurons
         if self.neuron_params:
@@ -241,7 +242,8 @@ class ConnectomeLayer(Tissue):
         return b, a
 
     def _needs_retro(self, x: Signal) -> bool:
-        return learning_enabled() and (self.trainable or x.plastic or (self.neuron_params and isinstance(self.bias, Synapse)))
+        return learning_enabled() and (self.trainable or x.plastic or bool(self._probe)
+                                       or (self.neuron_params and isinstance(self.bias, Synapse)))
 
     @staticmethod
     def _frames(x: Signal):
@@ -297,6 +299,9 @@ class ConnectomeLayer(Tissue):
         s_cnt = int(round(self.count_from_ms / dt))
         rfc_vec = xp.full((N, 1), float(rfc), dtype=xp.float32); rfc_vec[self.in_idx] = 0
         values = self.values()
+        if "edge" in self._probe:                                          # fd.explain: 연결마다 배율 탐침 (값 1)
+            values = values * self._probe["edge"]
+        probe_n = self._probe.get("neuron")
         M, MT = K.matrices(self.wiring, values.data)                       # 순전파당 한 번만
         if seed is None:
             seed = int(np.random.SeedSequence().generate_state(1)[0])
@@ -339,6 +344,8 @@ class ConnectomeLayer(Tissue):
                     V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, idx, v_eq, a, **consts)
                 if quiet is not None:                                      # Kir2.1: 발화 없음
                     spk = spk * quiet
+                if probe_n is not None:                                    # fd.explain: 뉴런마다 배율 탐침 (값 1)
+                    spk = spk * probe_n
                 fired = spk.data > 0
                 if s >= s_cnt:
                     counts = counts + spk
@@ -388,6 +395,9 @@ class ConnectomeLayer(Tissue):
         else:
             b, a = 0.0, dt / p["t_mbr"]
         values = self.values()
+        if "edge" in self._probe:                                          # fd.explain: 연결마다 배율 탐침 (값 1)
+            values = values * self._probe["edge"]
+        probe_n = self._probe.get("neuron")
         M, MT = K.matrices(self.wiring, values.data)
         in_idx = self.in_idx
         rec = [] if record is not None else None
@@ -407,6 +417,8 @@ class ConnectomeLayer(Tissue):
                 V, r = K.graded_step(V, I, x_in, in_idx, b, a, r_max)
                 if quiet is not None:
                     r = r * quiet
+                if probe_n is not None:
+                    r = r * probe_n
                 if s >= s_cnt:
                     acc = acc + r
                 if rec is not None:
