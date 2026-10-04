@@ -20,7 +20,7 @@ import numpy as np
 from . import backend as B
 from . import kernels as K
 from . import physiology as P
-from .signal import Signal, as_input, as_signal, checkpoint, concat, learning_enabled, quiescent, where
+from .signal import Signal, as_input, as_signal, checkpoint, concat, learning_enabled, quiescent, release, scaled, where
 from .tissue import Synapse, Tissue
 
 
@@ -33,15 +33,16 @@ def resolve_damp(damp, steps: int, dly: int) -> float:
 
 
 def _damped(spk: Signal, d: float) -> Signal:
-    """값은 spk 그대로, 역행성 신호만 d배"""
+    """값은 spk 그대로, 역행성 신호만 d배 (노드 하나, 값을 붙잡지 않음)"""
     if d == 1.0 or not spk.plastic:
         return spk
-    return spk * d + Signal(spk.data * (1.0 - d))
+    dd = spk.data.dtype.type(d)
+    return Signal(spk.data)._link((spk,), lambda g: (g * dd,))
 
 
 def _cut(x):
-    """역행성 신호 경로를 끊은 같은 값 (구간 절단)"""
-    return Signal(x.data) if isinstance(x, Signal) else x
+    """역행성 신호 경로를 끊은 같은 값 (구간 절단). 값을 놓은 신호(이미 소비한 지연 버퍼 칸)는 그대로"""
+    return Signal(x.data) if isinstance(x, Signal) and x.data is not None else x
 
 
 def _registry():
@@ -500,6 +501,8 @@ class ConnectomeLayer(Tissue):
         damp, trunc, sigma = resolve_damp(self.surrogate_damp, steps, dly), self.truncate, self.noise
         noise_seed = (int(seed) * 0x9E3779B97F4A7C15 + 0x0015E) % (1 << 63)
 
+        binary = drop is None                                              # 보내는 스파이크가 0/1 (드롭아웃 배율이 없으면)
+
         def run(s0, s1, V, G, refr, counts, phase, *buf):
             buf = list(buf)
             for s in range(s0, s1):
@@ -523,29 +526,37 @@ class ConnectomeLayer(Tissue):
                     kick = K.poisson_spikes(xp, act_seed, s, p_act.data)
                     spikes = xp.concatenate([spikes, kick.astype(spikes.dtype)])
                     ps, idx = concat([ps, p_act]), idx_all
+                V_in, G_in, I_in = V, G, buf[s % R]
                 if brian:
                     uu = [] if obs is not None else None
-                    V, G, spk = K.lif_step_brian(V, G, buf[s % R], ps, spikes, act, idx, v_eq, e_v, e_g, out_u=uu,
+                    V, G, spk = K.lif_step_brian(V, G, I_in, ps, spikes, act, idx, v_eq, e_v, e_g, out_u=uu,
                                                  **consts)
                 else:
-                    V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, idx, v_eq, a, **consts)
+                    V, G, spk = K.lif_step(V, G, I_in, ps, spikes, act, idx, v_eq, a, **consts)
+                release(V_in, G_in)                                        # 역전파는 이 값을 쓰지 않음 (커널이 따로 둠)
+                if s < s1 - 1:                                             # 구간 끝 칸은 상태로 넘김
+                    release(I_in)
+                spk_raw = spk                                              # 감쇠는 같은 배열을 공유 - 둘 다 놓아야 풀림
                 spk = _damped(spk, damp)
                 if quiet is not None:                                      # Kir2.1: 발화 없음
-                    spk = spk * quiet
-                if probe_n is not None:                                    # fd.explain: 뉴런마다 배율 탐침 (값 1)
+                    spk = scaled(spk, quiet)
+                if probe_n is not None:                                    # fd.explain: 뉴런마다 배율 탐침 (값 1, 학습 값)
                     spk = spk * probe_n
                 if drop is not None:
-                    spk = spk * drop
+                    spk = scaled(spk, drop)
                 fired = spk.data > 0
                 if s >= s_cnt:
-                    counts = counts + spk
+                    old, counts = counts, counts + spk
+                    if s > s0:
+                        release(old)
                 if rec is not None:
                     rec.append(spk.data[rec_idx].T.copy())
                 refr = Signal(xp.where(fired, rfc_set, refr.data - 1))
-                sent = spk if blocked is None else spk * blocked           # Shibire: 발화는 하지만 전달 없음
-                buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
+                sent = spk if blocked is None else scaled(spk, blocked)    # Shibire: 발화는 하지만 전달 없음
+                buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring, binary=binary)
                 if obs is not None:
                     obs.step(s, sent.data, u=uu[0], act=act)
+                release(spk, sent, spk_raw)
             return (V, G, refr, counts, phase, *buf)
 
         z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))

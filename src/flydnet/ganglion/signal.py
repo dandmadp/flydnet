@@ -590,6 +590,25 @@ def multi_output(parents, outs, back=None, back_packed=None, force: bool = False
     return tuple(result)
 
 
+def scaled(x: Signal, m) -> Signal:
+    """x * m (m은 상수: 숫자 또는 배열). 값은 x * m과 같고, 역행성 신호는 g * m. 곱셈과 달리 x의 값을 붙잡지 않음
+    (상수 쪽 기울기가 필요 없으므로) - 시간 시뮬레이션에서 스텝마다 쌓이던 메모리를 줄임"""
+    out = Signal(x.data * m)
+    if out.data.shape != x.data.shape:                               # 브로드캐스트로 커지면 일반 곱셈 (드묾)
+        return x * Signal(m) if hasattr(m, "shape") else x * m
+    return out._link((x,), lambda g: (g * m,))
+
+
+def release(*signals):
+    """시뮬레이션 안에서 다 쓴 중간 신호의 값을 놓음 (역행성 신호 경로는 그대로). 학습 중일 때만.
+    역전파 엔진은 맨 끝(손실) 말고는 노드의 값을 읽지 않으므로 안전 - 그 값을 쓰는 연산은 따로 붙잡아 둠"""
+    if not learning_enabled():
+        return
+    for s in signals:
+        if isinstance(s, Signal) and s.plastic and s._back is not None:
+            s.data = None
+
+
 def as_signal(x, device: str | None = None) -> Signal:
     if isinstance(x, Signal):
         return x if device is None else x.to(device)

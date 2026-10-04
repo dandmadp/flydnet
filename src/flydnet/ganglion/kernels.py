@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import backend as B
-from .signal import Signal, multi_output
+from .signal import Signal, learning_enabled, multi_output
 
 _CUDA_SRC = r"""
 extern "C" {
@@ -56,6 +56,18 @@ __global__ void edge_dot_rm(const int* indptr, const int* indices, const float* 
         for (int o = 16; o > 0; o >>= 1) s += __shfl_down_sync(0xffffffff, s, o);
         if (lane == 0) out[k] = s;
     }
+}
+// edge_dot_thread with 0/1 spikes stored as bytes: sum_b g[post, b] * x[pre, b], skipping x = 0
+// (same result as the float version for finite g: g * 1 = g and adding 0 changes nothing)
+__global__ void edge_dot_u8(const int* post, const int* pre, const float* g, const unsigned char* x,
+                            float* out, const long long n_edges, const int nb) {
+    const long long e = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= n_edges) return;
+    const float* gr = g + (long long)post[e] * nb;
+    const unsigned char* xr = x + (long long)pre[e] * nb;
+    float s = 0.f;
+    for (int b = 0; b < nb; ++b) if (xr[b]) s = __fadd_rn(s, gr[b]);
+    out[e] = s;
 }
 // Poisson input spikes for one step: u = splitmix64(seed, step, b * n_rows + j) as in physiology.hash_uniform,
 // spike = u < p[j, b]. p and out are (n_rows, nb) row-major.
@@ -131,7 +143,8 @@ def _cuda():
         import cupy as cp
         try:
             mod = cp.RawModule(code=_CUDA_SRC)
-            for name in ("spmm_rm", "edge_dot_rm", "edge_dot_thread", "poisson_spikes", "lif_brian_fwd", "lif_brian_bwd"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
+            for name in ("spmm_rm", "edge_dot_rm", "edge_dot_thread", "edge_dot_u8", "poisson_spikes", "lif_brian_fwd",
+                         "lif_brian_bwd"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
                 mod.get_function(name)
         except Exception as e:
             import warnings
@@ -219,18 +232,48 @@ def matrices(wiring, values_data):
     return M, MT
 
 
-def propagate(x: Signal, values: Signal, M, MT, wiring) -> Signal:
-    """시냅스 전달 (N_pre, B) → (N_post, B)"""
+def propagate(x: Signal, values: Signal, M, MT, wiring, binary: bool = False) -> Signal:
+    """시냅스 전달 (N_pre, B) → (N_post, B).
+    binary: x가 0/1뿐이면 역전파용으로 1바이트로 저장 (연결별 기울기에만 쓰임, 그때 실수로 되돌림 - 값은 같음)"""
     xd = x.data
+    out = spmm(M, xd)
+    if not learning_enabled() or not (x.plastic or values.plastic):
+        return Signal(out)
+    keep = xd.astype(np.uint8) if (binary and values.plastic) else xd if values.plastic else None
+    x_plastic, v_plastic, dtype = x.plastic, values.plastic, xd.dtype
 
     def back(gs):
         g = gs[0]
         if g is None:
             return None, None
-        dx = spmm(MT, g) if x.plastic else None
-        dv = edge_dot(g, xd, wiring.indptr, wiring.post, wiring.pre) if values.plastic else None
+        dx = spmm(MT, g) if x_plastic else None
+        dv = None
+        if v_plastic:
+            if keep.dtype == np.uint8 and _edge_u8_ok(g, keep, wiring):
+                dv = _edge_dot_u8(g, keep, wiring)
+            else:
+                xs = keep.astype(dtype) if keep.dtype == np.uint8 else keep
+                dv = edge_dot(g, xs, wiring.indptr, wiring.post, wiring.pre)
         return dx, dv
-    return multi_output((x, values), [spmm(M, xd)], back)[0]
+    return multi_output((x, values), [out], back)[0]
+
+
+def _edge_u8_ok(g, x, wiring) -> bool:
+    """uint8 스파이크 커널을 쓸 수 있는지: GPU, float32 g, int32 색인, 배치가 작음 (큰 배치는 워프 커널이 빠름)"""
+    return (B.device_of(g) == "gpu" and g.dtype == np.float32 and wiring.pre.dtype.itemsize == 4 and g.shape[1] < 48
+            and _cuda() is not None)
+
+
+def _edge_dot_u8(g, x, wiring):
+    import cupy as cp
+    g = g if g.flags.c_contiguous else cp.ascontiguousarray(g)
+    x = x if x.flags.c_contiguous else cp.ascontiguousarray(x)
+    E = len(wiring.pre)
+    out = cp.empty(E, dtype=cp.float32)
+    if E:
+        _cuda().get_function("edge_dot_u8")(((E + 255) // 256,), (256,), (wiring.post, wiring.pre, g, x, out,
+                                                                          np.int64(E), np.int32(g.shape[1])))
+    return out
 
 
 def _reduce_to(g, like):
@@ -384,7 +427,7 @@ def _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi
 
     def back(gs):
         gV3, gG3, gspk = gs
-        z = lambda g: g if g is not None else V3                     # 자리만 (has_* 플래그가 0이면 읽지 않음)
+        z = lambda g: g if g is not None else u                      # 자리만 (has_* 플래그가 0이면 읽지 않음, 출력을 붙잡지 않게)
         gV, gG, gI, gV2 = (cp.empty((n, nb), cp.float32) for _ in range(4))
         c = lambda g: g if g is None or (g.dtype == cp.float32 and g.flags.c_contiguous) else cp.ascontiguousarray(g, cp.float32)
         gV3, gG3, gspk = c(gV3), c(gG3), c(gspk)
