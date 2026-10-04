@@ -71,8 +71,16 @@ def test_gradcheck_and_tune():
     assert set(r.table.columns) >= {"pathway", "bptt", "finite_diff"} and len(r.table) > 1
     assert -1 <= r.cos <= 1 and r.ratio > 0 and "cos" in str(r)
     np.testing.assert_array_equal(L.log_scale.numpy(), np.zeros_like(L.log_scale.numpy()))   # 원래 값으로 되돌림
+    before = L.surrogate_damp
     best = fd.tune_surrogate(score, L, candidates=(1.0, 0.1), verbose=False)
-    assert best in (1.0, 0.1) and L.surrogate_damp == best and L.config["surrogate_damp"] == best
+    if best is None:                                                         # 기준이 불안정하면 고르지 않고 그대로
+        assert L.surrogate_damp == before
+    else:
+        assert best in (1.0, 0.1) and L.surrogate_damp == best and L.config["surrogate_damp"] == best
+    P = _layer(share="pair")
+    P.input_mode = "poisson"
+    b2 = fd.tune_surrogate(score, P, candidates=(1.0, 0.1), verbose=False, seeds=12)
+    assert b2 in (1.0, 0.1, None)
     with pytest.raises(ValueError, match="학습하는 연결"):
         fd.gradcheck(score, fd.ConnectomeLayer(_strong(), "IN", "O", t_ms=20, device="cpu"))
 
@@ -89,3 +97,34 @@ def test_damp_truncate_validation_and_custom_models():
                            surrogate_damp=0.5, truncate=40)
     score(a, 0).retrograde(); score(b, 0).retrograde()
     assert np.linalg.norm(b.log_scale.retro) < np.linalg.norm(a.log_scale.retro)
+
+
+def test_gradcheck_reference_reliability():
+    """기준(차분) 신뢰도: 매끄러운 연속값 회로는 eps·eps/2 차분이 일치"""
+    c = _strong()
+    L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, trainable=True, device="cpu", neuron="graded", share="pair")
+    Xg = np.random.default_rng(1).uniform(0.2, 1, (8, 6)).astype(np.float32)
+    r = fd.gradcheck(lambda L_, s: (L_(Xg, seed=s) * fd.Signal(W)).sum(), L)
+    assert r.reliable_reference and r.fd_consistency > 0.99
+    assert r.cos > 0.99 and abs(r.ratio - 1) < 0.05                          # 연속값 뉴런은 역전파가 정확
+    assert "finite_diff_half" in r.table
+
+
+def test_gradcheck_seeds_average():
+    L = _layer(share="pair")
+    L.input_mode = "poisson"
+    r = fd.gradcheck(score, L, seeds=3)
+    assert r.seeds == 3 and np.isfinite(r.cos)
+
+
+def test_membrane_noise():
+    a, b, c = _layer(), _layer(noise=1.0), _layer(noise=1.0, checkpoint_every=7)
+    with fd.quiescent():
+        base = a(X, seed=0).numpy()
+        n1, n1b, n2 = b(X, seed=0).numpy(), b(X, seed=0).numpy(), b(X, seed=1).numpy()
+    np.testing.assert_array_equal(n1, n1b)                                   # 시드로 정해짐
+    assert not np.array_equal(n1, base) and not np.array_equal(n1, n2)
+    score(b, 0).retrograde(); score(c, 0).retrograde()
+    np.testing.assert_allclose(b.log_scale.retro, c.log_scale.retro, rtol=1e-4, atol=1e-6)   # 체크포인팅과 같음
+    with pytest.raises(ValueError, match="noise"):
+        _layer(noise=-1)

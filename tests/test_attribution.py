@@ -105,3 +105,11 @@ def test_explain_gpu_matches_cpu():
     r = [fd.explain(score, _graded(c, device=d), pathways=True).groups.set_index("name").pred_drop.sort_index()
          for d in ("cpu", "gpu")]
     np.testing.assert_allclose(r[0], r[1], rtol=1e-4)
+
+
+
+def test_verify_flags_sign_flips():
+    """1차 예측과 실제 손상의 방향이 다르면 표시"""
+    rep = fd.explain(score, _graded(_chain()), verify=2)
+    rep.verified.loc[0, "pred_drop"] = -abs(rep.verified.loc[0, "actual_drop"]) - 1    # 일부러 틀린 방향
+    assert "방향을 틀린 유형" in str(rep)

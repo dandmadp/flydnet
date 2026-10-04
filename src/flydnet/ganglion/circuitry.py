@@ -22,6 +22,14 @@ from .signal import Signal, as_signal, checkpoint, concat, learning_enabled, qui
 from .tissue import Synapse, Tissue
 
 
+def resolve_damp(damp, steps: int, dly: int) -> float:
+    """surrogate_damp 값 ("auto"면 홉 수 규칙)"""
+    if damp != "auto":
+        return float(damp)
+    hops = max(steps / max(dly, 1), 1e-9)
+    return float(min(1.0, (11.0 / hops) ** 1.5))
+
+
 def _damped(spk: Signal, d: float) -> Signal:
     """값은 spk 그대로, 역행성 신호만 d배"""
     if d == 1.0 or not spk.plastic:
@@ -74,8 +82,12 @@ class ConnectomeLayer(Tissue):
     neuron:     "lif" (기본) / "graded"
     inputs=None: 입력 그룹 없이 (fd.genetics.activate로만 자극할 때). 그때 layer(None, batch=시행 수)
     surrogate_damp: 스파이크의 대리 기울기에 곱하는 계수. 값은 그대로, 역전파만 줄임 → 되먹임 회로를 돌며 기울기가
-                커지는 것을 막음. 기본 0.1 (timing="legacy"는 1 = 0.1.15와 같음). 1이면 긴 시뮬레이션에서 기울기가
-                수억 배로 부풀고 방향도 틀림 (fd.gradcheck로 확인). 자기 손실에 맞는 값은 fd.tune_surrogate로
+                커지는 것을 막음. 기본 "auto" = min(1, (11 / 홉 수)^1.5), 홉 수 = 시뮬레이션 스텝 / 시냅스 지연 스텝
+                (신호가 시냅스를 건널 수 있는 횟수). 짧으면 감쇠 없음, 길수록 강하게 - 초파리 버섯체·전체 뇌·합성
+                그래프 5가지 조건에서 fd.gradcheck로 가장 잘 맞은 값을 맞추는 경험 규칙 (validation/gradients).
+                timing="legacy"는 1 (0.1.15와 같음). 자기 손실로 확인·조정: fd.gradcheck, fd.tune_surrogate
+    noise:      막전위 잡음 표준편차 mV/스텝 (내장 LIF, 적분 중인 뉴런만, 시드로 정해짐). 출력이 연결 세기에 대해
+                매끄러워지고 대리 기울기가 '잡음 있는 뉴런의 발화 확률의 기울기'에 가까워짐 (Gygax & Zenke 2024)
     truncate:   n이면 n스텝마다 상태의 역전파 연결을 끊음 (구간 절단 역전파, truncated BPTT). 발화율 합은 끊지 않음
                 → 각 스텝의 기울기가 최대 n스텝 과거까지만. 긴 시뮬레이션에서 기울기가 부푸는 것을 막음
     timing:     "brian" (기본, 0.1.16~) = Shiu et al. 2024 Brian2 모델과 같은 한 스텝 (정확한 선형 적분, 불응기 중 도착한
@@ -90,7 +102,7 @@ class ConnectomeLayer(Tissue):
                  trainable=False, dt: float | None = None, slope: float = 10.0, checkpoint_every: int | None = None,
                  share: str = "edge", bias=None, t_mbr=None, train_neurons: bool = False, v_init: str = "rest",
                  count_from_ms: float = 0.0, neuron: str = "lif", timing: str = "brian",
-                 surrogate_damp: float | None = None, truncate: int | None = None):
+                 surrogate_damp: float | str | None = None, truncate: int | None = None, noise: float = 0.0):
         super().__init__()
         listify = lambda x: x if (x is None or isinstance(x, str)) else list(x)
         self.config = dict(inputs=listify(inputs), outputs=listify(outputs), t_ms=t_ms, params=dict(params or {}),
@@ -100,7 +112,7 @@ class ConnectomeLayer(Tissue):
                            bias=dict(bias) if isinstance(bias, dict) else bias,
                            t_mbr=dict(t_mbr) if isinstance(t_mbr, dict) else t_mbr,
                            train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms, neuron=neuron,
-                           timing=timing, surrogate_damp=surrogate_damp, truncate=truncate)
+                           timing=timing, surrogate_damp=surrogate_damp, truncate=truncate, noise=noise)
         from ..neurons import NeuronModel, from_config
         if isinstance(neuron, dict):                                     # 저장 파일에서 (사용자 정의 뉴런 모델)
             neuron = from_config(neuron)
@@ -112,14 +124,19 @@ class ConnectomeLayer(Tissue):
             raise ValueError(f"neuron은 'lif', 'graded', 또는 fd.neurons.NeuronModel: {neuron}")
         if timing not in ("brian", "legacy"):
             raise ValueError(f"timing은 'brian' 또는 'legacy': {timing}")
-        if surrogate_damp is None:                       # 기본: 0.1 (gradcheck로 고른 값), 예전 방식(legacy)은 1 (0.1.15와 같게)
-            surrogate_damp = 1.0 if timing == "legacy" and isinstance(neuron, str) else 0.1
-        self.config["surrogate_damp"] = float(surrogate_damp)
-        if not 0 < surrogate_damp <= 1:
-            raise ValueError(f"surrogate_damp는 0 초과 1 이하: {surrogate_damp}")
+        if surrogate_damp is None:                       # 기본: "auto" (홉 수 규칙), 예전 방식(legacy)은 1 (0.1.15와 같게)
+            surrogate_damp = 1.0 if timing == "legacy" and isinstance(neuron, str) else "auto"
+        if surrogate_damp != "auto":
+            surrogate_damp = float(surrogate_damp)
+            if not 0 < surrogate_damp <= 1:
+                raise ValueError(f"surrogate_damp는 0 초과 1 이하 또는 'auto': {surrogate_damp}")
+        self.config["surrogate_damp"] = surrogate_damp
         if truncate is not None and truncate < 1:
             raise ValueError(f"truncate는 1 이상의 스텝 수: {truncate}")
-        self.surrogate_damp, self.truncate = float(surrogate_damp), truncate
+        self.surrogate_damp, self.truncate = surrogate_damp, truncate
+        if noise < 0:
+            raise ValueError(f"noise는 0 이상 (mV): {noise}")
+        self.noise = float(noise)
         if truncate is not None:
             _dt = dt if dt is not None else DEFAULT_PARAMS["dt"]
             _dly = max(int(round(dict(DEFAULT_PARAMS, **(params or {}))["t_dly"] / _dt)), 1)
@@ -383,10 +400,12 @@ class ConnectomeLayer(Tissue):
                 if m is not None:
                     gain = m if gain is None else gain * m
             obs.begin(dict(e_v=e_v, e_g=e_g, gd=gd, dly=dly, steps=steps, s_cnt=s_cnt, scale=consts["scale"],
-                           slope=self.slope, damp=self.surrogate_damp, batch=Bn, gain=gain, blocked=blocked,
+                           slope=self.slope, damp=resolve_damp(self.surrogate_damp, steps, dly), batch=Bn, gain=gain,
+                           blocked=blocked,
                            rate_c=1000.0 / (self.t_ms - s_cnt * dt)))
 
-        damp, trunc = self.surrogate_damp, self.truncate
+        damp, trunc, sigma = resolve_damp(self.surrogate_damp, steps, dly), self.truncate, self.noise
+        noise_seed = (int(seed) * 0x9E3779B97F4A7C15 + 0x0015E) % (1 << 63)
 
         def run(s0, s1, V, G, refr, counts, phase, *buf):
             buf = list(buf)
@@ -395,6 +414,11 @@ class ConnectomeLayer(Tissue):
                     V, G, buf = _cut(V), _cut(G), [_cut(b) for b in buf]
                 ps = frame(s, steps)
                 act = refr.data <= 0
+                if sigma:                                                    # 막전위 잡음 (값만, 기울기는 그대로 통과)
+                    z = P.hash_uniform(xp, noise_seed, s, (Bn, N, 2))
+                    gauss = xp.sqrt(-2 * xp.log(1 - z[..., 0])) * xp.cos(2 * np.pi * z[..., 1])
+                    Vd = V.data + (gauss.T * sigma * act).astype(xp.float32)
+                    V = Signal(Vd)._link((V,), lambda g: (g,))
                 if regular:
                     ph = phase.data + ps.data
                     spikes = (ph >= 1).astype(ph.dtype)
@@ -502,7 +526,7 @@ class ConnectomeLayer(Tissue):
                            rate_c=1000.0 / (self.t_ms - s_cnt * dt), model=model))
         zeros = xp.zeros((N, Bn), dtype=xp.float32)
 
-        damp, trunc = self.surrogate_damp, self.truncate
+        damp, trunc = resolve_damp(self.surrogate_damp, steps, dly), self.truncate
 
         def run(s0, s1, counts, phase, *rest):
             st = dict(zip(names, rest[:len(names)]))
@@ -633,6 +657,12 @@ class ConnectomeLayer(Tissue):
         layer.load_state({k[6:]: v for k, v in d.items() if k.startswith("state.")})
         layer._build()
         return layer
+
+    def damp_value(self, t_ms: float | None = None) -> float:
+        """이 층이 쓰는 대리 기울기 감쇠 값 ("auto"면 t_ms 길이에서 계산된 값)"""
+        dt = self.p["dt"]
+        steps = int(round((t_ms or self.t_ms) / dt))
+        return resolve_damp(self.surrogate_damp, steps, max(int(round(self.p["t_dly"] / dt)), 1))
 
     def extra_repr(self):
         tr = f", 학습 연결 {len(self.train_pos):,}개" if self.trainable else ""

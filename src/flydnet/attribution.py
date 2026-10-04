@@ -11,6 +11,10 @@ score(layer, seed) -> 스칼라 Signal: 설명할 값 (예: 정답 클래스 로
   세포 유형의 예측 = 그 유형 뉴런들의 합 (모두 함께 끄는 것의 1차 예측). 연결도 같은 방법 (연결마다 배율 → 경로별 합).
   verify=k: 예측이 큰 유형 k개와 나머지에서 고르게 k개를 실제로 꺼서(silence) 측정한 감소(actual_drop)와 비교 →
   순위 상관. 스파이킹 뉴런은 대리 기울기라 1차 예측이 빗나갈 수 있어서, 확인 결과를 함께 본다.
+  쓰는 법: 기울기(pred_drop)는 모든 유형을 역전파 한 번으로 훑어 후보를 고르는 용도, 결론은 실제로 끈 값(actual_drop).
+  유형 하나를 실제로 끄는 것은 순전파 한 번이라, 기울기를 여러 번 적분하는 것보다 싸고 정확함.
+  1차 예측은 끄는 도중 반응이 크게 휘는 유형(되먹임 억제 뉴런 APL 등)에서 방향까지 틀릴 수 있음 → 확인 결과에 표시.
+  모든 유형의 정확한 값이 필요하면 fd.genetics.screen.
 """
 from __future__ import annotations
 
@@ -69,6 +73,12 @@ class Explanation:
             out.append("\n확인: 실제로 끄기 (silence)")
             out.append(self.verified[["name", "pred_drop", "actual_drop"]].to_string(
                 index=False, float_format=lambda v: f"{v:.3g}"))
+            v = self.verified
+            big = v.actual_drop.abs() > 0.05 * (v.actual_drop.abs().max() or 1)
+            flip = v[big & (np.sign(v.pred_drop) != np.sign(v.actual_drop))]
+            if len(flip):
+                out.append(f"  ! 1차 예측이 방향을 틀린 유형: {', '.join(flip.name)} - 끄는 도중 반응이 크게 휘는 유형 "
+                           "(되먹임 억제 등). 이 유형들은 actual_drop을 쓸 것")
             a = self.agreement
             if a is None:
                 out.append("  예측·실제 순위 상관: 계산 불가 (확인한 유형이 너무 적거나 값이 모두 같음)")

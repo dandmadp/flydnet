@@ -125,10 +125,12 @@ class Signal:
 
     # ─────────────── 연산 그래프 ───────────────
     def _link(self, parents, back):
-        """parents에서 만들어진 신호로 기록 (학습 중이고 부모 중 하나라도 plastic이면)"""
+        """parents에서 만들어진 신호로 기록 (학습 중이고 부모 중 하나라도 plastic이면).
+        plastic이 아닌 부모(상수)는 자리표만 남김 - 역전파에 쓰이지 않으므로 그 배열을 붙잡아 둘 필요가 없음
+        (back이 직접 쓰는 값은 back 쪽이 따로 들고 있음)"""
         if learning_enabled() and any(p.plastic for p in parents):
             self.plastic = True
-            self._parents = parents
+            self._parents = tuple(p if p.plastic else _CONST for p in parents)
             self._back = back
         return self
 
@@ -362,6 +364,16 @@ class Signal:
                 out[idx] += g                                  # 슬라이스·정수: 칸이 겹치지 않음
             return (out,)
         return Signal(x[idx])._link((self,), back)
+
+
+class _Constant:
+    """역전파 경로의 상수 자리표 (plastic 아님, 데이터 없음)"""
+    plastic = False
+    _parents = ()
+    _back = None
+
+
+_CONST = _Constant()
 
 
 class _Packed:

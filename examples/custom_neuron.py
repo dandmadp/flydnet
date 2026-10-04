@@ -8,6 +8,7 @@
 explain의 확인(verify)으로 기울기가 믿을 만한지 실제로 꺼서 확인한다 (감쇠 없이는 방향이 틀렸음)
 속도: 같은 계산을 내장 LIF (손으로 유도한 합친 연산)와 플러그인 LIF로 재서 비교
 """
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -50,6 +51,7 @@ class AdEx(fd.neurons.NeuronModel):
         return {"v": v2, "w": w1 + spk * q["b"], "g": g}, spk
 
 
+argparse.ArgumentParser(description="사용자 정의 뉴런 모델 (AdEx) 예").parse_args()
 fd.ganglion.limit_gpu_memory(0.6)
 mb = fd.Circuit.from_flywire()
 enc = fd.GlomerularEncoder(mb)
@@ -72,9 +74,9 @@ print(f"   KC {r[:, mb.groups['KC']].mean():.2f} → {r2[:, mb.groups['KC']].mea
 
 print("3) 역전파 (자동 미분) + explain으로 기울기가 믿을 만한지 실제로 꺼서 확인")
 rep = fd.explain(lambda L, s: L(enc(X), seed=s).sum(), layer, by="cell_type", verify=4)
-print(f"   예측(기울기)과 실제로 끈 결과의 순위 상관 {rep.agreement:+.2f} (surrogate_damp {layer.surrogate_damp:g})")
+print(f"   예측(기울기)과 실제로 끈 결과의 순위 상관 {rep.agreement:+.2f} (surrogate_damp {layer.surrogate_damp} = {layer.damp_value():.3g})")
 if rep.agreement is not None and rep.agreement >= 0.7:
-    print("   → 기울기를 믿을 만함 (기본 surrogate_damp 0.1이 1000스텝 동안 기울기가 부푸는 것을 막음;")
+    print("   → 기울기를 믿을 만함 (기본 surrogate_damp='auto'가 1000스텝 동안 기울기가 부푸는 것을 막음;")
     print("     감쇠 없이(surrogate_damp=1) 돌리면 순위 상관 -0.42로 방향까지 틀림)")
 else:
     print("   → 기울기를 믿으면 안 됨: fd.tune_surrogate로 감쇠를 고르거나 fd.ThreeFactor, 해석은 실제로 끈 결과로")
