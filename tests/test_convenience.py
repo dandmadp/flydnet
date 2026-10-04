@@ -1,0 +1,125 @@
+"""편의 기능과 오류 메시지: 1차원 입력, 알기 쉬운 오류, fd.train / evaluate / door_task, Homeostasis, Pathway seed"""
+import numpy as np
+import pytest
+
+import flydnet as fd
+from test_threefactor import _rec
+
+
+def _c():
+    c = _rec(feedback_edges=True)
+    return fd.Circuit(c.root_ids, c.groups, c.pre, c.post, c.weight * 4)
+
+
+X = np.random.default_rng(0).uniform(50, 200, (4, 6)).astype(np.float32)
+
+
+def _L(**kw):
+    return fd.ConnectomeLayer(_c(), "IN", "O", **dict(dict(t_ms=30, device="cpu"), **kw))
+
+
+# ─────────────── 입력 ───────────────
+def test_single_sample_input():
+    L = _L()
+    with fd.quiescent():
+        one = L(X[0], seed=3)
+        many = L(X[:1], seed=3)
+        out, trace = L(X[0], seed=3, record=[0, 1])
+    assert one.shape == (5,) and trace.shape[0] == 300 and out.shape == (5,)
+    np.testing.assert_array_equal(one.numpy(), many.numpy()[0])
+
+
+@pytest.mark.parametrize("make,match", [
+    (lambda: _L()(-X), "0 이상"),
+    (lambda: _L()(X, seed=1.5), "seed는 정수"),
+    (lambda: _L()(X, record=[999]), "record"),
+    (lambda: _L(t_ms=0), "t_ms는 양수"),
+    (lambda: _L(share="all"), "share는"),
+    (lambda: _L(input_mode="burst"), "input_mode는"),
+    (lambda: fd.ConnectomeLayer(_c(), "IN", "Q", device="cpu"), "회로에 없는 그룹"),
+    (lambda: fd.AdaptivePlasticity(_L(trainable=True).synapses(), rate=-1), "rate"),
+    (lambda: fd.Projection(4, 2, device="cpu")(fd.Signal(np.ones((3, 5), np.float32))), "Projection"),
+    (lambda: fd.train_linear(np.ones((5, 3)), np.zeros(4), np.ones((2, 3)), np.zeros(2), epochs=1), "개수"),
+    (lambda: fd.compare(lambda c, s: 0.5, _c(), controls=["shuffled"], seeds=1, verbose=False), "2개 이상"),
+])
+def test_clear_errors(make, match):
+    with pytest.raises((ValueError, TypeError, KeyError, IndexError), match=match):
+        make()
+
+
+def test_overlapping_io_warns():
+    with pytest.warns(UserWarning, match="겹침"):
+        fd.ConnectomeLayer(_c(), "IN", ["IN", "O"], device="cpu")
+
+
+def test_negative_inputs_allowed_for_graded():
+    L = fd.ConnectomeLayer(_c(), "IN", "O", t_ms=20, device="cpu", neuron="graded")
+    L(-np.ones((2, 6), np.float32))                                        # 연속값 뉴런은 활동값이라 음수 가능
+
+
+# ─────────────── Homeostasis·Pathway seed ───────────────
+def test_homeostasis():
+    x = fd.Signal(np.random.default_rng(0).uniform(0, 50, (3, 7)).astype(np.float64), plastic=True)
+    y = fd.Homeostasis()(x)
+    np.testing.assert_allclose(y.numpy().mean(1), 0, atol=1e-9)
+    np.testing.assert_allclose(y.numpy().std(1), 1, rtol=1e-4)
+    w = np.random.default_rng(1).standard_normal((3, 7))
+    (y * fd.Signal(w)).sum().retrograde()
+    f = lambda a: float((fd.Homeostasis()(fd.Signal(a)) * fd.Signal(w)).sum().data)
+    g, x0, h = np.zeros((3, 7)), x.numpy(), 1e-5
+    for i in np.ndindex(x0.shape):
+        a, b = x0.copy(), x0.copy(); a[i] += h; b[i] -= h
+        g[i] = (f(a) - f(b)) / (2 * h)
+    np.testing.assert_allclose(x.retro, g, atol=1e-7)
+    assert np.isfinite(fd.Homeostasis()(np.ones((2, 4))).numpy()).all()   # 모두 같은 값이어도
+
+
+def test_pathway_passes_seed():
+    m = fd.Pathway(fd.Activation("relu"), _L(t_ms=80))
+    x = X
+    with fd.quiescent():
+        a, b, c = m(x, seed=1).numpy(), m(x, seed=1).numpy(), m(x, seed=2).numpy()
+    np.testing.assert_array_equal(a, b)
+    assert not np.array_equal(a, c)
+    m2 = fd.Pathway(fd.Projection(3, 2, device="cpu"))
+    m2(np.ones((2, 3), np.float32), seed=5)                                 # seed를 받지 않는 것만 있어도 됨
+
+
+# ─────────────── fd.train / evaluate ───────────────
+def test_train_and_evaluate():
+    rng = np.random.default_rng(0)
+    Xs = rng.standard_normal((120, 5)).astype(np.float32)
+    ys = (Xs[:, 0] + Xs[:, 1] > 0).astype(int)
+    m = fd.Pathway(fd.Projection(5, 8, device="cpu", seed=0), fd.Activation("tanh"), fd.Projection(8, 2, device="cpu"))
+    h = fd.train(m, Xs[:80], ys[:80], val=(Xs[80:], ys[80:]), epochs=15, rate=0.05, verbose=False)
+    assert h["loss"][-1] < h["loss"][0] and h["val_acc"][-1] > 0.8 and len(h["val_acc"]) == 15
+    assert fd.evaluate(m, Xs[80:], ys[80:]) == h["val_acc"][-1]
+    with pytest.raises(ValueError, match="개수"):
+        fd.train(m, Xs, ys[:5], epochs=1, verbose=False)
+    with pytest.raises(TypeError, match="synapses"):
+        fd.train(lambda x: x, Xs, ys, epochs=1, verbose=False)
+
+
+def test_train_with_connectome_layer():
+    c = _c()
+    L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu", trainable=True)
+    Xs = np.random.default_rng(1).uniform(20, 200, (24, 6)).astype(np.float32)
+    ys = (Xs[:, 0] > Xs[:, 1]).astype(int)
+    m = fd.Pathway(L, fd.Homeostasis(), fd.Projection(5, 2, device="cpu"))
+    h = fd.train(m, Xs, ys, epochs=3, batch=8, verbose=False)
+    assert np.isfinite(h["loss"]).all() and L.log_scale.retro is not None
+
+
+def test_door_task():
+    from flydnet.data import missing
+    if missing("door"):
+        pytest.skip("DoOR 데이터 없음")
+    glom = [f"G{i}" for i in range(3)]
+    with pytest.raises(ValueError, match="n_odors"):
+        fd.door_task(n_odors=1, glomeruli=glom)
+    if missing("flywire"):
+        pytest.skip("FlyWire 데이터 없음")
+    Xtr, ytr, Xte, yte = fd.door_task(n_odors=5, samples=4, seed=1)
+    assert Xtr.shape[0] == 20 and Xtr.dtype == np.float32 and 0 <= Xtr.min() and Xtr.max() <= 1
+    assert sorted(set(ytr)) == list(range(5)) and len(fd.door_task.names) == 5
+    np.testing.assert_array_equal(fd.door_task(n_odors=5, samples=4, seed=1)[0], Xtr)

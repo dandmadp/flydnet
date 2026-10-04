@@ -187,6 +187,15 @@ class Tissue:
         return head + "\n" + body + "\n)"
 
 
+def _takes_seed(t) -> bool:
+    import inspect
+    try:
+        ps = inspect.signature(getattr(t, "forward", t)).parameters
+    except (TypeError, ValueError):
+        return False
+    return "seed" in ps or any(p.kind == p.VAR_KEYWORD for p in ps.values())
+
+
 class Pathway(Tissue):
     """차례로 이어진 신경 경로 (nn.Sequential)"""
 
@@ -196,9 +205,10 @@ class Pathway(Tissue):
             setattr(self, str(i), t)
         self._order = list(tissues)
 
-    def forward(self, x):
+    def forward(self, x, seed: int | None = None):
+        """seed를 주면 seed를 받는 구조물(ConnectomeLayer 등)에게만 넘김 (같은 seed = 같은 결과)"""
         for t in self._order:
-            x = t(x)
+            x = t(x, seed=seed) if (seed is not None and _takes_seed(t)) else t(x)
         return x
 
     def __getitem__(self, i):
@@ -229,6 +239,8 @@ class Projection(Tissue):
 
     def forward(self, x):
         x = as_signal(x, self.weight.device)
+        if x.shape[-1] != self.weight.shape[1]:
+            raise ValueError(f"Projection({self.weight.shape[1]} → {self.weight.shape[0]})에 입력 마지막 차원 {x.shape[-1]}")
         y = x @ self.weight.T
         return y + self.bias if self.bias is not None else y
 
@@ -368,6 +380,24 @@ class AxonHillock(Tissue):
 
     def extra_repr(self):
         return f"threshold={self.threshold}, slope={self.slope}"
+
+
+class Homeostasis(Tissue):
+    """항상성 스케일링: 시료마다 활동을 평균 0, 표준편차 1로 (nn.LayerNorm, 학습 값 없음).
+    발화율(Hz)처럼 크기가 큰 활동을 리드아웃에 넣기 전에. eps: 모두 같은 값일 때 0으로 나누지 않게"""
+
+    def __init__(self, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x):
+        x = as_signal(x)
+        mu = x.mean(axis=-1, keepdims=True)
+        d = x - mu
+        return d / ((d * d).mean(axis=-1, keepdims=True) + self.eps) ** 0.5
+
+    def extra_repr(self):
+        return f"eps={self.eps}"
 
 
 class Activation(Tissue):

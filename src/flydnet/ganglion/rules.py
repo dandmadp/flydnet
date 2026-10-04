@@ -35,6 +35,8 @@ class _Rule:
         self.synapses = [s for _, s in items] if named else items
         if clip is not None and not clip > 0:
             raise ValueError(f"clip은 양수: {clip}")
+        if not (rate >= 0 and np.isfinite(rate)):
+            raise ValueError(f"rate(학습률)는 0 이상의 유한한 값: {rate}")
         self.rate, self.clip, self.guard = rate, clip, guard
         self.last_norm = None
         self.state = [None] * len(self.synapses)

@@ -94,6 +94,17 @@ class Circuit:
                 gidx[sub] = np.arange(len(picked), len(picked) + len(s))
                 picked.extend(s.root_id.values)
         ids = np.array(picked, dtype=np.int64)
+        empty = [g for g in groups if not group_by and len(gidx.get(g, [])) == 0]
+        if empty:
+            import difflib
+            hints = []
+            for g in empty:
+                col, val = groups[g]
+                vals = [val] if isinstance(val, str) else list(val)
+                pool = ann[col].dropna().astype(str).unique().tolist()
+                near = sorted({m for v in vals for m in difflib.get_close_matches(str(v), pool, n=3, cutoff=0.6)})
+                hints.append(f"{g} ({col}={vals}{', 비슷한 값: ' + str(near) if near else ''})")
+            raise ValueError(f"뉴런이 하나도 없는 그룹: {'; '.join(hints)} (side={side!r}도 확인)")
         if len(np.unique(ids)) != len(ids):
             raise ValueError("그룹끼리 뉴런이 겹침")
 

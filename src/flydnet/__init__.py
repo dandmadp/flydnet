@@ -19,7 +19,7 @@ from .data import data_dir, set_data_dir, download, data_status
 from .circuit import Circuit, MUSHROOM_BODY
 from . import ganglion
 from .ganglion import (Signal, Synapse, Tissue, Pathway, Projection, Neuropil, LateralInhibition, AxonHillock,
-                       Activation, MushroomBodyOutput, Plasticity, AdaptivePlasticity, quiescent, surprise,
+                       Activation, Homeostasis, MushroomBodyOutput, Plasticity, AdaptivePlasticity, quiescent, surprise,
                        transmit, fire, inhibit, ConnectomeLayer, DEFAULT_PARAMS, checkpoint)
 
 __version__ = "0.1.16"
@@ -32,6 +32,7 @@ from .expansion import KCExpansion
 from .datasets import synthetic_odors, door_odors, biconditional_mixtures
 from . import graphs                       # fd.graphs.erdos_renyi / watts_strogatz / barabasi_albert / stochastic_block / layered
 from . import genetics                     # fd.genetics.driver / silence / block / activate / ablate / screen
+from .training import train, evaluate, door_task  # 학습 루프 한 줄, 정확도, 실제 냄새 분류 과제
 from . import neurons                      # 사용자 정의 뉴런 모델: fd.neurons.NeuronModel, register, LIF, Izhikevich
 from .stdp import STDP, Monitor                 # 관찰자 규격과 STDP (사용자 정의 학습 규칙의 틀)
 from .gradcheck import gradcheck, tune_surrogate, GradCheck   # 스파이킹 역전파 기울기 확인·감쇠 고르기

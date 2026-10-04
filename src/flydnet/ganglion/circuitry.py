@@ -145,16 +145,28 @@ class ConnectomeLayer(Tissue):
                                  f"늘 끊겨 연결 세기의 기울기가 모두 사라짐 (예: truncate={_dly * 5})")
         self.timing = timing
         if input_mode not in ("poisson", "regular"):
-            raise ValueError(input_mode)
+            raise ValueError(f"input_mode는 'poisson' 또는 'regular': {input_mode!r}")
         if v_init not in ("rest", "random"):
-            raise ValueError(v_init)
+            raise ValueError(f"v_init은 'rest' 또는 'random': {v_init!r}")
         if share not in ("edge", "pair"):
-            raise ValueError(share)
+            raise ValueError(f"share는 'edge'(연결마다) 또는 'pair'(연결 종류마다): {share!r}")
+        if not t_ms > 0:
+            raise ValueError(f"t_ms는 양수 (ms): {t_ms}")
         if not 0 <= count_from_ms < t_ms:
             raise ValueError("count_from_ms는 0 이상 t_ms 미만")
         if t_ms < (dt if dt is not None else DEFAULT_PARAMS["dt"]):
             raise ValueError(f"t_ms({t_ms})가 시간 간격 dt보다 짧아 시뮬레이션이 한 스텝도 안 됨")
         dev = B.check(device) if device is not None else B.default_device()
+        for g in ([inputs] if isinstance(inputs, str) else list(inputs or [])) + \
+                 ([outputs] if isinstance(outputs, str) else list(outputs)):
+            if g not in circuit.groups:
+                raise KeyError(f"회로에 없는 그룹: {g!r} (있는 것: {list(circuit.groups)[:20]})")
+        _ins = set([inputs] if isinstance(inputs, str) else list(inputs or []))
+        _outs = set([outputs] if isinstance(outputs, str) else list(outputs))
+        if _ins & _outs:
+            import warnings
+            warnings.warn(f"입력 그룹과 출력 그룹이 겹침 ({sorted(_ins & _outs)}): 그 뉴런의 출력은 넣은 입력 발화율 그대로임",
+                          stacklevel=2)
         self.neuron, self.input_mode, self.v_init, self.share = neuron, input_mode, v_init, share
         self.circuit = circuit
         self.p = dict(DEFAULT_PARAMS, **(params or {}))
@@ -331,6 +343,16 @@ class ConnectomeLayer(Tissue):
         rates=None: 입력 없음 (모두 0), batch개 시행 - fd.genetics.activate로만 자극할 때"""
         if rates is None:
             rates = np.zeros((batch, self.n_in), np.float32)
+        if seed is not None and not (isinstance(seed, (int, np.integer)) and not isinstance(seed, bool)):
+            raise TypeError(f"seed는 정수: {seed!r}")
+        if np.ndim(rates.data if isinstance(rates, Signal) else rates) == 1:   # 시료 하나 (n_in,) → 출력도 (n_out,)
+            one = rates[None] if isinstance(rates, Signal) else np.asarray(rates)[None]
+            res = self.forward(one, seed=seed, return_all=return_all, record=record)
+            return (res[0][0], res[1][0]) if isinstance(res, tuple) else res[0]
+        if record is not None:
+            r = np.asarray(record)
+            if r.size and (r.min() < 0 or r.max() >= self.circuit.N):
+                raise IndexError(f"record의 뉴런 번호는 0 ~ {self.circuit.N - 1}: 범위 밖 {r[(r < 0) | (r >= self.circuit.N)][:5].tolist()}")
         x = as_signal(rates, self.device)
         if x.data.dtype != np.float32 and x.data.dtype.kind == "f" and not x.plastic:
             x = Signal(x.data.astype(np.float32))
@@ -338,6 +360,8 @@ class ConnectomeLayer(Tissue):
             raise ValueError(f"입력 마지막 차원 {x.shape[-1]} ≠ 입력 뉴런 {self.n_in}")
         if x.data.size and not bool(B.xp(self.device).isfinite(x.data).all()):
             raise ValueError("입력에 NaN·무한대가 있음 (그대로 두면 스파이크가 안 생겨 출력이 조용히 0이 됨)")
+        if self.neuron != "graded" and x.data.size and bool((x.data < 0).any()):
+            raise ValueError(f"입력 발화율은 0 이상 (Hz): 최소 {float(x.data.min()):.3g} - 음수는 스파이크가 안 생겨 조용히 0이 됨")
         if self.neuron == "graded":
             return self._forward_graded(x, return_all, record, seed)
         if not isinstance(self.neuron, str):

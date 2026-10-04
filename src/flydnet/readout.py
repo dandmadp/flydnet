@@ -57,6 +57,8 @@ def train_linear(Xtr, ytr, Xte, yte, n_classes=None, epochs: int = 30, lr: float
     dev = B.check(device) if device is not None else B.default_device()
     Xtr, Xte = _np(Xtr).astype(np.float32), _np(Xte).astype(np.float32)
     ytr, yte = B.labels(ytr), B.labels(yte)
+    if len(Xtr) != len(ytr) or len(Xte) != len(yte):
+        raise ValueError(f"특징과 라벨의 개수가 다름: 학습 {len(Xtr)} 대 {len(ytr)}, 평가 {len(Xte)} 대 {len(yte)}")
     n_classes = n_classes or int(max(ytr.max(), yte.max())) + 1
     B.check_labels(ytr, n_classes, "학습 라벨"); B.check_labels(yte, n_classes, "평가 라벨")
     mu = Xtr.mean(0)

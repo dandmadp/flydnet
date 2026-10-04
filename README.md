@@ -49,6 +49,17 @@ rule.clear(); loss.retrograde(); rule.step()         # 역행성 신호(자동 �
 ```
 MNIST 2에폭 96.2% (GPU 약 6초, `examples/ganglion_mnist.py`).
 
+학습 루프를 한 줄로 (`fd.train`: 배치·섞기·코사인 학습률·기울기 제한·평가), 실제 냄새 과제도 한 줄로 (`fd.door_task`):
+
+```python
+Xtr, ytr, Xte, yte = fd.door_task(n_odors=12)                       # DoOR 실제 냄새
+model = fd.Pathway(fd.GlomerularEncoder(mb),
+                   fd.ConnectomeLayer(mb, "PN", "MBON", t_ms=50, dt=0.5, input_mode="regular",
+                                      gains={"PN>KC": 3.0, "KC>MBON": 3.0}, trainable=["PN>KC", "KC>MBON"]),
+                   fd.Homeostasis(), fd.Projection(48, 12))          # Homeostasis = 발화율 크기 맞추기 (LayerNorm)
+hist = fd.train(model, Xtr, ytr, val=(Xte, yte), epochs=12)         # 평가 정확도 0.57 (찍기 0.083), examples/quickstart.py
+```
+
 ## 대조 실험: fd.compare
 
 같은 학습 절차를 실제 배선과 대조군 배선에 seed마다 짝지어 돌리고 비교한다.

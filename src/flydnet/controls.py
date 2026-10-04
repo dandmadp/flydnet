@@ -308,6 +308,8 @@ def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None 
     if len(set(names)) != len(names):
         raise ValueError(f"대조군 이름이 겹침: {names} (name=으로 구분)")
     seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    if len(seeds) < 2:
+        raise ValueError(f"seeds는 2개 이상 (짝지은 검정) - p < 0.05가 가능하려면 6개 이상: {len(seeds)}")
     t0 = time.time()
     scores = {"real": []}
     scores.update({c.name: [] for c in controls})
