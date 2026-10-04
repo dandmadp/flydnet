@@ -22,6 +22,11 @@ from .signal import Signal, as_signal, checkpoint, concat, learning_enabled, qui
 from .tissue import Synapse, Tissue
 
 
+def _registry():
+    from ..neurons import REGISTRY
+    return REGISTRY
+
+
 def genetics_effects(layer) -> dict:
     from ..genetics import effects
     return effects(layer)
@@ -78,8 +83,15 @@ class ConnectomeLayer(Tissue):
                            t_mbr=dict(t_mbr) if isinstance(t_mbr, dict) else t_mbr,
                            train_neurons=train_neurons, v_init=v_init, count_from_ms=count_from_ms, neuron=neuron,
                            timing=timing)
-        if neuron not in ("lif", "graded"):
-            raise ValueError(neuron)
+        from ..neurons import NeuronModel, from_config
+        if isinstance(neuron, dict):                                     # 저장 파일에서 (사용자 정의 뉴런 모델)
+            neuron = from_config(neuron)
+        if isinstance(neuron, NeuronModel):
+            if bias is not None or t_mbr is not None or train_neurons:
+                raise ValueError("사용자 정의 뉴런 모델에서는 bias·t_mbr·train_neurons를 쓰지 않음 (모델 매개변수로)")
+            self.config["neuron"] = neuron.config() if type(neuron).__name__ in _registry() else None
+        elif neuron not in ("lif", "graded"):
+            raise ValueError(f"neuron은 'lif', 'graded', 또는 fd.neurons.NeuronModel: {neuron}")
         if timing not in ("brian", "legacy"):
             raise ValueError(f"timing은 'brian' 또는 'legacy': {timing}")
         self.timing = timing
@@ -279,6 +291,8 @@ class ConnectomeLayer(Tissue):
             raise ValueError("입력에 NaN·무한대가 있음 (그대로 두면 스파이크가 안 생겨 출력이 조용히 0이 됨)")
         if self.neuron == "graded":
             return self._forward_graded(x, return_all, record, seed)
+        if not isinstance(self.neuron, str):
+            return self._forward_custom(x, return_all, record, seed)
         p, N, xp = self.p, self.circuit.N, B.xp(self.device)
         Bn = x.shape[0]
         dt = p["dt"]; steps = int(round(self.t_ms / dt))
@@ -377,7 +391,7 @@ class ConnectomeLayer(Tissue):
                 sent = spk if blocked is None else spk * blocked           # Shibire: 발화는 하지만 전달 없음
                 buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
                 if obs is not None:
-                    obs.step(s, uu[0], act, sent.data)
+                    obs.step(s, sent.data, u=uu[0], act=act)
             return (V, G, refr, counts, phase, *buf)
 
         z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))
@@ -405,6 +419,91 @@ class ConnectomeLayer(Tissue):
 
     def _trace(self, rec):
         return B.numpy(B.xp(self.device).stack(rec, axis=1))              # (B, steps, k)
+
+    def _forward_custom(self, x: Signal, return_all: bool, record, seed):
+        """사용자 정의 뉴런 모델 (fd.neurons): LIF 순전파와 같은 틀 (입력·지연·genetics·탐침·드롭아웃·기록·관찰자),
+        한 스텝만 model.step - Signal 연산이라 역전파는 자동 미분으로"""
+        from ..neurons import Context
+        model, p, N, xp = self.neuron, self.p, self.circuit.N, B.xp(self.device)
+        Bn = x.shape[0]
+        dt = p["dt"]; steps = int(round(self.t_ms / dt))
+        dly = max(int(round(p["t_dly"] / dt)), 1); R = dly + 1
+        poi_w = p["w_syn"] * p["f_poi"]
+        frame = self._frames(x * (dt / 1000.0))
+        s_cnt = int(round(self.count_from_ms / dt))
+        values = self.values()
+        if "edge" in self._probe:
+            values = values * self._probe["edge"]
+        probe_n = self._probe.get("neuron")
+        M, MT = K.matrices(self.wiring, values.data)
+        if seed is None:
+            seed = int(np.random.SeedSequence().generate_state(1)[0])
+        in_idx, regular = self.in_idx, self.input_mode == "regular"
+        rec = [] if record is not None else None
+        rec_idx = B.to(np.asarray(record), self.device) if record is not None else None
+        fx = genetics_effects(self)
+        quiet, blocked, act_idx = fx.get("silence"), fx.get("block"), fx.get("act_idx")
+        n_act = 0 if act_idx is None else len(act_idx)
+        drop = genetics_mosaic(self, seed, Bn)
+        idx_all = in_idx
+        if n_act:
+            idx_all = xp.concatenate([in_idx, act_idx])
+            p_act = Signal(xp.broadcast_to(fx["act_hz"] * np.float32(dt / 1000.0), (n_act, Bn)).copy())
+            act_seed = (int(seed) * 0x2545F4914F6CDD1D + 0x5EED) % (1 << 63)
+        ctx = Context(xp, N, Bn, dt, idx_all, p)
+        init = model.init(ctx)
+        names = tuple(model.state)
+        if set(init) != set(names):
+            raise ValueError(f"{type(model).__name__}.init이 돌려준 상태 {sorted(init)} ≠ state {sorted(names)}")
+        obs = self._observer
+        if obs is not None:
+            gain = None
+            for m in (quiet, probe_n.data if probe_n is not None else None, drop):
+                if m is not None:
+                    gain = m if gain is None else gain * m
+            obs.begin(dict(dly=dly, steps=steps, s_cnt=s_cnt, batch=Bn, gain=gain, blocked=blocked, dt=dt,
+                           rate_c=1000.0 / (self.t_ms - s_cnt * dt), model=model))
+        zeros = xp.zeros((N, Bn), dtype=xp.float32)
+
+        def run(s0, s1, counts, phase, *rest):
+            st = dict(zip(names, rest[:len(names)]))
+            buf = list(rest[len(names):])
+            for s in range(s0, s1):
+                ps = frame(s, steps)
+                if regular:
+                    ph = phase.data + ps.data
+                    spikes = (ph >= 1).astype(ph.dtype)
+                    phase = Signal(ph - spikes)
+                else:
+                    spikes = (P.hash_uniform(xp, seed, s, ps.shape[::-1]).T < ps.data).astype(ps.data.dtype)
+                if n_act:
+                    kick = P.hash_uniform(xp, act_seed, s, (Bn, n_act)).T < p_act.data
+                    spikes = xp.concatenate([spikes, kick.astype(spikes.dtype)])
+                    ps = concat([ps, p_act])
+                # 외부 자극: 스파이크 하나 = poi_w mV, 역전파는 확률로 (straight-through, 내장 LIF와 같음)
+                I_ext = P.put(zeros, idx_all, ps * poi_w + Signal((spikes - ps.data) * poi_w)) if len(idx_all) \
+                    else Signal(zeros)
+                st, spk = model.step(st, buf[s % R], I_ext, ctx)
+                for m in (quiet, probe_n, drop):
+                    if m is not None:
+                        spk = spk * m
+                if s >= s_cnt:
+                    counts = counts + spk
+                if rec is not None:
+                    rec.append(spk.data[rec_idx].T.copy())
+                sent = spk if blocked is None else spk * blocked
+                buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
+                if obs is not None:
+                    obs.step(s, sent.data)
+            return (counts, phase, *[st[k] for k in names], *buf)
+
+        z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))
+        phase0 = Signal(xp.broadcast_to(self.phase0[:, None], (self.n_in, Bn)).copy())
+        state = (z(), phase0, *[init[k] for k in names], *[z() for _ in range(R)])
+        state = self._run(run, state, steps, x, record)
+        rate = state[0].T * (1000.0 / (self.t_ms - s_cnt * dt))
+        out = rate if return_all else rate[:, self.out_idx]
+        return (out, self._trace(rec)) if record is not None else out
 
     def _forward_graded(self, x: Signal, return_all: bool, record, seed=None):
         p, N, xp = self.p, self.circuit.N, B.xp(self.device)
@@ -464,6 +563,8 @@ class ConnectomeLayer(Tissue):
     def save(self, path):
         """회로 배선 + 설정 + 학습한 값을 파일 하나에 (np.savez). FlyWire 데이터 없이 load()로 다시 만듦"""
         from .. import __version__
+        if not isinstance(self.neuron, str) and self.config.get("neuron") is None:
+            raise ValueError(f"{type(self.neuron).__name__}이 등록되지 않아 저장할 수 없음 - @fd.neurons.register")
         cfg = dict(self.config, gains=dict(self.gains))
         arrays = {"format": np.array(self.FORMAT), "version": np.array(__version__),
                   "config": np.array(json.dumps(cfg, ensure_ascii=False))}
@@ -498,6 +599,8 @@ class ConnectomeLayer(Tissue):
             tr += f", 켜진 효과기: {', '.join(map(repr, self._effects))}"
         if self.neuron == "lif" and self.timing != "brian":
             tr += f", timing {self.timing}"
+        if not isinstance(self.neuron, str):
+            tr += f", 뉴런 {self.neuron!r}"
         return (f"{self.circuit.name}: in {self.n_in} ({'+'.join(self.in_names)}) → out {self.n_out} "
                 f"({'+'.join(self.out_names)}), {self.t_ms} ms, dt {self.p['dt']} ms, 입력 {self.input_mode}, "
                 f"장치 {self.device}{tr}")

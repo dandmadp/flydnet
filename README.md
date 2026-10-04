@@ -212,6 +212,39 @@ c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
     무작위 0.64 > 척도 없음 0.41 > 작은 세상 0.34 > 블록 0.17 (모두 6/6, p = 0.031). 단 입력·출력 노드의 위치
     (고리 위 거리, 다른 모듈)에 크게 좌우되므로, 그래프 구조 자체의 결론이 아니라 이런 질문을 하는 방법의 예
 
+## 플러그인: 뉴런 모델·학습 규칙을 직접
+
+**뉴런 모델** - 한 스텝만 정의하면 시뮬레이션(지연·입력·체크포인팅), 역전파(자동 미분), `genetics`, `explain`,
+torch 연결 장치, 저장·불러오기가 따라온다.
+
+```python
+@fd.neurons.register
+class MyNeuron(fd.neurons.NeuronModel):
+    state = ("v",)
+    def init(self, ctx): return {"v": ctx.full(-65.0)}
+    def step(self, st, I_syn, I_ext, ctx):                  # Signal 연산만 → 역전파 자동
+        v = st["v"] + ctx.dt * (-(st["v"] + 65.0) / 10.0) + I_syn + I_ext
+        spk = fd.ganglion.fire(v, -50.0, slope=1.0)
+        return {"v": fd.ganglion.where(spk.data > 0, -65.0, v)}, spk
+
+layer = fd.ConnectomeLayer(circuit, "in", "out", neuron=MyNeuron(), checkpoint_every=50)
+```
+- 내장: `fd.neurons.LIF` (내장 LIF와 스파이크가 스텝까지 같고 기울기 차이 4e-5 이내 - 플러그인 틀의 검증),
+  `fd.neurons.Izhikevich`. 예제 `examples/custom_neuron.py`는 AdEx를 직접 정의한다
+- 비용: 내장 LIF의 약 1.4배 시간, 중간값을 모두 저장하므로 학습할 때는 `checkpoint_every`
+
+**학습 규칙** - 순전파를 스텝마다 지켜보는 관찰자 규격 (`begin(info)`, `step(s, spikes, **extra)`).
+`fd.ThreeFactor`와 `fd.STDP`(쌍 기반 STDP, 곱셈형)가 이 규격을 따른다.
+
+```python
+stdp = fd.STDP(layer); stdp(x, seed=0); stdp.assign(); rule.step()    # 원인 → 결과 순서면 강화, 반대면 약화
+```
+
+**알려진 한계 - 긴 시뮬레이션의 시간 역전파**: 1,000스텝(100 ms, dt 0.1)쯤 되면 대리 기울기가 되먹임 회로를 돌며
+커져서 크기가 크게 부풀고(버섯체에서 실제 손상 효과의 10^9배 이상), 모델에 따라 방향도 틀린다 (AdEx 예: `explain`
+확인의 순위 상관 -0.42, 내장 LIF는 0.66). 학습은 기울기 크기 제한(`clip`)·짧은 시뮬레이션·`fd.ThreeFactor`
+(시간을 거슬러 가지 않음)로, 해석은 `explain(verify=...)`의 실제 손상 결과로 확인할 것.
+
 ## 구성 요소
 
 | 무엇 | 이름 |

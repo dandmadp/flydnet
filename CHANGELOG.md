@@ -8,6 +8,13 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- **플러그인: 사용자 정의 뉴런 모델 `fd.neurons`**: `NeuronModel`(state, init, step)을 정의하면 `ConnectomeLayer(neuron=...)`
+  에서 시뮬레이션·자동 미분 역전파·체크포인팅·genetics·explain·mosaic·torch 연결 장치·저장(`@register`)이 동작.
+  내장 `LIF`(내장 고속 LIF와 스파이크 동일, 기울기 4e-5 이내), `Izhikevich`. 예제 `examples/custom_neuron.py` (AdEx)
+- **관찰자 규격과 `fd.STDP`**: `begin(info)` / `step(s, spikes, **extra)`로 사용자 정의 학습 규칙. 쌍 기반 STDP
+  (곱셈형, 데일의 법칙 유지), 사용자 정의 뉴런에서도 동작
+- 알려진 한계를 README에: 긴 시뮬레이션(약 1,000스텝)의 시간 역전파 기울기가 크게 부풀고 모델에 따라 방향도 틀림
+  (`explain(verify=...)`로 확인됨)
 - **torch 연결 장치 `fd.torch.bridge`**: 자체 엔진 구조물을 torch 모델 안에서 `nn.Module`로. 계산은 자체 엔진,
   메모리 공유(GPU DLPack·CPU numpy, 복사 없음), torch backward → 자체 엔진 retrograde, 학습 값은 같은 메모리의 torch
   Parameter (torch 옵티마이저가 갱신). no_grad 지원, 자체 엔진이 배열을 바꿔 끼우면 다시 묶음. 출력·기울기가 자체
