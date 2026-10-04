@@ -155,3 +155,67 @@ def test_calibrate_reaches_targets_and_saves(tmp_path):
         L.calibrate(X, {"Q": 10})
     t2 = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu").calibrate(X, 20)   # 숫자 = 출력 그룹 모두
     assert list(t2.group) == ["O"]
+
+
+# ─────────────── numpy·torch 습관 ───────────────
+def _num_grad(f, x, h=1e-6):
+    g = np.zeros_like(x)
+    for i in np.ndindex(x.shape):
+        a, b = x.copy(), x.copy(); a[i] += h; b[i] -= h
+        g[i] = (f(a) - f(b)) / (2 * h)
+    return g
+
+
+@pytest.mark.parametrize("name,f", [
+    ("min", lambda s: s.min(axis=1).sum()),
+    ("var", lambda s: s.var(axis=0, ddof=1).sum()),
+    ("std", lambda s: s.std()),
+    ("softmax", lambda s: (s.softmax(1) * fd.Signal(np.arange(12.).reshape(3, 4))).sum()),
+    ("sqrt·square", lambda s: ((s.square() + 1.0).sqrt()).sum()),
+    ("astype·copy·squeeze", lambda s: (s.reshape(1, 3, 4).squeeze().astype(np.float64).copy() ** 2).sum()),
+    ("abs", lambda s: abs(s).sum()),
+])
+def test_new_signal_ops_gradients(name, f):
+    x0 = np.random.default_rng(3).standard_normal((3, 4))
+    xs = fd.Signal(x0.copy(), plastic=True)
+    f(xs).retrograde()
+    np.testing.assert_allclose(xs.retro, _num_grad(lambda a: float(f(fd.Signal(a)).data), x0), atol=1e-6)
+
+
+def test_signal_python_protocols():
+    x = fd.Signal(np.array([[1., -2.], [3., 4.]], np.float32))
+    assert float(x.sum()) == 6.0 and int(x.max()) == 4 and bool(x.sum() > 0)
+    assert x.argmax(1).tolist() == [0, 1] and x.size == 4 and x.tolist() == [[1., -2.], [3., 4.]]
+    assert float(np.mean(x).data) == 1.5 and x.any() and not (x > 10).any()
+    with pytest.raises(ValueError, match="값 하나인"):
+        bool(x)
+    with pytest.raises(ValueError, match="값 하나인"):
+        float(x)
+
+
+@pytest.mark.parametrize("code,hint", [
+    ("x.grad", ".retro"), ("x.backward()", "retrograde"), ("x.w", ".numpy()"), ("x.requires_grad", "plastic"),
+    ("p.parameters()", "synapses()"), ("p.zero_grad()", "clear_retro"), ("p.weigth", "weight"),
+    ("rule.zero_grad()", ".clear()"), ("rule.lr", ".rate"), ("c.num_nodes", ".N"),
+    ("fd.Linear", "fd.Projection"), ("fd.Adam", "fd.Adaptive"), ("fd.no_grad", "fd.quiescent"),
+])
+def test_attribute_hints(code, hint):
+    x = fd.Signal(np.ones(3, np.float32))
+    p = fd.Projection(3, 2, device="cpu")
+    rule = fd.Adaptive(p.synapses())
+    c = fd.graphs.layered([2, 2, 2], 0.5)
+    with pytest.raises(AttributeError, match=None) as e:
+        eval(code)
+    assert hint in str(e.value), str(e.value)
+
+
+def test_hints_do_not_break_copy_pickle_hasattr():
+    import copy
+    import pickle
+    p = fd.Pathway(fd.Projection(3, 2, device="cpu"), fd.Activation("relu"))
+    x = fd.Signal(np.ones((2, 3), np.float32))
+    c = fd.graphs.layered([2, 2, 2], 0.5)
+    for obj in (p, x, c, fd.Adaptive(p.synapses())):
+        copy.deepcopy(obj)
+        pickle.loads(pickle.dumps(obj))
+    assert not hasattr(x, "grad") and not hasattr(p, "parameters") and getattr(p, "nope", 7) == 7

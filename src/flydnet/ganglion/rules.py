@@ -41,6 +41,12 @@ class _Rule:
         self.last_norm = None
         self.state = [None] * len(self.synapses)
 
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        from .hints import RULE, missing
+        raise missing(type(self).__name__, name, RULE, dir(type(self)) + list(self.__dict__))
+
     def clear(self):
         for s in self.synapses:
             s.retro = None

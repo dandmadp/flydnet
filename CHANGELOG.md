@@ -8,6 +8,14 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- **맞는 이름을 알려 주는 오류**: torch·numpy에서 쓰던 이름을 쓰면 flydnet 이름을 안내 (`x.grad` → `.retro`,
+  `loss.backward()` → `.retrograde()`, `syn.w` → 이 신호 자체가 값 `.numpy()`, `model.parameters()` → `.synapses()`,
+  `rule.zero_grad()` → `.clear()`, `fd.Linear` → `fd.Projection`, `fd.no_grad` → `fd.quiescent` 등), 오타는 비슷한 이름 제안.
+  Signal·Tissue·가소성 규칙·Circuit·`fd.` 최상위
+- **Signal에 numpy·torch에서 기대하는 것들**: `min`, `var`, `std`, `sqrt`, `square`, `softmax`, `squeeze`, `astype`, `copy`
+  (모두 역전파 됨, 수치 미분 확인), `argmax`/`argmin` (numpy), `tolist`, `any`, `all`, `size`, `float()`·`int()`·`bool()`
+  (값 하나일 때, 여러 개면 알기 쉬운 오류 - `if loss > 0:`이 깨지던 것), `abs()`, `np.mean(x)`
+- 저장·불러오기·데이터 폴더에서 `~`(홈 폴더)를 풀고, 저장할 때 없는 폴더는 만듦 (전에는 내부 임시 파일 이름이 보이는 오류)
 - **짧은 이름** (긴 이름도 그대로): `fd.Connectome`, `fd.Adaptive`, `fd.Glomeruli`, `fd.Inhibition`, `fd.MBON`, `fd.tune`,
   `fd.flywire()`, `fd.brain()`, `fd.worm()`, 인자 `damp`·`ckpt`
 - **가중치 자동 보정 `Connectome.calibrate(x, {"KC": 5, ...})`**: 그룹마다 평균 발화율이 목표가 되도록 들어오는 연결

@@ -59,7 +59,9 @@ worm = Circuit.celegans                 # 예쁜꼬마선충
 def __getattr__(name):
     """flydnet.torch (torch 연동)는 처음 쓸 때 불러옴. torch가 없으면 설치 안내"""
     if name != "torch":
-        raise AttributeError(f"module 'flydnet' has no attribute '{name}'")
+        from .ganglion.hints import MODULE, missing
+        err = missing("flydnet", name, MODULE, list(globals()))
+        raise AttributeError(str(err).replace("'flydnet' object", "module 'flydnet'"))
     try:
         m = _importlib.import_module(".torch", __name__)
     except ImportError as e:

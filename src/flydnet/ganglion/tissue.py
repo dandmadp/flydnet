@@ -169,6 +169,12 @@ class Tissue:
         return self.load_state(read(path, type(self).__name__)[0])
 
     # ─────────────── 호출 ───────────────
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        from .hints import TISSUE, missing
+        raise missing(type(self).__name__, name, TISSUE, dir(type(self)) + list(self.__dict__))
+
     def __call__(self, *args, **kwargs):
         with B.oom_hint(f"{type(self).__name__} 순전파"):
             return self.forward(*args, **kwargs)

@@ -182,3 +182,12 @@ def test_gpu_oom_gets_hint():
     finally:
         pool.set_limit(size=old)
     assert m(fd.Signal(cp.ones((4, 64), cp.float32))).shape == (4, 64)   # 상한을 풀면 다시 정상
+
+
+def test_save_paths_home_and_new_folders(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path)); monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    p = fd.Projection(3, 2, device="cpu")
+    out = p.save("~/models/sub/m")                                         # ~ 풀기 + 없는 폴더 만들기
+    assert out == tmp_path / "models" / "sub" / "m.npz" and out.exists()
+    fd.Projection(3, 2, seed=5, device="cpu").load("~/models/sub/m")
+    assert not (tmp_path / "~").exists()

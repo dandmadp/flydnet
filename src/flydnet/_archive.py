@@ -20,7 +20,7 @@ _KEY = "__flydnet__"
 
 def _final(path) -> Path:
     """np.savez처럼 확장자가 없으면 .npz를 붙인 경로"""
-    p = Path(path)
+    p = Path(path).expanduser()                                     # "~/model" → 홈 폴더
     return p if p.suffix == ".npz" else p.with_name(p.name + ".npz")
 
 
@@ -30,6 +30,7 @@ def write(path, kind: str, arrays: dict) -> Path:
     if _KEY in arrays:
         raise ValueError(f"{_KEY}는 예약된 이름")
     final = _final(path)
+    final.parent.mkdir(parents=True, exist_ok=True)                 # 없는 폴더는 만듦
     meta = json.dumps({"kind": kind, "format": FORMAT, "version": __version__})
     tmp = final.with_name(final.name + f".tmp{os.getpid()}")
     try:
@@ -44,7 +45,7 @@ def write(path, kind: str, arrays: dict) -> Path:
 
 def read(path, kind: str | None = None) -> tuple[dict, dict]:
     """(배열 dict, 형식 정보) 읽기. kind를 주면 다른 종류의 파일일 때 오류"""
-    p = Path(path)
+    p = Path(path).expanduser()
     if not p.exists() and _final(p).exists():
         p = _final(p)
     if not p.exists():

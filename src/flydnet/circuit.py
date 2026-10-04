@@ -49,6 +49,12 @@ class Circuit:
         self.meta = meta.reset_index(drop=True) if meta is not None else None
         self.pos = np.asarray(pos, dtype=np.float32) if pos is not None else None
 
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        from .ganglion.hints import CIRCUIT, missing
+        raise missing(type(self).__name__, name, CIRCUIT, dir(type(self)) + list(self.__dict__))
+
     @property
     def N(self) -> int:
         return len(self.root_ids)

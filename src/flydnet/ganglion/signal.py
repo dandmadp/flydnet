@@ -310,9 +310,91 @@ class Signal:
             return (xp.broadcast_to(g, shape).copy(),)
         return Signal(self.data.sum(axis=axis, keepdims=keepdims))._link((self,), back)
 
-    def mean(self, axis=None, keepdims: bool = False):
+    def mean(self, axis=None, keepdims: bool = False, dtype=None, out=None):
+        if out is not None:
+            raise TypeError("Signal.mean은 out=을 받지 않음")
         n = self.data.size if axis is None else int(np.prod([self.shape[a] for a in np.atleast_1d(axis)]))
         return self.sum(axis, keepdims) * (1.0 / n)
+
+    def min(self, axis=None, keepdims: bool = False):
+        """최솟값 (같은 값이 여럿이면 기울기를 나눠 가짐)"""
+        return -((-self).max(axis=axis, keepdims=keepdims))
+
+    def var(self, axis=None, keepdims: bool = False, ddof: int = 0):
+        """분산 (ddof=1이면 표본 분산)"""
+        n = self.data.size if axis is None else int(np.prod([self.shape[a] for a in np.atleast_1d(axis)]))
+        d = self - self.mean(axis=axis, keepdims=True)
+        return (d * d).sum(axis=axis, keepdims=keepdims) * (1.0 / max(n - ddof, 1))
+
+    def std(self, axis=None, keepdims: bool = False, ddof: int = 0):
+        return self.var(axis=axis, keepdims=keepdims, ddof=ddof) ** 0.5
+
+    def sqrt(self):
+        return self ** 0.5
+
+    def square(self):
+        return self * self
+
+    def softmax(self, axis: int = -1):
+        from .physiology import log_softmax
+        return log_softmax(self, axis=axis).exp()
+
+    def argmax(self, axis=None) -> np.ndarray:
+        """가장 큰 값의 위치 (numpy, 역전파 없음)"""
+        return B.numpy(self.data.argmax(axis=axis))
+
+    def argmin(self, axis=None) -> np.ndarray:
+        return B.numpy(self.data.argmin(axis=axis))
+
+    def squeeze(self, axis=None):
+        return self.reshape(*self.data.squeeze(axis=axis).shape)
+
+    def astype(self, dtype):
+        """자료형 바꾸기 (역행성 신호는 원래 자료형으로 돌아감)"""
+        src = self.data.dtype
+        return Signal(self.data.astype(dtype))._link((self,), lambda g: (g.astype(src),))
+
+    def copy(self):
+        """값을 복사한 새 신호 (역행성 신호 경로는 이어짐, torch의 clone)"""
+        return Signal(self.data.copy())._link((self,), lambda g: (g,))
+
+    def tolist(self):
+        return self.numpy().tolist()
+
+    def any(self) -> bool:
+        return bool(self.data.any())
+
+    def all(self) -> bool:
+        return bool(self.data.all())
+
+    @property
+    def size(self) -> int:
+        """원소 개수 (numpy와 같음)"""
+        return int(self.data.size)
+
+    def _scalar(self, what):
+        if self.data.size != 1:
+            raise ValueError(f"값이 {self.data.size}개인 신호를 {what}로 바꿀 수 없음 - 값 하나인 신호에서만 "
+                             "(.sum(), .mean() 등) 또는 .numpy()")
+        return self.data.reshape(-1)[0]
+
+    def __float__(self):
+        return float(self._scalar("float"))
+
+    def __int__(self):
+        return int(self._scalar("int"))
+
+    def __bool__(self):
+        return bool(self._scalar("참·거짓 (if 등)"))
+
+    def __abs__(self):
+        return self.abs()
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        from .hints import SIGNAL, missing
+        raise missing(type(self).__name__, name, SIGNAL, dir(type(self)))
 
     def max(self, axis=None, keepdims: bool = False):
         """최댓값 (같은 값이 여럿이면 기울기를 나눠 가짐)"""

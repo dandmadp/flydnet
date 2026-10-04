@@ -81,12 +81,12 @@ def data_dir(kind: str = "flywire", path: str | Path | None = None) -> Path:
     if kind not in SOURCES:
         raise ValueError(f"kind는 {list(SOURCES)} 중 하나")
     if path is not None:
-        return Path(path)
+        return Path(path).expanduser()
     for env in _ENV[kind]:
         if os.environ.get(env):
-            return Path(os.environ[env])
+            return Path(os.environ[env]).expanduser()
     if kind in _config():
-        return Path(_config()[kind])
+        return Path(_config()[kind]).expanduser()
     return DEFAULT_ROOT / kind
 
 
@@ -95,7 +95,7 @@ def set_data_dir(flywire: str | Path | None = None, door: str | Path | None = No
     cfg = _config()
     for kind, p in (("flywire", flywire), ("door", door), ("worm", worm)):
         if p is not None:
-            cfg[kind] = str(Path(p).resolve())
+            cfg[kind] = str(Path(p).expanduser().resolve())
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
     return cfg
