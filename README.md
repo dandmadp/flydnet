@@ -33,6 +33,23 @@ Colab처럼 CuPy가 이미 깔린 곳에 GPU 옵션을 붙이면 CuPy가 두 개
 
 ## 빠른 시작
 
+가장 짧게 (PyTorch의 `nn.Sequential`처럼) - 입력을 발화율로 바꾸고, 연결 세기를 데이터에 맞게 자동 보정하고,
+출력 뉴런을 클래스로 바꾸는 층까지 붙인 모델:
+
+```python
+import flydnet as fd
+
+Xtr, ytr, Xte, yte = fd.door_task(n_odors=12)              # DoOR 실제 냄새 (사구체 반응)
+model = fd.MushroomBody(n_in=Xtr.shape[1], n_classes=12)   # 오른쪽 버섯체 PN → KC 2,597개
+model.fit(Xtr, ytr, val=(Xte, yte))                        # 처음 데이터로 보정한 뒤 학습 (fd.train)
+model.score(Xte, yte)                                      # 0.976 (찍기 0.083), GPU 약 25초
+```
+
+어떤 회로·그래프든 `fd.ConnectomeModel(circuit, "in", "out", n_in, n_classes)`. 세부는 `model.encoder`·`model.layer`·
+`model.head`, 또는 아래처럼 직접 조립. KC 출력이 MBON 출력(48개뿐)보다 정확도가 훨씬 높음 (같은 과제 0.97 대 0.36).
+
+직접 조립:
+
 ```python
 import numpy as np, flydnet as fd
 

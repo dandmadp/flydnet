@@ -44,6 +44,7 @@ class Tissue:
         object.__setattr__(self, "_synapses", {})
         object.__setattr__(self, "_tissues", {})
         object.__setattr__(self, "_buffers", {})
+        object.__setattr__(self, "_optional", set())                   # 예전 저장 파일에 없어도 되는 상태 이름
         object.__setattr__(self, "learning", True)
 
     def __setattr__(self, name, value):
@@ -57,10 +58,13 @@ class Tissue:
             self._tissues[name] = value
         object.__setattr__(self, name, value)
 
-    def buffer(self, name: str, value, persistent: bool = True):
-        """학습되지 않지만 장치 이동·저장에 따라가는 배열 (register_buffer)"""
+    def buffer(self, name: str, value, persistent: bool = True, optional: bool = False):
+        """학습되지 않지만 장치 이동·저장에 따라가는 배열 (register_buffer).
+        optional: 이 버퍼가 생기기 전 버전의 저장 파일을 strict로 불러와도 오류가 아님"""
         object.__setattr__(self, name, value)
         self._buffers[name] = persistent
+        if optional:
+            self._optional.add(name)
 
     # ─────────────── 순회 ───────────────
     def named_synapses(self, prefix: str = ""):
@@ -112,6 +116,9 @@ class Tissue:
     def _moved(self, device: str):
         """장치를 옮긴 뒤 각 조직이 따로 할 일 (예: 캐시 다시 만들기)"""
 
+    def _loaded(self):
+        """load_state 뒤 각 조직이 따로 할 일 (예: 불러온 버퍼로 설정 다시 세우기)"""
+
     def clear_retro(self):
         """쌓인 역행성 신호(기울기) 지우기 (zero_grad)"""
         for s in self.synapses():
@@ -134,8 +141,16 @@ class Tissue:
     def load_state(self, state: dict, strict: bool = True):
         """state()로 저장한 것을 불러옴 (load_state_dict)"""
         mine = self.state()
-        if strict and set(state) != set(mine):
-            raise KeyError(f"상태 이름이 다름: 없음 {sorted(set(mine) - set(state))}, 남음 {sorted(set(state) - set(mine))}")
+        optional = set()
+
+        def opt(t, prefix):
+            optional.update(prefix + n for n in t._optional)
+            for n, c in t._tissues.items():
+                opt(c, prefix + n + ".")
+        opt(self, "")
+        lack, extra = set(mine) - set(state) - optional, set(state) - set(mine)
+        if strict and (lack or extra):
+            raise KeyError(f"상태 이름이 다름: 없음 {sorted(lack)}, 남음 {sorted(extra)}")
         dev = self.device
         syn = dict(self.named_synapses())
 
@@ -160,6 +175,8 @@ class Tissue:
                     raise ValueError(f"{n}: 모양 {arr.shape} ≠ {syn[n].shape}")
                 syn[n].data = B.to(np.asarray(arr, dtype=syn[n].data.dtype), dev)
         walk(self, "")
+        for t in self.tissues():
+            t._loaded()
         return self
 
     def save(self, path):

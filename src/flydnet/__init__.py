@@ -33,6 +33,7 @@ from .datasets import synthetic_odors, door_odors, biconditional_mixtures
 from . import graphs                       # fd.graphs.erdos_renyi / watts_strogatz / barabasi_albert / stochastic_block / layered
 from . import genetics                     # fd.genetics.driver / silence / block / activate / ablate / screen
 from .training import train, evaluate, door_task  # 학습 루프 한 줄, 정확도, 실제 냄새 분류 과제
+from .models import ConnectomeModel, MushroomBody  # 한 줄 모델: 입력 Hz 변환·자동 보정·분류 층까지
 from . import neurons                      # 사용자 정의 뉴런 모델: fd.neurons.NeuronModel, register, LIF, Izhikevich
 from .stdp import STDP, Monitor                 # 관찰자 규격과 STDP (사용자 정의 학습 규칙의 틀)
 from .gradcheck import gradcheck, tune_surrogate, GradCheck   # 스파이킹 역전파 기울기 확인·감쇠 고르기

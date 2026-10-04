@@ -300,14 +300,26 @@ class ConnectomeLayer(Tissue):
         return B.device_of(self.w_syn)
 
     def _build(self):
-        """고정 부분: 원래 세기 × 배율 × mV/시냅스 (± 시냅스 수)"""
+        """고정 부분: 원래 세기 × 배율 × mV/시냅스 (± 시냅스 수). 배율은 상태(gain_code·gain_value)에도 넣어
+        Pathway 등 바깥 구조물의 save·load에서도 유지됨 (예전: gains가 딕셔너리라 빠져서 보정이 사라졌음)"""
         g = np.ones(len(self._edge_code), np.float32)
+        codes = []
         for k, v in self.gains.items():
             c = self._pair_code(k)
             if c is None or not (self._edge_code == c).any():
                 raise ValueError(f"회로에 없는 연결 종류: {k}")
             g[self._edge_code == c] *= v
+            codes.append(c)
         self.w_base = self.w_syn * B.to(g, self.device) * self.p["w_syn"]
+        self.buffer("gain_code", np.array(codes, np.int64), optional=True)
+        self.buffer("gain_value", np.array(list(self.gains.values()), np.float64), optional=True)
+        self.config["gains"] = dict(self.gains)
+
+    def _loaded(self):
+        """불러온 gain_code·gain_value로 배율을 다시 세움"""
+        codes, vals = B.numpy(self.gain_code), B.numpy(self.gain_value)
+        self.gains = {self._edge_names([c])[0]: float(v) for c, v in zip(codes, vals, strict=True)}
+        self._build()
 
     def _moved(self, device):
         self._build()

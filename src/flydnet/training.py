@@ -81,6 +81,8 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
             raise ValueError("val은 (X, y) 두 개")
         if len(val[0]) != len(B.labels(val[1])) or len(val[0]) == 0:
             raise ValueError(f"val의 X와 y 개수가 다르거나 비어 있음: {len(val[0])} 대 {len(B.labels(val[1]))}")
+    if getattr(model, "auto_calibrate", False) and not model.is_calibrated:   # fd.ConnectomeModel: 첫 배치가 아니라 X로
+        model.prepare(X)
     if synapses is None:
         if not hasattr(model, "named_synapses"):
             raise TypeError("함수 모델이면 synapses=[...]를 줄 것")

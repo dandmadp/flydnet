@@ -55,7 +55,9 @@ class RateEncoder(Tissue):
             self.buffer("P", None, persistent=False)
         else:
             rng = np.random.default_rng(seed)
-            k = min(k, n_in)
+            # 특징 수의 절반 이하: k >= n_in이면 모든 뉴런이 같은 평균을 받아, 시료마다 최댓값 정규화 뒤 모두 max_rate가
+            # 되어 입력 정보가 전부 사라졌음 (특징 8개, k 20 → 20개 뉴런 모두 100 Hz). n_in >= 40이면 예전과 같음
+            k = min(k, max(1, n_in // 2))
             P = np.zeros((n_out, n_in), np.float32)
             for i in range(n_out):
                 P[i, rng.choice(n_in, k, replace=False)] = 1.0 / k
