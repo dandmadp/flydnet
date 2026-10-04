@@ -16,7 +16,7 @@ import numpy as np
 
 from . import backend as B
 from . import physiology as P
-from .signal import Signal, as_signal, quiescent
+from .signal import Signal, as_signal, quiescent, as_input
 
 
 def _is_array(v) -> bool:
@@ -244,7 +244,7 @@ class Projection(Tissue):
         self.n_in, self.n_out = n_in, n_out
 
     def forward(self, x):
-        x = as_signal(x, self.weight.device)
+        x = as_input(x, self.weight.device)
         if x.shape[-1] != self.weight.shape[1]:
             raise ValueError(f"Projection({self.weight.shape[1]} → {self.weight.shape[0]})에 입력 마지막 차원 {x.shape[-1]}")
         y = x @ self.weight.T
@@ -333,7 +333,7 @@ class Neuropil(Tissue):
         return base
 
     def forward(self, x):
-        x = as_signal(x, B.device_of(self.base))
+        x = as_input(x, B.device_of(self.base))
         out = P.transmit(x, self.values(), self.wiring)
         return out + self.bias if self.bias is not None else out
 
@@ -397,7 +397,7 @@ class Homeostasis(Tissue):
         self.eps = eps
 
     def forward(self, x):
-        x = as_signal(x)
+        x = as_input(x)
         mu = x.mean(axis=-1, keepdims=True)
         d = x - mu
         return d / ((d * d).mean(axis=-1, keepdims=True) + self.eps) ** 0.5
@@ -416,7 +416,7 @@ class Activation(Tissue):
         self.kind = kind
 
     def forward(self, x):
-        return getattr(as_signal(x), self.kind)()
+        return getattr(as_input(x), self.kind)()
 
     def extra_repr(self):
         return self.kind
@@ -435,7 +435,7 @@ class MushroomBodyOutput(Tissue):
         self.buffer("count", xp.zeros(n_classes * per_class, dtype=xp.float32))
 
     def activity(self, x):
-        a = as_signal(x, B.device_of(self.prototypes)).data
+        a = as_input(x, B.device_of(self.prototypes)).data
         a = a.reshape(len(a), -1).astype(self.prototypes.dtype, copy=False)
         if self.binary:
             return (a > 0).astype(a.dtype)

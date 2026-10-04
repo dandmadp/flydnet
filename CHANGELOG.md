@@ -8,6 +8,12 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- **입력 자료형 자유롭게**: 층(Projection, Connectome, Homeostasis, Neuropil, 인코더 등)·`fd.train`이 정수·불리언·uint8·
+  float16·torch bfloat16·리스트·pandas·torch·CuPy 모두 받고 float32로 계산 (numpy·torch·CuPy float64를 넣으면 정밀도를
+  위해 그대로). 전에는 bfloat16이 모든 곳에서 실패하고, 정수 입력은 float64로 승격되어 느리고 메모리를 두 배로 씀.
+  torch 연결 장치도 bfloat16·float16을 받고 기울기를 입력과 같은 자료형으로 돌려줌
+- **라벨**: 정수가 아닌 실수 라벨(1.7)은 오류 (전에는 조용히 1로 잘림), 문자열 라벨은 `np.unique(..., return_inverse=True)`
+  안내
 - 오류 점검 3차 (실패 상황·입력 형식·설정 실수):
   - 데이터를 불러올 때 파일 크기 확인 (받다가 끊겼거나 다른 버전이면 알기 어려운 읽기 오류 대신 다시 받기 안내)
   - 다운로드 중 네트워크 오류에 안내 (전에는 URLError 그대로), 실패한 임시 파일 정리

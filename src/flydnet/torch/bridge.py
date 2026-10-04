@@ -30,6 +30,8 @@ from ..ganglion.signal import Signal, quiescent
 def to_engine(t: torch.Tensor, device: str):
     """torch 텐서 → 자체 엔진 배열 (복사 없이). device = 구조물의 장치"""
     t = t.detach()
+    if t.dtype in (torch.bfloat16, torch.float16) or not (t.is_floating_point() or t.dtype == torch.float64):
+        t = t.float()                                          # bfloat16·float16·정수·불리언 → float32 (CuPy·numpy가 받는 형태)
     if device == "gpu":
         if not t.is_cuda:
             raise ValueError("구조물이 gpu에 있음 - 입력도 cuda 텐서로 (x.cuda())")

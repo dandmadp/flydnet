@@ -54,7 +54,12 @@ class Signal:
         if isinstance(data, Signal):
             data = data.data
         elif hasattr(data, "detach") and hasattr(data, "cpu"):    # torch 텐서 → numpy (torch 연동)
-            data = data.detach().cpu().numpy()
+            t = data.detach()
+            if str(t.dtype) in ("torch.bfloat16", "torch.float16"):   # numpy에 없는 bfloat16 등 → float32
+                t = t.float()
+            data = t.cpu().numpy()
+        elif hasattr(data, "to_numpy") and hasattr(data, "iloc"):  # pandas DataFrame·Series
+            data = data.to_numpy()
         if device is None:
             device = B.device_of(data) if not isinstance(data, (list, tuple, float, int)) else "cpu"
         xp = B.xp(device)
@@ -523,6 +528,18 @@ def as_signal(x, device: str | None = None) -> Signal:
     if isinstance(x, Signal):
         return x if device is None else x.to(device)
     return Signal(x, device=device)
+
+
+def as_input(x, device: str | None = None) -> Signal:
+    """층의 입력으로: 어떤 자료형이든 (정수·불리언·uint8·float16·bfloat16·리스트·pandas·torch·cupy).
+    계산은 float32로 통일. 단 numpy·torch·cupy 배열로 float64를 넣으면 정밀도를 위해 그대로"""
+    loose = isinstance(x, (list, tuple, int, float)) or hasattr(x, "iloc")   # 리스트·pandas: float64는 일부러 고른 게 아님
+    s = as_signal(x, device)
+    if loose and s.data.dtype == np.float64:
+        s = Signal(s.data.astype(np.float32))
+    if s.data.dtype.kind in "biu":
+        s = s.astype(s.xp.float32) if s.plastic else Signal(s.data.astype(s.xp.float32))
+    return s
 
 
 def concat(signals, axis: int = 0) -> Signal:

@@ -4,13 +4,13 @@ from __future__ import annotations
 import numpy as np
 
 from .ganglion import backend as B
-from .ganglion.signal import Signal, as_signal
+from .ganglion.signal import Signal, as_signal, as_input
 from .ganglion.tissue import Tissue
 
 
 def to_rates(x, max_rate: float) -> Signal:
     """음수는 0, 샘플마다 최댓값 = max_rate (전체 세기가 달라도 같은 패턴이면 같은 발화율). 미분 가능"""
-    x = as_signal(x).flatten(1).relu()
+    x = as_input(x).flatten(1).relu()
     return x / x.max(axis=1, keepdims=True).clip(lo=1e-8) * max_rate
 
 
@@ -43,7 +43,7 @@ class RateEncoder(Tissue):
 
     def forward(self, x) -> Signal:
         dev = B.device_of(self.P) if self.P is not None else self._dev
-        x = as_signal(x, dev).flatten(1)
+        x = as_input(x, dev).flatten(1)
         if x.data.dtype.kind != "f":
             x = Signal(x.data.astype(np.float32))
         if self.P is not None:
@@ -83,7 +83,7 @@ class GlomerularEncoder(Tissue):
         return len(self.glomeruli)
 
     def forward(self, odor) -> Signal:
-        x = as_signal(odor, B.device_of(self.P))
+        x = as_input(odor, B.device_of(self.P))
         if x.data.dtype != np.float32 and not x.plastic:
             x = Signal(x.data.astype(np.float32))
         return to_rates(x @ Signal(self.P.T), self.max_rate)

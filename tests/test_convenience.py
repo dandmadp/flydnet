@@ -254,3 +254,46 @@ def test_data_size_check(tmp_path):
     (tmp_path / name).write_bytes((tmp_path / name).read_bytes()[:100])            # 잘린 파일
     with pytest.raises(ValueError, match="크기가 다름"):
         D.require("door", tmp_path)
+
+
+# ─────────────── 입력 자료형 ───────────────
+@pytest.mark.parametrize("make", [
+    lambda b: b.astype(np.float32), lambda b: b.astype(np.float16), lambda b: b.astype(np.int64),
+    lambda b: b.astype(np.int32), lambda b: np.clip(b, 0, 255).astype(np.uint8), lambda b: b > 100,
+    lambda b: b.tolist(), lambda b: __import__("pandas").DataFrame(b),
+])
+def test_any_input_dtype_computes_in_float32(make):
+    base = np.random.default_rng(0).uniform(0, 200, (4, 6))
+    x = make(base)
+    assert fd.Projection(6, 3, device="cpu")(x).data.dtype == np.float32
+    assert fd.Homeostasis()(x).data.dtype == np.float32
+    assert _L()(x, seed=0).data.dtype == np.float32
+    fd.train(fd.Pathway(fd.Projection(6, 2, device="cpu")), x, [0, 1, 0, 1], epochs=1, verbose=False)
+
+
+def test_float64_kept_when_chosen():
+    x = np.random.default_rng(0).random((2, 6))                             # numpy float64 = 일부러 고른 정밀도
+    assert fd.Projection(6, 3, device="cpu")(x).data.dtype == np.float64
+
+
+def test_torch_dtypes():
+    torch = pytest.importorskip("torch")
+    base = np.random.default_rng(0).uniform(0, 200, (4, 6))
+    for dt in (torch.bfloat16, torch.float16, torch.int64, torch.bool):
+        x = torch.tensor(base > 100 if dt == torch.bool else base).to(dt)
+        assert fd.Projection(6, 3, device="cpu")(x).data.dtype == np.float32
+    m = fd.torch.bridge(_L(trainable=True), seed=0)
+    for dt in (torch.bfloat16, torch.float16):
+        xt = torch.tensor(base, dtype=dt, requires_grad=True)
+        m(xt).sum().backward()
+        assert xt.grad.dtype == dt                                          # 기울기는 입력과 같은 자료형으로
+
+
+def test_label_dtypes():
+    z = fd.Signal(np.zeros((3, 2), np.float32))
+    for ok in ([0, 1, 1], [0., 1., 1.], np.array([True, False, True]), np.array([0, 1, 1], np.uint8)):
+        fd.surprise(z, ok)
+    with pytest.raises(ValueError, match="정수가 아닌 값"):
+        fd.surprise(z, [0, 1.7, 1])
+    with pytest.raises(ValueError, match="np.unique"):
+        fd.surprise(z, ["a", "b", "a"])

@@ -102,7 +102,15 @@ def labels(y) -> np.ndarray:
         y = numpy(y)
     elif hasattr(y, "detach"):                                  # torch 텐서
         y = y.detach().cpu().numpy()
-    return np.asarray(y, dtype=np.int64)
+    a = np.asarray(y)
+    if a.dtype.kind in "fc":                                    # 1.7을 1로 조용히 자르지 않게
+        if a.size and not np.all(np.isfinite(a)) or a.size and not np.all(a == np.round(a)):
+            bad = a[~(np.isfinite(a) & (a == np.round(a)))][:5].tolist() if a.size else []
+            raise ValueError(f"라벨은 정수(클래스 번호): 정수가 아닌 값 {bad} - 확률·원-핫이면 argmax로 번호를 만들 것")
+    elif a.dtype.kind not in "biu":
+        raise ValueError(f"라벨은 정수(클래스 번호), {a.dtype} 자료형은 안 됨 - 문자열이면: "
+                         "names, y = np.unique(y, return_inverse=True)")
+    return a.astype(np.int64)
 
 
 def limit_gpu_memory(fraction: float = 0.75):

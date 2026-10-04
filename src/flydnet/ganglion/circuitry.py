@@ -18,7 +18,7 @@ import numpy as np
 from . import backend as B
 from . import kernels as K
 from . import physiology as P
-from .signal import Signal, as_signal, checkpoint, concat, learning_enabled, quiescent, where
+from .signal import Signal, as_input, as_signal, checkpoint, concat, learning_enabled, quiescent, where
 from .tissue import Synapse, Tissue
 
 
@@ -366,7 +366,7 @@ class ConnectomeLayer(Tissue):
             r = np.asarray(record)
             if r.size and (r.min() < 0 or r.max() >= self.circuit.N):
                 raise IndexError(f"record의 뉴런 번호는 0 ~ {self.circuit.N - 1}: 범위 밖 {r[(r < 0) | (r >= self.circuit.N)][:5].tolist()}")
-        x = as_signal(rates, self.device)
+        x = as_input(rates, self.device)
         if x.data.dtype != np.float32 and x.data.dtype.kind == "f" and not x.plastic:
             x = Signal(x.data.astype(np.float32))
         if x.shape[-1] != self.n_in:
