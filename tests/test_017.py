@@ -241,14 +241,14 @@ def test_stdp_sees_post_spikes_of_blocked_neurons():
 
 
 def test_tune_surrogate_restores_layer_on_failure():
-    layer = fd.Connectome(_rec(strong=True), "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair")
+    layer = fd.Connectome(_rec(strong=True), "IN", "O", t_ms=80, device="cpu", trainable=True, share="pair")
     n = [0]
 
     def score(l, s):
         n[0] += 1
         if n[0] > 3:
             raise RuntimeError("score 실패")
-        return l(np.full((2, 6), 100, np.float32), seed=s).sum()
+        return l(np.full((2, 6), 150, np.float32), seed=s).sum()
     with pytest.raises(RuntimeError):
         fd.tune(score, layer, verbose=False)
     assert layer.surrogate_damp == "auto"
