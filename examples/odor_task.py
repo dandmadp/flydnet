@@ -26,7 +26,7 @@ import flydnet as fd
 ap = argparse.ArgumentParser()
 ap.add_argument("--task-seeds", type=int, default=5)
 ap.add_argument("--shuffles", type=int, default=5)
-ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="3.0 ≈ KC 6%% 활성")
+ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="3.0 ~ KC 6%% 활성")
 ap.add_argument("--t-ms", type=float, default=100)
 args = ap.parse_args()
 
@@ -61,10 +61,10 @@ for C, K, noise, ntr in CONFIGS:
     print(f"클래스 {C} × 원형 {K}, 잡음 {noise}, 학습 {ntr}/클래스  ({time.time() - t:.0f}s)")
     print(f"  glomeruli {glo.mean():5.1f} | KC real {real.mean():5.1f} | KC shuffled {shuf.mean():5.1f} "
           f"(무작위끼리 범위 {shuf.mean(0).min():.1f}~{shuf.mean(0).max():.1f})")
-    print(f"  실제 − 무작위: seed별 " + " ".join(f"{d:+.1f}" for d in diff)
+    print(f"  실제 - 무작위: seed별 " + " ".join(f"{d:+.1f}" for d in diff)
           + f" | 평균 {diff.mean():+.2f} ± {diff.std():.2f} | 실제가 이긴 비율 {wins:.0f}%", flush=True)
     summary.append(diff)
 
 all_diff = torch.cat(summary)
-print(f"\n전체 {len(all_diff)}개 (설정×seed): 실제 − 무작위 평균 {all_diff.mean():+.2f}%p, "
+print(f"\n전체 {len(all_diff)}개 (설정×seed): 실제 - 무작위 평균 {all_diff.mean():+.2f}%p, "
       f"양수 {int((all_diff > 0).sum())}/{len(all_diff)}")

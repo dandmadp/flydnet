@@ -65,7 +65,7 @@ def report(title, res):
     diff = real - shuf.mean(1)
     print(f"{title}\n  glomeruli {glo.mean():5.1f} | KC real {real.mean():5.1f} | KC shuffled {shuf.mean():5.1f} "
           f"(무작위끼리 범위 {shuf.mean(0).min():.1f}~{shuf.mean(0).max():.1f})\n"
-          f"  실제 − 무작위: {diff.mean():+.2f} ± {diff.std() / len(diff) ** 0.5:.2f} (표준오차, {len(diff)}회) | "
+          f"  실제 - 무작위: {diff.mean():+.2f} ± {diff.std() / len(diff) ** 0.5:.2f} (표준오차, {len(diff)}회) | "
           f"양수 {int((diff > 0).sum())}/{len(diff)} | 실제가 이긴 비율 {(real[:, None] > shuf).float().mean() * 100:.0f}%",
           flush=True)
 

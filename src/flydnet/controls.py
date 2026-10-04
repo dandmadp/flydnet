@@ -82,7 +82,7 @@ class Local(Control):
 
     def build(self, circuit, seed):
         if self.xy.shape != (circuit.N, 2):
-            raise ValueError(f"Local: xy 모양 {self.xy.shape} ≠ (회로 뉴런 수 {circuit.N}, 2) — "
+            raise ValueError(f"Local: xy 모양 {self.xy.shape} ≠ (회로 뉴런 수 {circuit.N}, 2) - "
                              "이 회로로 만든 시야 좌표(fd.column_map(circuit))를 줄 것")
         return circuit.shuffled(seed=seed, local=(self.xy, self.radius), merge=self.merge)
 

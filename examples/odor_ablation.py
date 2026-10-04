@@ -69,7 +69,7 @@ for C, K, noise, ntr in CONFIGS:
         line += f" | {cname} {sh.mean():5.1f} (손실 {d.mean():+.2f})"
     print(f"클래스 {C} × 원형 {K}, 학습 {ntr}/클래스 ({time.time() - t:.0f}s)\n{line}", flush=True)
 
-print(f"\n━━ 조건별 손실 (실제 − 무작위, {len(CONFIGS)}설정 × {args.task_seeds}seed) ━━")
+print(f"\n━━ 조건별 손실 (실제 - 무작위, {len(CONFIGS)}설정 × {args.task_seeds}seed) ━━")
 for cname, ds in loss.items():
     d = torch.cat(ds)
     print(f"  {cname:<6} {d.mean():+.2f} ± {d.std() / len(d) ** 0.5:.2f} (표준오차) | 양수 {int((d > 0).sum())}/{len(d)}")

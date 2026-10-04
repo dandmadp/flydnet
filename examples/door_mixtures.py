@@ -71,5 +71,5 @@ diff = real - shuf.mean(1)
 print(f"\n조건부 구별 정확도 (찍기 50%, 묶음 {len(real)}개 평균)")
 print(f"  glomeruli {glo.mean():5.1f} | KC real {real.mean():5.1f} | KC shuffled {shuf.mean():5.1f} "
       f"(무작위끼리 범위 {shuf.mean(0).min():.1f}~{shuf.mean(0).max():.1f})")
-print(f"  실제 − 무작위: {diff.mean():+.2f} ± {diff.std() / len(diff) ** 0.5:.2f} (표준오차) | "
+print(f"  실제 - 무작위: {diff.mean():+.2f} ± {diff.std() / len(diff) ** 0.5:.2f} (표준오차) | "
       f"실제가 나은 묶음 {int((diff > 0).sum())}, 같은 묶음 {int((diff == 0).sum())}, 못한 묶음 {int((diff < 0).sum())}")
