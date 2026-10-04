@@ -228,3 +228,14 @@ def test_doctor_flags_colab_style_cupy_conflict(monkeypatch, capsys):
     cli.doctor()
     out = capsys.readouterr().out
     assert "드라이버는 CUDA 12" in out and "gpu-cuda12" in out
+
+
+def test_doctor_respects_forced_cpu(monkeypatch, capsys):
+    """FLYDNET_DEVICE=cpu로 일부러 CPU를 고르면 'GPU 계산이 안 됨'을 문제로 세지 않음"""
+    import flydnet.__main__ as cli
+    monkeypatch.setattr(cli, "_kernel_check", lambda: 0)
+    monkeypatch.setattr(cli, "_driver_cuda", lambda: "13.0")
+    monkeypatch.setenv("FLYDNET_DEVICE", "cpu")
+    cli.doctor()
+    out = capsys.readouterr().out
+    assert "FLYDNET_DEVICE=cpu로 정함" in out and "GPU 계산이 안 됨" not in out

@@ -8,6 +8,10 @@
   (예전 방식은 다단계에서 최대 24% 과대). `validation/shiu2024/`
   - **동작이 바뀜**: 같은 설정의 스파이킹 층 결과가 0.1.15와 다르다. 예전 방식은 `timing="legacy"` (torch판과 같음).
     0.1.15에서 저장한 층 파일은 자동으로 legacy로 읽혀 예전과 같은 결과. REPORT의 실험 ①~⑫는 예전 방식으로 한 것
+- 오류 점검 (정적 분석, CPU·GPU 17개 기능 일치, torch·CuPy 없는 환경, 새 예제 11개 끝까지 실행, CPU 전용 전체 테스트):
+  - 역전파 핵심 반복문이 연산이 돌려준 기울기 개수를 확인 (전에는 개수가 다르면 그 부모의 기울기가 조용히 사라짐)
+  - `gradcheck`: 연결을 바꿔도 출력이 변하지 않으면 (출력 뉴런이 발화하지 않음) "cos 0" 대신 그렇다고 알려 줌
+  - `doctor`: `FLYDNET_DEVICE=cpu`로 일부러 CPU를 고르면 "GPU 계산이 안 됨"을 문제로 세지 않음
 - **맞는 이름을 알려 주는 오류**: torch·numpy에서 쓰던 이름을 쓰면 flydnet 이름을 안내 (`x.grad` → `.retro`,
   `loss.backward()` → `.retrograde()`, `syn.w` → 이 신호 자체가 값 `.numpy()`, `model.parameters()` → `.synapses()`,
   `rule.zero_grad()` → `.clear()`, `fd.Linear` → `fd.Projection`, `fd.no_grad` → `fd.quiescent` 등), 오타는 비슷한 이름 제안.

@@ -128,3 +128,11 @@ def test_membrane_noise():
     np.testing.assert_allclose(b.log_scale.retro, c.log_scale.retro, rtol=1e-4, atol=1e-6)   # 체크포인팅과 같음
     with pytest.raises(ValueError, match="noise"):
         _layer(noise=-1)
+
+
+def test_gradcheck_flags_silent_output():
+    c = _strong()
+    L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, trainable=True, device="cpu", input_mode="regular",
+                           gains={"H>O": 0.0001, "IN>H": 0.0001})                # 출력이 발화하지 않게
+    r = fd.gradcheck(lambda L_, s: L_(X, seed=s).sum(), L)
+    assert r.flat and not r.reliable_reference and "출력이 변하지 않음" in str(r)

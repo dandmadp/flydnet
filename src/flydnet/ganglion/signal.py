@@ -179,7 +179,7 @@ class Signal:
             if node._back is None:                          # 잎: 기울기 쌓기
                 node.retro = g if node.retro is None else node.retro + g
                 continue
-            for p, pg in zip(node._parents, node._back(g)):
+            for p, pg in zip(node._parents, node._back(g), strict=True):   # 연산이 기울기를 덜 돌려주면 바로 오류
                 if pg is None or not p.plastic:
                     continue
                 grads[id(p)] = pg if id(p) not in grads else grads[id(p)] + pg
@@ -488,7 +488,7 @@ def checkpoint(fn, *inputs):
         fresh = [Signal(i.data, plastic=i.plastic) for i in inputs]
         outs2 = fn(*fresh)
         total = None
-        for o, g in zip(outs2, packed.parts):
+        for o, g in zip(outs2, packed.parts, strict=True):
             if g is not None and o.plastic:
                 term = (o * Signal(g)).sum()
                 total = term if total is None else total + term

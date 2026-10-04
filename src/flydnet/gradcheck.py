@@ -29,9 +29,14 @@ class GradCheck:
         self.table, self.damp, self.fd_consistency, self.seeds = table, damp, fd_consistency, seeds
 
     @property
+    def flat(self) -> bool:
+        """연결 세기를 바꿔도 출력이 변하지 않음 (출력 뉴런이 발화하지 않는 등)"""
+        return not np.any(np.abs(self.table.finite_diff.to_numpy()) > 0) if len(self.table) else True
+
+    @property
     def reliable_reference(self) -> bool:
-        """차분 기준이 성립하는가 (eps와 eps/2의 차분 방향 일치 0.8 이상)"""
-        return self.fd_consistency >= 0.8
+        """차분 기준이 성립하는가 (eps와 eps/2의 차분 방향 일치 0.8 이상, 출력이 변함)"""
+        return not self.flat and self.fd_consistency >= 0.8
 
     @property
     def cos(self) -> float:
@@ -44,7 +49,10 @@ class GradCheck:
         return float(np.linalg.norm(self.table.bptt) / (np.linalg.norm(self.table.finite_diff) + 1e-30))
 
     def __str__(self):
-        if not self.reliable_reference:
+        if self.flat:
+            verdict = ("판단 불가 - 연결 세기를 바꿔도 출력이 변하지 않음: 출력 뉴런이 발화하는지 확인 "
+                       "(layer(x, return_all=True)로 그룹별 발화율, 약하면 calibrate나 gains로 키우기)")
+        elif not self.reliable_reference:
             verdict = (f"판단 불가 - 기준(차분) 자체가 불안정 (eps·eps/2 일치 {self.fd_consistency:+.2f}): 출력이 연결 세기에 대해 "
                        "울퉁불퉁함. input_mode='poisson'으로 seeds를 늘려 평균 출력으로 비교할 것")
         else:

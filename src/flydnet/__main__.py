@@ -99,10 +99,12 @@ def doctor() -> int:
         warnings.simplefilter("always")
         from .ganglion import backend as B
         dev = B.default_device()
-    say(f"flydnet이 쓸 장치: {dev}")
+    import os
+    forced = os.environ.get("FLYDNET_DEVICE", "").strip().lower()
+    say(f"flydnet이 쓸 장치: {dev}" + (f" (환경변수 FLYDNET_DEVICE={forced}로 정함)" if forced in ("cpu", "gpu") else ""))
     for w in caught:
         say(f"  ! {w.message}")
-    if dev == "cpu" and cuda:
+    if dev == "cpu" and cuda and forced != "cpu":
         if not cupys:
             say(f"  → GPU를 쓰려면: {_extra_hint(driver)}")
         else:
