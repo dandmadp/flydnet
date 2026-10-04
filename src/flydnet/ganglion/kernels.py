@@ -207,7 +207,7 @@ def lif_step(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx,
 
 
 def lif_step_brian(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx, v_eq, e_v, e_g, gd: float,
-                   poi_w: float, v_th: float, v_rst: float, scale: float, slope: float):
+                   poi_w: float, v_th: float, v_rst: float, scale: float, slope: float, out_u: list | None = None):
     """LIF 한 스텝, Shiu et al. 2024 Brian2 모델과 같은 순서·적분 (ConnectomeLayer timing="brian")
       V1 = act ? v_eq + e_v·(V - v_eq) + e_g·G : V;  G1 = act ? G·gd : G      (정확한 선형 적분 = Brian 'linear')
       spk = (V1 - v_th)/scale > 0
@@ -222,6 +222,8 @@ def lif_step_brian(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, i
     V1 = xp.where(act, ve + ev * (Vd - ve) + eg * Gd, Vd)
     G1 = xp.where(act, Gd * gd, Gd)
     u = (V1 - v_th) * (1.0 / scale)
+    if out_u is not None:                                            # 관찰자 (fd.ThreeFactor)에게 문턱까지의 거리
+        out_u.append(u)
     fired = u > 0
     spk = fired.astype(Vd.dtype)
     G2 = xp.where(act, G1 + I.data, G1)

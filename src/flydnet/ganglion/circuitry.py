@@ -156,6 +156,7 @@ class ConnectomeLayer(Tissue):
         self.gains = dict(gains or {})
         self._effects = []                                         # fd.genetics 효과기 (저장 안 됨)
         self._probe = {}                                           # fd.explain 탐침: "neuron" (N, 1), "edge" (E,) Signal
+        self._observer = None                                      # fd.ThreeFactor: 스텝마다 상태를 받는 관찰자
 
         self.neuron_params = bias is not None or t_mbr is not None or train_neurons
         if self.neuron_params:
@@ -327,6 +328,17 @@ class ConnectomeLayer(Tissue):
 
         # 발화한 스텝 뒤 적분이 멈추는 스텝 수: brian = rfc (Brian2: t - 마지막 발화 >= 2.2 ms면 다시 적분), legacy = rfc + 1
         rfc_set = rfc_vec - 1 if brian else rfc_vec
+        obs = self._observer
+        if obs is not None:
+            if not brian:
+                raise ValueError("관찰자(fd.ThreeFactor)는 timing='brian'에서만")
+            gain = None                                                    # 발화에 곱해지는 것들 (끄기·탐침·드롭아웃)
+            for m in (quiet, probe_n.data if probe_n is not None else None, drop):
+                if m is not None:
+                    gain = m if gain is None else gain * m
+            obs.begin(dict(e_v=e_v, e_g=e_g, gd=gd, dly=dly, steps=steps, s_cnt=s_cnt, scale=consts["scale"],
+                           slope=self.slope, batch=Bn, gain=gain, blocked=blocked,
+                           rate_c=1000.0 / (self.t_ms - s_cnt * dt)))
 
         def run(s0, s1, V, G, refr, counts, phase, *buf):
             buf = list(buf)
@@ -345,7 +357,9 @@ class ConnectomeLayer(Tissue):
                     spikes = xp.concatenate([spikes, kick.astype(spikes.dtype)])
                     ps, idx = concat([ps, p_act]), idx_all
                 if brian:
-                    V, G, spk = K.lif_step_brian(V, G, buf[s % R], ps, spikes, act, idx, v_eq, e_v, e_g, **consts)
+                    uu = [] if obs is not None else None
+                    V, G, spk = K.lif_step_brian(V, G, buf[s % R], ps, spikes, act, idx, v_eq, e_v, e_g, out_u=uu,
+                                                 **consts)
                 else:
                     V, G, spk = K.lif_step(V, G, buf[s % R], ps, spikes, act, idx, v_eq, a, **consts)
                 if quiet is not None:                                      # Kir2.1: 발화 없음
@@ -362,6 +376,8 @@ class ConnectomeLayer(Tissue):
                 refr = Signal(xp.where(fired, rfc_set, refr.data - 1))
                 sent = spk if blocked is None else spk * blocked           # Shibire: 발화는 하지만 전달 없음
                 buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
+                if obs is not None:
+                    obs.step(s, uu[0], act, sent.data)
             return (V, G, refr, counts, phase, *buf)
 
         z = lambda: Signal(xp.zeros((N, Bn), dtype=xp.float32))

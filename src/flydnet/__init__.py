@@ -31,6 +31,7 @@ from .plasticity import DopamineReadout, AssocReadout
 from .expansion import KCExpansion
 from .datasets import synthetic_odors, door_odors, biconditional_mixtures
 from . import genetics                     # fd.genetics.driver / silence / block / activate / ablate / screen
+from .threefactor import ThreeFactor             # 3요소 학습 규칙 (e-prop): 역전파 없이 커넥톰 연결 학습
 from .attribution import explain, Explanation   # 회로 기여도: 어떤 세포 유형·경로에 기대는지 + 실제로 꺼서 확인
 from . import controls                     # fd.controls.Shuffled / Randomized / ShuffledWeights / Local / Custom
 from .controls import compare, CompareReport, sign_flip_p
