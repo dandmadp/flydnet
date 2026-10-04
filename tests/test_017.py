@@ -135,3 +135,52 @@ def test_calibrate_warns_when_target_missed_and_caps_gain():
     with pytest.warns(UserWarning, match="max_gain"):
         tab = layer.calibrate(x * 100, target=400, max_gain=5)           # 입력보다 빠른 출력은 불가능
     assert float(tab.gain_factor[0]) <= 5 + 1e-9
+
+
+# ─────────────── 한 스텝 합친 GPU 커널 ───────────────
+def _gpu_or_skip():
+    if not B.gpu_available():
+        pytest.skip("GPU 없음")
+    from flydnet.ganglion import kernels as K
+    if K._cuda() is None:
+        pytest.skip("전용 커널 없음")
+    return K
+
+
+def test_poisson_kernel_bitwise_equals_hash():
+    K = _gpu_or_skip()
+    import cupy as cp
+    from flydnet.ganglion.physiology import hash_uniform
+    p = cp.asarray(np.random.default_rng(0).random((37, 5)).astype(np.float32) * 0.3)
+    for seed, step in ((0, 0), (3, 17), (2 ** 40, 999)):
+        ref = (hash_uniform(cp, seed, step, (5, 37)).T < p).astype(cp.float32)
+        assert bool((K.poisson_spikes(cp, seed, step, p) == ref).all())
+
+
+@pytest.mark.parametrize("kw,effect", [({}, None), (dict(ckpt=50, truncate=60, noise=0.5), None),
+                                       ({}, "activate"), ({}, "mosaic")])
+def test_fused_lif_bitwise_equals_elementwise(monkeypatch, kw, effect):
+    """합친 커널(순전파·역전파 각각 하나)이 원소별 연산 경로와 비트 단위로 같음 (출력·연결 기울기·입력 기울기)"""
+    K = _gpu_or_skip()
+    from flydnet.ganglion import physiology as P
+    c = _rec(feedback_edges=True, strong=True)
+    X = np.random.default_rng(0).uniform(50, 200, (5, 6)).astype(np.float32)
+
+    def run():
+        layer = fd.Connectome(c, "IN", "O", t_ms=40, device="gpu", trainable=True, **kw)
+        eff = (fd.genetics.activate(layer, fd.genetics.driver(c, group="H"), hz=80) if effect == "activate" else
+               fd.genetics.mosaic(layer, p=0.4) if effect == "mosaic" else None)
+        x = fd.Signal(X, device="gpu", plastic=True)
+        y = layer(x, seed=2)
+        (y * y).sum().retrograde()
+        if eff is not None:
+            eff.remove()
+        return [B.numpy(y.data), B.numpy(layer.log_scale.retro), B.numpy(x.retro)]
+    fast = run()
+    monkeypatch.setattr(K, "_fused_ok", lambda *a, **k: False)
+    monkeypatch.setattr(K, "poisson_spikes",
+                        lambda xp, seed, step, p: (P.hash_uniform(xp, seed, step, p.shape[::-1]).T < p).astype(p.dtype))
+    slow = run()
+    assert fast[0].mean() > 0
+    for a, b in zip(fast, slow):
+        np.testing.assert_array_equal(a, b)

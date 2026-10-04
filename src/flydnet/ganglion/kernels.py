@@ -57,6 +57,65 @@ __global__ void edge_dot_rm(const int* indptr, const int* indices, const float* 
         if (lane == 0) out[k] = s;
     }
 }
+// Poisson input spikes for one step: u = splitmix64(seed, step, b * n_rows + j) as in physiology.hash_uniform,
+// spike = u < p[j, b]. p and out are (n_rows, nb) row-major.
+__global__ void poisson_spikes(const float* p, float* out, const unsigned long long off, const int n_rows,
+                               const int nb) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (long long)n_rows * nb) return;
+    const int j = (int)(i / nb), b = (int)(i % nb);
+    unsigned long long z = (unsigned long long)((long long)b * n_rows + j) + off;
+    z ^= z >> 30; z *= 0xBF58476D1CE4E5B9ULL;
+    z ^= z >> 27; z *= 0x94D049BB133111EBULL;
+    z ^= z >> 31;
+    const float u = __fmul_rn((float)(z >> 40), 5.9604644775390625e-08f);
+    out[i] = u < p[i] ? 1.0f : 0.0f;
+}
+// One LIF step, timing="brian" (kernels.lif_step_brian). Every float op is rounded separately (_rn) so the
+// result is bit-identical to the elementwise numpy/cupy version (no FMA contraction).
+// inv[n] = row of n in spikes (input or activated neuron) or -1.
+__global__ void lif_brian_fwd(const float* V, const float* G, const float* I, const bool* act, const int* inv,
+                              const float* spikes, float* V3, float* G3, float* spk, float* u_out, bool* fired_out,
+                              const float ve, const float ev, const float eg, const float gd, const float poi_w,
+                              const float v_th, const float v_rst, const float inv_scale, const int n, const int nb) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (long long)n * nb) return;
+    const int row = (int)(i / nb), b = (int)(i % nb);
+    const float Vd = V[i], Gd = G[i];
+    const bool a = act[i];
+    const float V1 = a ? __fadd_rn(__fadd_rn(ve, __fmul_rn(ev, __fsub_rn(Vd, ve))), __fmul_rn(eg, Gd)) : Vd;
+    const float G1 = a ? __fmul_rn(Gd, gd) : Gd;
+    const float u = __fmul_rn(__fsub_rn(V1, v_th), inv_scale);
+    const bool f = u > 0.0f;
+    const float G2 = a ? __fadd_rn(G1, I[i]) : G1;
+    const int k = inv[row];
+    const float V2 = k >= 0 ? __fadd_rn(V1, __fmul_rn(spikes[(long long)k * nb + b], poi_w)) : V1;
+    V3[i] = f ? v_rst : V2;
+    G3[i] = f ? 0.0f : G2;
+    spk[i] = f ? 1.0f : 0.0f;
+    u_out[i] = u;
+    fired_out[i] = f;
+}
+// Backward of lif_brian_fwd (same rounding as the numpy version). has_v / has_g / has_s: which output gradients exist.
+__global__ void lif_brian_bwd(const float* gV3, const float* gG3, const float* gspk, const bool* fired, const bool* act,
+                              const float* u, float* gV, float* gG, float* gI, float* gV2_out,
+                              const float ev, const float eg, const float gd, const float inv_scale, const float slope,
+                              const int has_v, const int has_g, const int has_s, const long long total) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= total) return;
+    const bool f = fired[i], a = act[i];
+    const float gV2 = (has_v && !f) ? gV3[i] : 0.0f;
+    const float gG2 = (has_g && !f) ? gG3[i] : 0.0f;
+    gI[i] = a ? gG2 : 0.0f;
+    float gV1 = gV2;
+    if (has_s) {
+        const float d = __fadd_rn(1.0f, __fmul_rn(slope, fabsf(u[i])));
+        gV1 = __fadd_rn(gV2, __fmul_rn(gspk[i], __fdiv_rn(inv_scale, __fmul_rn(d, d))));
+    }
+    gV[i] = a ? __fmul_rn(gV1, ev) : gV1;
+    gG[i] = a ? __fadd_rn(__fmul_rn(gV1, eg), __fmul_rn(gG2, gd)) : gG2;
+    gV2_out[i] = gV2;
+}
 }
 """
 # 커널 설명: spmm_rm = 받는 뉴런(행) 하나를 스레드 gw개가 (배치가 작으면 워프 하나가 행 여러 개), 행 우선이라 연속 읽기
@@ -72,7 +131,7 @@ def _cuda():
         import cupy as cp
         try:
             mod = cp.RawModule(code=_CUDA_SRC)
-            for name in ("spmm_rm", "edge_dot_rm", "edge_dot_thread"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
+            for name in ("spmm_rm", "edge_dot_rm", "edge_dot_thread", "poisson_spikes", "lif_brian_fwd", "lif_brian_bwd"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
                 mod.get_function(name)
         except Exception as e:
             import warnings
@@ -114,7 +173,8 @@ def edge_dot(g, x, indptr, post, pre, chunk: int = 1 << 26):
             n_rows, nb = len(indptr) - 1, g.shape[1]
             out = cp.empty(len(pre), dtype=cp.float32)
             threads = 256
-            if nb >= 16:                                             # 워프가 배치 방향으로 나눠 읽고 안에서 합산
+            if nb >= 48:                                             # 워프가 배치 방향으로 나눠 읽고 안에서 합산 (배치가 클 때만 -
+                                                                     # 전체 뇌에서 배치 16·32는 스레드 하나가 연결 하나인 쪽이 4배·1.4배 빠름)
                 blocks = (n_rows * 32 + threads - 1) // threads
                 _cuda().get_function("edge_dot_rm")((blocks,), (threads,), (indptr, pre, g, x, out,
                                                                               np.int32(n_rows), np.int32(nb)))
@@ -130,6 +190,24 @@ def edge_dot(g, x, indptr, post, pre, chunk: int = 1 << 26):
     for s in range(0, E, step):
         out[s:s + step] = np.einsum("ij,ij->i", g[post[s:s + step]], x[pre[s:s + step]])
     return out
+
+
+def poisson_spikes(xp, seed: int, step: int, p):
+    """(n_rows, B) 확률 p로 입력 스파이크 (0/1 float32). physiology.hash_uniform(xp, seed, step, (B, n_rows)).T < p와
+    비트 단위로 같음. GPU면 커널 하나 (예전: 연산 약 12개)"""
+    from .physiology import hash_uniform
+    if B.device_of(p) == "gpu" and p.dtype == np.float32 and _cuda() is not None:
+        import cupy as cp
+        p = p if p.flags.c_contiguous else cp.ascontiguousarray(p)
+        n_rows, nb = p.shape
+        out = cp.empty_like(p)
+        off = np.uint64((int(seed) * 0x9E3779B97F4A7C15 + int(step) * 0xD1B54A32D192ED03 + 0x9E3779B97F4A7C15) % (1 << 64))
+        total = n_rows * nb
+        if total:
+            _cuda().get_function("poisson_spikes")(((total + 255) // 256,), (256,),
+                                                   (p, out, off, np.int32(n_rows), np.int32(nb)))
+        return out
+    return (hash_uniform(xp, seed, step, p.shape[::-1]).T < p).astype(p.dtype)
 
 
 def matrices(wiring, values_data):
@@ -216,6 +294,9 @@ def lif_step_brian(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, i
       V3 = spk ? v_rst : V2;  G3 = spk ? 0 : G2
     v_eq, e_v, e_g: 숫자 또는 (N, 1) Signal (세포 유형별 매개변수 - 역전파 됨)"""
     xp = B.xp(B.device_of(V.data))
+    if _fused_ok(V, G, I, v_eq, e_v, e_g):
+        return _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi_w, v_th, v_rst, scale,
+                                slope, out_u)
     val = lambda s: s.data if isinstance(s, Signal) else s
     ve, ev, eg = val(v_eq), val(e_v), val(e_g)
     Vd, Gd = V.data, G.data
@@ -254,6 +335,66 @@ def lif_step_brian(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, i
             out.append(_reduce_to(gV1a * Gd, e_g))
         return tuple(out)
     return multi_output(parents, [V3, G3, spk], back)
+
+
+_INV = {}
+
+
+def _inverse(in_idx, n):
+    """뉴런 번호 → in_idx 안의 위치 (없으면 -1), int32. 같은 in_idx면 다시 만들지 않음"""
+    import cupy as cp
+    key = (int(in_idx.data.ptr) if len(in_idx) else 0, len(in_idx), n)
+    inv = _INV.get(key)
+    if inv is None:
+        if len(_INV) > 64:
+            _INV.clear()
+        inv = cp.full(n, -1, dtype=cp.int32)
+        if len(in_idx):
+            inv[in_idx] = cp.arange(len(in_idx), dtype=cp.int32)
+        _INV[key] = inv
+    return inv
+
+
+def _fused_ok(V, G, I, *coef) -> bool:
+    """합친 커널을 쓸 수 있는지: GPU, float32·연속 배열, 세포 유형별 매개변수(Signal)가 아님, 커널 컴파일됨"""
+    if B.device_of(V.data) != "gpu" or any(isinstance(c, Signal) for c in coef):
+        return False
+    arrs = (V.data, G.data, I.data)
+    return _gpu_ok(*arrs) and V.data.ndim == 2 and _cuda() is not None
+
+
+def _lif_brian_fused(V, G, I, p_in, spikes, act, in_idx, v_eq, e_v, e_g, gd, poi_w, v_th, v_rst, scale, slope, out_u):
+    """lif_step_brian과 같은 계산을 커널 하나로 (순전파), 역전파도 커널 하나"""
+    import cupy as cp
+    n, nb = V.data.shape
+    f32 = np.float32
+    inv = _inverse(in_idx, n)
+    sp = spikes if (spikes.dtype == cp.float32 and spikes.flags.c_contiguous) else cp.ascontiguousarray(spikes, cp.float32)
+    act = act if act.flags.c_contiguous else cp.ascontiguousarray(act)
+    V3, G3, spk, u = (cp.empty((n, nb), cp.float32) for _ in range(4))
+    fired = cp.empty((n, nb), cp.bool_)
+    total = n * nb
+    inv_scale = f32(1.0 / scale)
+    _cuda().get_function("lif_brian_fwd")(((total + 255) // 256,), (256,), (
+        V.data, G.data, I.data, act, inv, sp, V3, G3, spk, u, fired,
+        f32(v_eq), f32(e_v), f32(e_g), f32(gd), f32(poi_w), f32(v_th), f32(v_rst), inv_scale,
+        np.int32(n), np.int32(nb)))
+    if out_u is not None:
+        out_u.append(u)
+
+    def back(gs):
+        gV3, gG3, gspk = gs
+        z = lambda g: g if g is not None else V3                     # 자리만 (has_* 플래그가 0이면 읽지 않음)
+        gV, gG, gI, gV2 = (cp.empty((n, nb), cp.float32) for _ in range(4))
+        c = lambda g: g if g is None or (g.dtype == cp.float32 and g.flags.c_contiguous) else cp.ascontiguousarray(g, cp.float32)
+        gV3, gG3, gspk = c(gV3), c(gG3), c(gspk)
+        _cuda().get_function("lif_brian_bwd")(((total + 255) // 256,), (256,), (
+            z(gV3), z(gG3), z(gspk), fired, act, u, gV, gG, gI, gV2,
+            f32(e_v), f32(e_g), f32(gd), inv_scale, f32(slope),
+            np.int32(gV3 is not None), np.int32(gG3 is not None), np.int32(gspk is not None), np.int64(total)))
+        g_pin = gV2[in_idx] * poi_w if p_in.plastic else None
+        return gV, gG, gI, g_pin
+    return multi_output([V, G, I, p_in], [V3, G3, spk], back)
 
 
 def graded_step(V: Signal, I: Signal, x_in: Signal, in_idx, b, a, r_max: float):

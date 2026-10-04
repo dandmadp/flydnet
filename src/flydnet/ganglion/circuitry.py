@@ -517,10 +517,10 @@ class ConnectomeLayer(Tissue):
                     spikes = (ph >= 1).astype(ph.dtype)
                     phase = Signal(ph - spikes)
                 else:
-                    spikes = (P.hash_uniform(xp, seed, s, ps.shape[::-1]).T < ps.data).astype(ps.data.dtype)
+                    spikes = K.poisson_spikes(xp, seed, s, ps.data)
                 idx = in_idx
                 if n_act:
-                    kick = P.hash_uniform(xp, act_seed, s, (Bn, n_act)).T < p_act.data
+                    kick = K.poisson_spikes(xp, act_seed, s, p_act.data)
                     spikes = xp.concatenate([spikes, kick.astype(spikes.dtype)])
                     ps, idx = concat([ps, p_act]), idx_all
                 if brian:
@@ -641,9 +641,9 @@ class ConnectomeLayer(Tissue):
                     spikes = (ph >= 1).astype(ph.dtype)
                     phase = Signal(ph - spikes)
                 else:
-                    spikes = (P.hash_uniform(xp, seed, s, ps.shape[::-1]).T < ps.data).astype(ps.data.dtype)
+                    spikes = K.poisson_spikes(xp, seed, s, ps.data)
                 if n_act:
-                    kick = P.hash_uniform(xp, act_seed, s, (Bn, n_act)).T < p_act.data
+                    kick = K.poisson_spikes(xp, act_seed, s, p_act.data)
                     spikes = xp.concatenate([spikes, kick.astype(spikes.dtype)])
                     ps = concat([ps, p_act])
                 # 외부 자극: 스파이크 하나 = poi_w mV, 역전파는 확률로 (straight-through, 내장 LIF와 같음)
