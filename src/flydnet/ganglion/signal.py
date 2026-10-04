@@ -293,7 +293,10 @@ class Signal:
         return Signal(out)._link((self,), lambda g: (g * (1 - out * out),))
 
     def sigmoid(self):
-        out = 1 / (1 + self.xp.exp(-self.data))
+        """1 / (1 + e^-x), 큰 음수에서도 넘치지 않게 (x < 0이면 e^x / (1 + e^x))"""
+        xp, x = self.xp, self.data
+        e = xp.exp(-xp.abs(x))                                   # 항상 0 ~ 1
+        out = xp.where(x >= 0, 1 / (1 + e), e / (1 + e)).astype(x.dtype, copy=False)
         return Signal(out)._link((self,), lambda g: (g * out * (1 - out),))
 
     def abs(self):
@@ -318,13 +321,18 @@ class Signal:
             if axis is not None and not keepdims:
                 g = xp.expand_dims(g, axis)
             return (xp.broadcast_to(g, shape).copy(),)
-        return Signal(self.data.sum(axis=axis, keepdims=keepdims))._link((self,), back)
+        d = self.data
+        if d.dtype == np.float32 or d.dtype == np.float16:      # float64로 누적 (큰 값·많은 원소의 반올림 오차), 자료형은 그대로
+            out = d.sum(axis=axis, keepdims=keepdims, dtype=xp.float64).astype(d.dtype)
+        else:
+            out = d.sum(axis=axis, keepdims=keepdims)
+        return Signal(out)._link((self,), back)
 
     def mean(self, axis=None, keepdims: bool = False, dtype=None, out=None):
         if out is not None:
             raise TypeError("Signal.mean은 out=을 받지 않음")
         n = self.data.size if axis is None else int(np.prod([self.shape[a] for a in np.atleast_1d(axis)]))
-        return self.sum(axis, keepdims) * (1.0 / n)
+        return self.sum(axis, keepdims) / float(n)               # x (1/n)보다 정확 (float32에서 1/3 등의 반올림 오차)
 
     def min(self, axis=None, keepdims: bool = False):
         """최솟값 (같은 값이 여럿이면 기울기를 나눠 가짐)"""
@@ -334,10 +342,14 @@ class Signal:
         """분산 (ddof=1이면 표본 분산)"""
         n = self.data.size if axis is None else int(np.prod([self.shape[a] for a in np.atleast_1d(axis)]))
         d = self - self.mean(axis=axis, keepdims=True)
-        return (d * d).sum(axis=axis, keepdims=keepdims) * (1.0 / max(n - ddof, 1))
+        return (d * d).sum(axis=axis, keepdims=keepdims) / float(max(n - ddof, 1))
 
     def std(self, axis=None, keepdims: bool = False, ddof: int = 0):
-        return self.var(axis=axis, keepdims=keepdims, ddof=ddof) ** 0.5
+        """표준편차. 값이 모두 같아 0이면 기울기는 0 (제곱근의 기울기가 발산하지 않게)"""
+        v = self.var(axis=axis, keepdims=keepdims, ddof=ddof)
+        out = v.xp.sqrt(v.data)
+        safe = v.xp.where(out > 0, out, 1)
+        return Signal(out)._link((v,), lambda g: (v.xp.where(out > 0, g / (2 * safe), 0),))
 
     def sqrt(self):
         return self ** 0.5
@@ -564,5 +576,6 @@ def where(cond, a, b) -> Signal:
     cast = lambda v: v if isinstance(v, Signal) else Signal(ref.xp.asarray(v, dtype=ref.dtype))
     a, b = cast(a), cast(b)
     xp = ref.xp
+    c = B.to(xp.asarray(c) if ref.device == "cpu" else c, ref.device) if hasattr(c, "shape") else c   # numpy 조건 + GPU 신호
     return Signal(xp.where(c, a.data, b.data))._link(
         (a, b), lambda g: (_unbroadcast(xp.where(c, g, 0), a.shape), _unbroadcast(xp.where(c, 0, g), b.shape)))

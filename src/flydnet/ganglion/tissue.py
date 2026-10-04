@@ -325,9 +325,9 @@ class Neuropil(Tissue):
         """현재 연결 값 (배선 순서: post 순, 그 안에서 pre 순)"""
         base = Signal(self.base)
         if self.train_mode == "pair":
-            return base * self.log_scale.exp()[self.pair_of]
+            return base * self.log_scale.clip(-20.0, 20.0).exp()[self.pair_of]   # 지수 제한: 학습률이 커도 넘치지 않게
         if self.train_mode == "edge":
-            return base * self.log_scale.exp()
+            return base * self.log_scale.clip(-20.0, 20.0).exp()
         if self.train_mode == "free":
             return self.values_
         return base

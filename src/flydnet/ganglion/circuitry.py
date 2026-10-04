@@ -313,7 +313,7 @@ class ConnectomeLayer(Tissue):
         if not self.trainable:
             return base
         ones = B.xp(self.device).ones(len(self.w_base), dtype=self.w_base.dtype)
-        scale = P.put(ones, self.train_pos, self.log_scale.exp()[self.train_which])
+        scale = P.put(ones, self.train_pos, self.log_scale.clip(-20.0, 20.0).exp()[self.train_which])   # 지수 제한 (e^20)
         return base * scale
 
     def weights(self) -> np.ndarray:
