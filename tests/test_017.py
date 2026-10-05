@@ -277,3 +277,23 @@ def test_calibrate_restores_gains_when_interrupted():
     with pytest.raises(KeyboardInterrupt):
         layer.calibrate(np.full((4, 20), 100, np.float32), {"out": 10})
     assert layer.gains == {}
+
+
+def test_option_combinations_fused_equals_elementwise():
+    """옵션 조합(체크포인팅·절단·잡음·regular·활성화 둘·block·silence·mosaic·감쇠·ThreeFactor)에서 합친 커널 = 원소별 경로.
+    하나씩만 시험하면 놓치는 조합 버그용 (역표 캐시 버그는 같은 크기 집단을 연속 활성화할 때만 나왔음)"""
+    _gpu_or_skip()
+    import importlib.util
+    import pathlib
+    p = pathlib.Path(__file__).with_name("combo_check.py")
+    spec = importlib.util.spec_from_file_location("combo_check_mod", p)
+    m = importlib.util.module_from_spec(spec)
+    import sys as _sys
+    old = _sys.argv
+    _sys.argv = ["combo_check", "7", "8"]
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        _sys.argv = old
+        m.elementwise(False)
+    assert m.bad == 0

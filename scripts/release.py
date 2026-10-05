@@ -7,9 +7,9 @@
 
 check가 하는 일 (하나라도 실패하면 멈춤):
   1. git에 커밋 안 된 변경이 없는지          → 커밋 안 된 코드를 올리는 것 방지
-  2. CHANGELOG.md에 이 버전 항목이 있는지     → 버전마다 무엇이 바뀌었는지 기록
+  2. CHANGELOG.md에 이 버전 항목이 있고 날짜가 적혔는지 → 버전마다 무엇이 바뀌었는지 기록 ("미배포"인 채 올리지 않게)
   3. PyPI에 이 버전이 아직 없고 최신보다 큰지 → 버전 올리기를 잊은 업로드 방지 (같은 번호는 영구히 재사용 불가)
-  4. 테스트 전체 통과
+  4. 테스트 전체 통과 (경고도 실패로)
   5. dist/ 를 비우고 새로 빌드 + twine check  → 옛 버전 파일이 같이 올라가는 것 방지
   6. 빌드한 wheel을 임시 폴더에 따로 설치해 불러오기·버전·명령줄 확인
   7. git 태그 v<버전>                        → 어떤 커밋을 배포했는지 기록
@@ -98,6 +98,9 @@ def check(upload: bool, test: bool):
         fail(f"CHANGELOG.md에 [{v}] 항목이 없음 → python scripts/release.py bump ... 로 만들거나 직접 추가")
     if "(바뀐 점을 적기)" in CHANGELOG.read_text(encoding="utf-8").split(f"## [{v}]")[1].split("\n## ")[0]:
         fail(f"CHANGELOG.md의 [{v}] 항목이 아직 틀 그대로임 → 바뀐 점을 적기")
+    header = next(line for line in CHANGELOG.read_text(encoding="utf-8").splitlines() if line.startswith(f"## [{v}]"))
+    if not re.search(r"\d{4}-\d{2}-\d{2}", header):                 # "미배포"인 채로 올리지 않게
+        fail(f"CHANGELOG.md의 [{v}] 머리에 날짜가 없음 ({header!r}) → '## [{v}] - {datetime.date.today()}'처럼")
     ok(f"CHANGELOG에 [{v}] 있음")
 
     released = pypi_versions(test)
@@ -108,7 +111,7 @@ def check(upload: bool, test: bool):
         fail(f"{v}가 이미 올린 최신 버전({max(released, key=vtuple)})보다 크지 않음")
     ok(f"{'TestPyPI' if test else 'PyPI'}에 아직 없는 새 버전 (올린 버전: {', '.join(sorted(released, key=vtuple)) or '없음'})")
 
-    if run([PY, "-m", "pytest", "-q"]).returncode:
+    if run([PY, "-m", "pytest", "-q", "-W", "error::UserWarning"]).returncode:     # 경고도 실패로 (개발 때와 같은 기준)
         fail("테스트 실패")
     ok("테스트 통과")
 
