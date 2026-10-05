@@ -938,17 +938,24 @@ class ConnectomeLayer(Tissue):
     def _relay_groups(self, targets) -> list:
         """입력 → targets 흥분성 경로 위의 중간 그룹 (입력 그룹·그룹 밖 뉴런 "?" 제외), 입력에서 가까운 순.
         억제를 내보내는 그룹(버섯체 APL 등)은 키우면 오히려 신호를 막으므로 들어가지 않음"""
-        if not self.in_names:
-            return []
         gid = {g: i for i, g in enumerate(self._group_names)}
+        starts = [gid[g] for g in self.in_names]
+        act = genetics_effects(self).get("act_idx")                      # activate로만 자극하는 층: 그 뉴런의 그룹에서 출발
+        if act is not None:
+            grp = np.full(self.circuit.N, len(self._group_names) - 1, np.int64)
+            for g, idx in self.circuit.groups.items():
+                grp[idx] = gid[g]
+            starts += sorted(set(grp[B.numpy(act)].tolist()) - {len(self._group_names) - 1})
+        if not starts:
+            return []
         fwd_g = self._group_graph(excitatory=True)
         rev_g = {}
         for a, bs in fwd_g.items():
             for b in bs:
                 rev_g.setdefault(b, set()).add(a)
-        fwd = self._bfs(fwd_g, [gid[g] for g in self.in_names])
+        fwd = self._bfs(fwd_g, starts)
         bwd = self._bfs(rev_g, [gid[g] for g in targets])
-        skip = {gid[g] for g in self.in_names} | {gid[g] for g in targets} | {len(self._group_names) - 1}
+        skip = set(starts) | {gid[g] for g in targets} | {len(self._group_names) - 1}
         mid = sorted((i for i in fwd if i in bwd and i not in skip), key=lambda i: (fwd[i], i))
         return [self._group_names[i] for i in mid]
 
@@ -1019,8 +1026,10 @@ class ConnectomeLayer(Tissue):
         c = self.circuit
         A = sps.csr_matrix((np.ones(c.n_edges, np.int8), (c.pre, c.post)), shape=(c.N, c.N))
         hop = np.full(c.N, np.inf)
-        frontier = np.unique(B.numpy(self.in_idx))
+        act = genetics_effects(self).get("act_idx")                       # activate로 자극하는 뉴런도 신호의 출발점
+        frontier = np.unique(np.concatenate([B.numpy(self.in_idx)] + ([B.numpy(act)] if act is not None else [])))
         hop[frontier] = 0
+        frontier_all = frontier.copy()
         self._silent_checked = True                                     # 진단 중 - 경고 대신 아래 표로 알림
         d = 0
         while len(frontier):
@@ -1037,7 +1046,9 @@ class ConnectomeLayer(Tissue):
             if not len(idx):
                 continue
             h = hop[idx]
-            role = "입력" if g in self.in_names else "출력" if g in self.out_names else "중계" if g in relay else ""
+            src = np.isin(idx, frontier_all) if len(frontier_all) else np.zeros(len(idx), bool)
+            role = ("입력" if g in self.in_names else "출력" if g in self.out_names else "중계" if g in relay else
+                    "자극" if src.all() else "")
             rows.append(dict(group=g, role=role, n=len(idx), hops=float(h.min()),
                              unreachable=float((~np.isfinite(h)).mean()), rate_hz=float(r[:, idx].mean()),
                              active=float((r[:, idx].mean(0) > 0).mean())))
@@ -1084,15 +1095,16 @@ class Reach:
 
     @property
     def break_at(self):
-        """입력에서 가장 가까운 꺼진 중계·출력 그룹 (신호가 처음 끊기는 곳), 없으면 None"""
+        """입력에서 가장 가까운 꺼진 중계·출력 그룹 (신호가 처음 끊기는 곳), 없으면 None.
+        경로가 아예 없는 출력(홉 수 무한)도 꺼진 것 - 예전에는 빼서 "출력까지 신호가 감"으로 잘못 판정했음"""
         t = self.table
-        dead = t[t.role.isin(["중계", "출력"]) & (t.rate_hz <= 0) & np.isfinite(t.hops)]
+        dead = t[t.role.isin(["중계", "출력"]) & (t.rate_hz <= 0)]
         return None if dead.empty else str(dead.iloc[0].group)
 
     def __str__(self):
         t = self.table
         show = t[t.role != ""] if (t.role != "").any() else t
-        lines = ["신호 경로 (입력에서의 최소 홉 수 순)",
+        lines = ["신호 경로 (입력·자극 뉴런에서의 최소 홉 수 순)",
                  show.to_string(index=False, float_format=lambda v: f"{v:.3g}"), ""]
         far = t[(t.role == "출력") & (t.unreachable > 0)]
         for _, r in far.iterrows():
@@ -1103,6 +1115,9 @@ class Reach:
         elif self.break_at is None:
             lines.append(f"  → 출력까지 가지만 약함 ({', '.join(f'{r.group} {r.rate_hz:.2g} Hz, 뉴런 {1 - r.active:.0%}가 0' for _, r in weak.iterrows())}). "
                          "출력이 약하면 기울기도 작아 학습이 느림: layer.calibrate(rates)")
+        elif not np.isfinite(float(t.hops[t.group == self.break_at].iloc[0])):
+            lines.append(f"  → {self.break_at}에 신호가 닿지 않음: 입력·자극 뉴런에서 가는 연결 경로가 없음 "
+                         "(배율로는 고칠 수 없음 - 입력·출력 그룹이나 자극할 집단을 확인)")
         else:
             lines.append(f"  → 신호가 {self.break_at}에서 끊김 (앞 그룹은 발화하는데 여기는 0 Hz). "
                          "layer.calibrate(rates)가 경로 위 중계 그룹까지 함께 맞춤")

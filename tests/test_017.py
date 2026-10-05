@@ -372,3 +372,28 @@ def test_old_pathway_file_without_gains_warns():
     old = {k: v for k, v in p.state().items() if "gain_" not in k}                  # 옛 파일처럼 배율 항목 없음
     with pytest.warns(UserWarning, match="연결 배율"):
         p.load_state(old)
+
+
+# ─────────────── 5회 검토 - 4회차 (상호작용·신호 소멸) ───────────────
+def test_reach_verdict_counts_unreachable_outputs():
+    """경로가 없어 늘 0인 출력을 빼고 판정해 "출력까지 신호가 감"이라고 하던 것"""
+    import warnings
+    c = fd.Circuit.from_edges([0, 1], [1, 2], [20.0, 20.0], groups={"IN": [0], "H": [1], "O": [2], "Z": [3]}, n=4)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        layer = fd.Connectome(c, "IN", "Z", device="cpu")
+    rep = layer.reach(np.full((2, 1), 150, np.float32))
+    assert rep.break_at == "Z" and "경로가 없음" in str(rep)
+
+
+def test_activation_only_layer_reach_and_calibrate():
+    """입력 그룹 없이 activate로만 자극하는 층: reach는 자극 뉴런에서 출발, calibrate는 그 그룹에서 중계를 찾음"""
+    G = fd.genetics
+    c = fd.graphs.layered([20, 100, 100, 10], 0.1, seed=0)
+    layer = fd.Connectome(c, None, "out", t_ms=60, device="cpu")
+    with G.activate(layer, G.driver(c, group="in"), hz=100):
+        assert layer._relay_groups(["out"]) == ["h1", "h2"]
+        assert layer.reach(None).break_at is not None                        # 보정 전: 끊김
+        layer.calibrate(None, {"out": 10})
+        rep = layer.reach(None)
+    assert rep.break_at is None and "자극" in set(rep.table.role)
