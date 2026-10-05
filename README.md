@@ -83,7 +83,7 @@ hist = fd.train(model, Xtr, ytr, val=(Xte, yte), epochs=12)         # 평가 정
 ```python
 R = fd.Glomeruli(mb)(Xtr[::3])               # 대표 입력 (Hz)
 layer = fd.Connectome(mb, "PN", "MBON")
-print(layer.reach(R))                      # 그룹마다 입력에서의 홉 수·발화율, 신호가 끊기는 곳
+print(layer.reach(R))                      # 그룹마다 입력(·activate 자극)에서의 홉 수·발화율, 신호가 끊기는 곳
 layer.calibrate(R, {"MBON": 20})           # 출력만 목표로 줘도 경로 위 중간 그룹(KC)까지 함께 깨움 (억제 뉴런 APL은 제외)
 ```
 

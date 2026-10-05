@@ -1019,7 +1019,8 @@ class ConnectomeLayer(Tissue):
                           "출력이 0이면 역전파 기울기도 거의 0이라 학습이 안 됨", stacklevel=3)
 
     def reach(self, rates, seed: int = 0):
-        """신호가 어디까지 가는지: 그룹마다 입력에서의 최소 홉 수와 실제 발화율 (경로 순). 출력이 조용할 때 원인 찾기.
+        """신호가 어디까지 가는지: 그룹마다 입력(과 activate로 자극하는 뉴런)에서의 최소 홉 수와 실제 발화율 (경로 순).
+        출력이 조용할 때 원인 찾기 - 경로가 없어 늘 0인 것과 경로는 있는데 약해서 끊긴 것을 구분.
         반환 Reach (print하면 표와 판정, .table은 pandas)"""
         import pandas as pd
         import scipy.sparse as sps

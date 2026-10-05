@@ -123,7 +123,11 @@ def main(argv=None):
         say(f"flydnet {__version__}")
         data_status()
     elif cmd == "download":
-        download(argv or ("flywire", "door"))
+        try:
+            download(argv or ("flywire", "door"))
+        except (ValueError, IOError) as e:                           # 모르는 묶음·받기 실패: 트레이스백 대신 안내
+            say(str(e))
+            return 1
     elif cmd == "verify":
         unknown = [k for k in argv if k not in SOURCES]
         if unknown:
