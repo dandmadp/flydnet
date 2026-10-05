@@ -318,7 +318,13 @@ class ConnectomeLayer(Tissue):
         self.config["gains"] = dict(self.gains)
 
     def _loaded(self):
-        """불러온 gain_code·gain_value로 배율을 다시 세움"""
+        """불러온 gain_code·gain_value로 배율을 다시 세움. 0.1.16 이전 파일(Pathway 등에 넣어 저장)은 배율이 저장되지 않았으므로,
+        층에도 배율이 없으면 알림 (보정했던 모델이면 조용히 보정 전 세기로 돌기 때문)"""
+        if "gain_code" in getattr(self, "_load_missing", ()) and not self.gains and not getattr(self, "_gains_in_config", False):
+            import warnings
+            warnings.warn("불러온 파일에 연결 배율(gains)이 없음 - 0.1.16 이전에 Pathway 등에 넣어 저장한 파일은 calibrate·gains가 "
+                          "저장되지 않았음. 보정했던 모델이면 같은 gains로 층을 만들거나 layer.calibrate(...)를 다시 할 것",
+                          stacklevel=4)
         codes, vals = B.numpy(self.gain_code), B.numpy(self.gain_value)
         self.gains = {self._edge_names([c])[0]: float(v) for c, v in zip(codes, vals, strict=True)}
         self._build()
@@ -789,6 +795,7 @@ class ConnectomeLayer(Tissue):
         cfg.setdefault("timing", "legacy")                                 # 0.1.15 이전 파일은 그때 방식으로
         cfg.setdefault("surrogate_damp", 1.0)
         layer = cls(Circuit.from_arrays(d, "circuit."), device=device, **cfg)
+        layer._gains_in_config = True                                      # 이 형식은 배율을 config에 늘 담았음 (빠진 게 아님)
         layer.load_state({k[6:]: v for k, v in d.items() if k.startswith("state.")})
         layer._build()
         return layer

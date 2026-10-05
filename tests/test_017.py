@@ -350,3 +350,25 @@ def test_bridge_optimizer_still_trains_after_load_state(tmp_path):
     br(torch.rand(4, 6)).pow(2).sum().backward()
     opt.step()
     assert not np.allclose(layer.log_scale.numpy(), before)              # 옵티마이저가 바꾼 값이 엔진에 반영
+
+
+def test_load_state_on_gpu(tmp_path):
+    """GPU 층의 load_state (제자리 덮어쓰기에서 CuPy 배열에 없는 flags.writeable을 읽어 실패했음)"""
+    _gpu_or_skip()
+    a = fd.Pathway(fd.Projection(6, 3, device="gpu", seed=0))
+    b = fd.Pathway(fd.Projection(6, 3, device="gpu", seed=9))
+    b.load(a.save(tmp_path / "p"))
+    np.testing.assert_array_equal(B.numpy(a[0].weight.data), B.numpy(b[0].weight.data))
+    c_ = fd.Pathway(fd.Projection(6, 3, device="cpu", seed=9))
+    c_.load(a.save(tmp_path / "q"))                                         # GPU에서 저장 → CPU로
+    np.testing.assert_array_equal(B.numpy(a[0].weight.data), c_[0].weight.data)
+
+
+def test_old_pathway_file_without_gains_warns():
+    """0.1.16 이전 Pathway 파일에는 보정 배율이 저장되지 않음 - 조용히 보정 전 세기로 돌지 않게 알림 (ConnectomeLayer.save
+    파일은 config에 배율이 있으므로 알리지 않음)"""
+    c = _rec(feedback_edges=True, strong=True)
+    p = fd.Pathway(fd.Connectome(c, "IN", "O", t_ms=40, device="cpu", trainable=True))
+    old = {k: v for k, v in p.state().items() if "gain_" not in k}                  # 옛 파일처럼 배율 항목 없음
+    with pytest.warns(UserWarning, match="연결 배율"):
+        p.load_state(old)

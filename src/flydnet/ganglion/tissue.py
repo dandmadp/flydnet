@@ -176,13 +176,18 @@ class Tissue:
         for n, arr in state.items():
             if n in syn:
                 new = B.to(np.asarray(arr, dtype=syn[n].data.dtype), dev)
-                if B.device_of(syn[n].data) == dev and syn[n].data.flags.writeable:
+                if B.device_of(syn[n].data) == dev and getattr(syn[n].data.flags, "writeable", True):   # CuPy는 이 속성이 없음
                     syn[n].data[...] = new                         # 제자리에: 같은 메모리를 쓰는 torch Parameter·옵티마이저가
                 else:                                               # 계속 이 값을 봄 (바꿔 끼우면 학습이 반영되지 않았음)
                     syn[n].data = new
         walk(self, "")
-        for t in self.tissues():
+
+        def hooks(t, prefix):                                   # 조직마다: 파일에 없던 선택 항목을 알려 주고 _loaded
+            object.__setattr__(t, "_load_missing", {n for n in t._optional if prefix + n not in state})
             t._loaded()
+            for n, c in t._tissues.items():
+                hooks(c, prefix + n + ".")
+        hooks(self, "")
         return self
 
     def save(self, path):
