@@ -78,7 +78,8 @@ def test_bridge_resyncs_after_engine_replaces_arrays(tmp_path):
     _, layer = _layer()
     m = fd.torch.bridge(layer, seed=0)
     layer.log_scale.data = layer.log_scale.data + 1.0                       # 자체 엔진에서 배열을 바꿔 끼움
-    m(torch.rand(2, 6))
+    with pytest.warns(UserWarning, match="옵티마이저를"):                   # 옛 옵티마이저는 쓰이지 않는 값을 갱신
+        m(torch.rand(2, 6))
     np.testing.assert_array_equal(m.log_scale.detach().numpy(), layer.log_scale.numpy())
 
 

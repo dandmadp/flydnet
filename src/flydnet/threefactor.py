@@ -47,16 +47,29 @@ class ThreeFactor:
         N, dev = layer.circuit.N, layer.device
         self.out_idx = B.numpy(layer.out_idx)
         is_out = np.zeros(N, bool); is_out[self.out_idx] = True
-        self._hidden = B.to(~is_out, dev)
+        self._hidden = ~is_out                                               # CPU 원본 - 쓸 때 층의 지금 장치로 (_on)
         if feedback == "random":
             F = np.random.default_rng(seed).standard_normal((N, len(self.out_idx))).astype(np.float32)
             F[is_out] = 0
-            self._F = B.to(F, dev)
+            self._F = F
         elif feedback == "connectome":
             c = layer.circuit
             A = B.sparse("cpu").csr_matrix((c.weight.astype(np.float32), (c.post, c.pre)), shape=(N, N))
-            self._A = B.sparse(dev).csr_matrix(A) if dev == "gpu" else A           # 받는 뉴런 x 주는 뉴런
+            self._A = A                                                      # 받는 뉴런 x 주는 뉴런 (CPU)
         self._pending = None
+
+    def _on(self, name):
+        """CPU에 둔 피드백 배열을 층의 지금 장치로 (장치마다 한 번). 예전에는 만들 때 장치에 고정해서, 그 뒤
+        layer.to(...)로 옮기면 assign이 장치가 달라 실패했음"""
+        dev = self.layer.device
+        cache = self.__dict__.setdefault("_dev_cache", {})
+        key = (name, dev)
+        if key not in cache:
+            a = getattr(self, name)
+            if dev == "gpu":
+                a = B.sparse("gpu").csr_matrix(a) if hasattr(a, "tocsr") else B.to(a, "gpu")
+            cache[key] = a
+        return cache[key]
 
     def __call__(self, rates=None, seed: int | None = None, batch: int = 1):
         """순전파 (역전파 경로 없이). 돌려주는 신호는 plastic 잎: 리드아웃 손실의 역행성 신호가 여기 쌓임"""
@@ -78,14 +91,14 @@ class ThreeFactor:
         if self.feedback == "none":
             return L
         if self.feedback == "random":
-            h = self._F @ d
+            h = self._on("_F") @ d
         else:                                                                # 실제 연결을 따라 hops 단계
             src = xp.zeros((N, Bn), dtype=xp.float32); src[self.layer.out_idx] = d
             h, cur = xp.zeros_like(src), src
             for _ in range(self.hops):
-                cur = self._A @ cur
+                cur = self._on("_A") @ cur
                 h += cur
-        h = h * self._hidden[:, None]
+        h = h * self._on("_hidden")[:, None]
         rms_h = float(xp.sqrt((h ** 2).mean())) if h.size else 0.0
         if rms_h > 0:
             h *= float(xp.sqrt((d ** 2).mean())) / rms_h

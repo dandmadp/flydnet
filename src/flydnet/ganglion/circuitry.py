@@ -312,6 +312,7 @@ class ConnectomeLayer(Tissue):
             g[self._edge_code == c] *= v
             codes.append(c)
         self.w_base = self.w_syn * B.to(g, self.device) * self.p["w_syn"]
+        self._w_syn_built = self.p["w_syn"]
         self.buffer("gain_code", np.array(codes, np.int64), optional=True)
         self.buffer("gain_value", np.array(list(self.gains.values()), np.float64), optional=True)
         self.config["gains"] = dict(self.gains)
@@ -333,6 +334,8 @@ class ConnectomeLayer(Tissue):
 
     def values(self) -> Signal:
         """현재 연결별 세기 (mV/스파이크, 부호 포함), 연결 순서"""
+        if self.p["w_syn"] != self._w_syn_built:                        # layer.p["w_syn"]을 바꿨으면 연결 세기에도 반영
+            self._build()                                                # (예전: 입력 자극에만 반영되고 연결은 그대로)
         base = Signal(self.w_base)
         if not self.trainable:
             return base
@@ -758,13 +761,22 @@ class ConnectomeLayer(Tissue):
         from .. import __version__
         if not isinstance(self.neuron, str) and self.config.get("neuron") is None:
             raise ValueError(f"{type(self.neuron).__name__}이 등록되지 않아 저장할 수 없음 - @fd.neurons.register")
-        cfg = dict(self.config, gains=dict(self.gains))
+        cfg = dict(self.config, gains=dict(self.gains), **self._current_config())
         arrays = {"format": np.array(self.FORMAT), "version": np.array(__version__),
                   "config": np.array(json.dumps(cfg, ensure_ascii=False))}
         arrays.update(self.circuit.to_arrays("circuit."))
         arrays.update({"state." + k: v for k, v in self.state().items()})
         from .._archive import write
         return write(path, "ConnectomeLayer", arrays)
+
+    def _current_config(self) -> dict:
+        """만든 뒤 바꿀 수 있는 속성의 지금 값 (layer.t_ms = 80, layer.p["w_syn"] = 0.5 등). 예전에는 save가 만들 때의
+        config를 그대로 써서, 바꾼 값이 빠진 채 저장되고 불러온 층이 조용히 다르게 동작했음"""
+        params = {k: v for k, v in self.p.items() if k != "dt" and DEFAULT_PARAMS.get(k) != v}
+        return dict(t_ms=self.t_ms, slope=self.slope, checkpoint_every=self.checkpoint_every,
+                    count_from_ms=self.count_from_ms, surrogate_damp=self.surrogate_damp, truncate=self.truncate,
+                    noise=self.noise, input_mode=self.input_mode, v_init=self.v_init, timing=self.timing,
+                    params=params, dt=self.p["dt"])
 
     @classmethod
     def load(cls, path, device: str | None = None) -> "ConnectomeLayer":

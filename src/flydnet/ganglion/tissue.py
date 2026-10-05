@@ -175,7 +175,11 @@ class Tissue:
             raise ValueError("; ".join(bad))
         for n, arr in state.items():
             if n in syn:
-                syn[n].data = B.to(np.asarray(arr, dtype=syn[n].data.dtype), dev)
+                new = B.to(np.asarray(arr, dtype=syn[n].data.dtype), dev)
+                if B.device_of(syn[n].data) == dev and syn[n].data.flags.writeable:
+                    syn[n].data[...] = new                         # 제자리에: 같은 메모리를 쓰는 torch Parameter·옵티마이저가
+                else:                                               # 계속 이 값을 봄 (바꿔 끼우면 학습이 반영되지 않았음)
+                    syn[n].data = new
         walk(self, "")
         for t in self.tissues():
             t._loaded()

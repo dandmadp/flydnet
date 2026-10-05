@@ -297,3 +297,56 @@ def test_option_combinations_fused_equals_elementwise():
         _sys.argv = old
         m.elementwise(False)
     assert m.bad == 0
+
+
+# ─────────────── 5회 검토 - 2회차 (상태·생명주기) ───────────────
+def test_save_keeps_attributes_changed_after_construction(tmp_path):
+    """layer.t_ms = 80 등 만든 뒤 바꾼 값이 저장에서 빠지고 불러온 층이 다르게 동작하던 것"""
+    c = _rec(strong=True)
+    X = np.full((2, 6), 150, np.float32)
+    layer = fd.Connectome(c, "IN", "O", t_ms=40, device="cpu")
+    layer.t_ms, layer.noise, layer.slope, layer.count_from_ms = 80, 0.5, 5.0, 10.0
+    layer.p["w_syn"] = 0.5
+    with fd.quiescent():
+        a = layer(X, seed=0).numpy()
+    m = fd.Connectome.load(layer.save(tmp_path / "l"))
+    assert (m.t_ms, m.noise, m.slope, m.count_from_ms, m.p["w_syn"]) == (80, 0.5, 5.0, 10.0, 0.5)
+    with fd.quiescent():
+        np.testing.assert_array_equal(m(X, seed=0).numpy(), a)
+
+
+def test_changing_w_syn_after_construction_applies_to_connections():
+    """p["w_syn"]을 바꾸면 입력 자극에만 반영되고 연결 세기는 그대로이던 것 (같은 값인데 55 Hz 대 5 Hz)"""
+    c = _rec(strong=True)
+    X = np.full((2, 6), 150, np.float32)
+    a = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu", params={"w_syn": 0.6})
+    b = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu")
+    b.p["w_syn"] = 0.6
+    with fd.quiescent():
+        np.testing.assert_array_equal(a(X, seed=0).numpy(), b(X, seed=0).numpy())
+
+
+def test_threefactor_after_moving_layer_to_gpu():
+    _gpu_or_skip()
+    c = _rec(feedback_edges=True, strong=True)
+    X = np.random.default_rng(0).uniform(50, 200, (3, 6)).astype(np.float32)
+    for fb in ("random", "connectome"):
+        layer = fd.Connectome(c, "IN", "O", t_ms=40, device="cpu", trainable=True)
+        tf = fd.ThreeFactor(layer, feedback=fb, seed=0)
+        layer.to("gpu")
+        o = tf(X, seed=1)
+        o.sum().retrograde()
+        assert np.isfinite(B.numpy(tf.assign(o))).all()
+
+
+def test_bridge_optimizer_still_trains_after_load_state(tmp_path):
+    torch = pytest.importorskip("torch")
+    from test_genetics import _chain
+    layer = fd.ConnectomeLayer(_chain(), "A", ("O",), t_ms=30, trainable=True, device="cpu", neuron="graded")
+    br = fd.torch.bridge(layer, seed=0)
+    opt = torch.optim.SGD(br.parameters(), lr=0.5)
+    layer.load_state(fd.ConnectomeLayer.load(layer.save(tmp_path / "s"), device="cpu").state())
+    before = layer.log_scale.numpy().copy()
+    br(torch.rand(4, 6)).pow(2).sum().backward()
+    opt.step()
+    assert not np.allclose(layer.log_scale.numpy(), before)              # 옵티마이저가 바꾼 값이 엔진에 반영
