@@ -15,3 +15,6 @@ src/flydnet/ganglion/_csr*.dll
 src/flydnet/ganglion/_csr*.so
 src/flydnet/ganglion/_csr*.dylib
 src/flydnet/ganglion/_csr*.pyd
+# 공개하지 않는 문서 (로컬에만)
+CLAUDE.md
+REPORT.md
