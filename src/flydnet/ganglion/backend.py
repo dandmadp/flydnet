@@ -3,23 +3,36 @@ from __future__ import annotations
 
 import contextlib
 
+import sys
+
 import numpy as np
 
-try:
-    import cupy as _cp
-    import cupyx as _cpx
-    import cupyx.scipy.sparse as _cps
-    _GPU_ERROR = None
-    try:
-        _cp.cuda.runtime.getDeviceCount()
-    except Exception as e:                                   # CuPy는 있지만 GPU·드라이버가 없음
-        _cp = None
-        _GPU_ERROR = e
-except ImportError as e:
-    _cp = None
-    _GPU_ERROR = e
+# CuPy·scipy는 처음 쓸 때 불러옴 (import flydnet이 scipy·cupy 없이도 되고, CuPy의 느린 초기화를 GPU를 쓸 때만)
+_GPU = []                                                    # [cupy 모듈 또는 None, 실패 이유]
 
-import scipy.sparse as _sps
+
+def _gpu_module():
+    """CuPy (GPU가 있을 때) 또는 None. 처음 한 번만 불러 봄"""
+    if not _GPU:
+        try:
+            import cupy as cp
+            try:
+                cp.cuda.runtime.getDeviceCount()
+                _GPU[:] = [cp, None]
+            except Exception as e:                           # CuPy는 있지만 GPU·드라이버가 없음
+                _GPU[:] = [None, e]
+        except ImportError as e:
+            _GPU[:] = [None, e]
+    return _GPU[0]
+
+
+def __getattr__(name):                                       # 예전 이름 B._cp (모듈 속성) - 지연 로딩 뒤에도 그대로
+    if name == "_cp":
+        return _gpu_module()
+    if name == "_GPU_ERROR":
+        _gpu_module()
+        return _GPU[1]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 _HEALTH = []
@@ -27,6 +40,7 @@ _HEALTH = []
 
 def gpu_available() -> bool:
     """GPU를 실제로 쓸 수 있는지 (처음 한 번 작은 계산으로 확인 - CuPy는 있어도 CUDA 런타임·NVRTC가 없으면 계산에서 실패)"""
+    _cp = _gpu_module()
     if _cp is None:
         return False
     if not _HEALTH:
@@ -54,23 +68,31 @@ def check(device: str) -> str:
     if device not in ("cpu", "gpu"):
         raise ValueError(f"장치는 'cpu' 또는 'gpu': {device}")
     if device == "gpu" and not gpu_available():
-        why = _GPU_ERROR if _cp is None else "GPU 계산 시험 실패 (위 경고 참고)"
+        why = _GPU[1] if _gpu_module() is None else "GPU 계산 시험 실패 (위 경고 참고)"
         raise RuntimeError(f"GPU를 쓸 수 없음 - pip install \"flydnet[gpu-cuda12]\" 또는 [gpu-cuda13] ({why})")
     return device
 
 
 def xp(device: str):
     """장치의 배열 모듈 (numpy 또는 cupy)"""
-    return _cp if check(device) == "gpu" else np
+    return _gpu_module() if check(device) == "gpu" else np
 
 
 def sparse(device: str):
-    """장치의 희소 행렬 모듈 (scipy.sparse 또는 cupyx.scipy.sparse)"""
-    return _cps if check(device) == "gpu" else _sps
+    """장치의 희소 행렬 모듈 (scipy.sparse 또는 cupyx.scipy.sparse) - 처음 쓸 때 불러옴"""
+    if check(device) == "gpu":
+        import cupyx.scipy.sparse as cps
+        return cps
+    try:
+        import scipy.sparse as sps
+    except ImportError as e:
+        raise ImportError("scipy가 필요한 기능 - pip install scipy") from e
+    return sps
 
 
 def device_of(a) -> str:
-    return "gpu" if (_cp is not None and isinstance(a, _cp.ndarray)) else "cpu"
+    cp = sys.modules.get("cupy")                            # CuPy를 아무도 불러오지 않았으면 CuPy 배열도 있을 수 없음
+    return "gpu" if (cp is not None and isinstance(a, cp.ndarray)) else "cpu"
 
 
 def to(a, device: str):
@@ -78,17 +100,18 @@ def to(a, device: str):
     check(device)
     if device_of(a) == device:
         return a
+    _cp = _gpu_module()
     return _cp.asarray(a) if device == "gpu" else _cp.asnumpy(a)
 
 
 def numpy(a) -> np.ndarray:
-    return _cp.asnumpy(a) if device_of(a) == "gpu" else np.asarray(a)
+    return sys.modules["cupy"].asnumpy(a) if device_of(a) == "gpu" else np.asarray(a)
 
 
 def scatter_add(target, idx, values):
     """target[idx] += values (같은 idx가 여러 번이면 모두 더함)"""
     if device_of(target) == "gpu":
-        _cp.add.at(target, idx, values)
+        sys.modules["cupy"].add.at(target, idx, values)
     else:
         np.add.at(target, idx, values)
     return target
@@ -117,17 +140,17 @@ def limit_gpu_memory(fraction: float = 0.75):
     """GPU 메모리 상한 (전체의 비율). 넘치면 바로 오류 → Windows 가상 메모리(C 드라이브)로 흘러가지 않음"""
     if not gpu_available():
         return
-    _cp.get_default_memory_pool().set_limit(fraction=fraction)
+    _gpu_module().get_default_memory_pool().set_limit(fraction=fraction)
 
 
 def gpu_memory_peak_reset():
     if gpu_available():
-        _cp.get_default_memory_pool().free_all_blocks()
+        _gpu_module().get_default_memory_pool().free_all_blocks()
 
 
 def gpu_memory_used() -> int:
     """CuPy 메모리 풀이 지금 쓰고 있는 바이트"""
-    return int(_cp.get_default_memory_pool().total_bytes()) if gpu_available() else 0
+    return int(_gpu_module().get_default_memory_pool().total_bytes()) if gpu_available() else 0
 
 
 class GPUMemoryError(MemoryError):
@@ -142,6 +165,7 @@ def oom_hint(what: str):
     except GPUMemoryError:
         raise
     except Exception as e:
+        _cp = sys.modules.get("cupy")
         if _cp is None or not isinstance(e, _cp.cuda.memory.OutOfMemoryError):
             raise
         pool = _cp.get_default_memory_pool()

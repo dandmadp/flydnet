@@ -14,7 +14,6 @@ from pathlib import Path
 
 from . import _check as _C
 import numpy as np
-import scipy.sparse as sps
 
 from .circuit import Circuit
 
@@ -75,6 +74,7 @@ def column_map(circuit: Circuit, anchor: str = "Mi1", smooth: int = 3, columnar=
 
     m = is_col[circuit.pre] & is_col[circuit.post]
     i, j, w = circuit.pre[m], circuit.post[m], np.abs(circuit.weight[m]).astype(np.float64)
+    import scipy.sparse as sps
     A = sps.coo_matrix((np.r_[w, w], (np.r_[i, j], np.r_[j, i])), shape=(circuit.N, circuit.N)).tocsr()
     deg = np.maximum(np.bincount(np.r_[i, j], weights=np.r_[w, w], minlength=circuit.N), 1e-9)
     for _ in range(smooth):

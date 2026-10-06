@@ -44,6 +44,15 @@ def _json_value(v):
     return str(v)
 
 
+def _scipy_sparse():
+    """scipy.sparse (from_scipy·to_scipy에서만 - 없으면 설치 안내)"""
+    try:
+        import scipy.sparse as sps
+    except ImportError as e:
+        raise ImportError("scipy가 필요한 기능 - pip install scipy") from e
+    return sps
+
+
 def require_disjoint_groups(circuit, who: str):
     """그룹끼리 뉴런이 겹치면 오류 - 층·Neuropil이 그룹마다 뉴런을 한 자리에 두는 계산 (입력 자리, 연결 종류 번호)이
     겹친 뉴런에서 조용히 틀어지므로 (예전: 겹친 입력 뉴런이 두 번 들어가 한쪽 값만 쓰이거나 기울기가 두 번)"""
@@ -245,7 +254,7 @@ class Circuit:
     def from_scipy(cls, matrix, orientation: str = "pre_post", **kw) -> "Circuit":
         """연결 행렬 (scipy 희소 또는 numpy). orientation="pre_post"면 A[i, j] = i → j (networkx와 같음),
         "post_pre"면 A[j, i] = i → j. 0이 아닌 칸이 연결, 값이 세기"""
-        import scipy.sparse as sps
+        sps = _scipy_sparse()
         if orientation not in ("pre_post", "post_pre"):
             raise ValueError("orientation은 'pre_post' 또는 'post_pre'")
         A = sps.coo_matrix(matrix)
@@ -286,13 +295,16 @@ class Circuit:
 
     def to_scipy(self, orientation: str = "pre_post"):
         """연결 행렬 (scipy CSR). 같은 쌍의 연결은 더함"""
-        import scipy.sparse as sps
+        sps = _scipy_sparse()
         r, c = (self.pre, self.post) if orientation == "pre_post" else (self.post, self.pre)
         return sps.csr_matrix((self.weight, (r, c)), shape=(self.N, self.N))
 
     def to_networkx(self):
         """networkx.DiGraph (노드 = 회로 번호, 속성 group·meta 열, 연결 속성 weight)"""
-        import networkx as nx
+        try:
+            import networkx as nx
+        except ImportError as e:
+            raise ImportError('networkx가 필요한 기능 - pip install "flydnet[graph]" (또는 pip install networkx)') from e
         G = nx.DiGraph()
         g = self.group_of()
         for i in range(self.N):
