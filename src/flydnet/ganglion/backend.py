@@ -1,4 +1,4 @@
-"""계산 장치: CPU = NumPy/SciPy, GPU = CuPy. 같은 코드가 양쪽에서 돌도록 배열 모듈(xp)을 고름"""
+"""계산 장치: CPU = NumPy (희소 행렬은 자체 CSR - csr.py), GPU = CuPy. 같은 코드가 양쪽에서 돌도록 배열 모듈(xp)을 고름"""
 from __future__ import annotations
 
 import contextlib
@@ -79,7 +79,8 @@ def xp(device: str):
 
 
 def sparse(device: str):
-    """장치의 희소 행렬 모듈 (scipy.sparse 또는 cupyx.scipy.sparse) - 처음 쓸 때 불러옴"""
+    """장치의 희소 행렬 모듈 (scipy.sparse 또는 cupyx.scipy.sparse) - 처음 쓸 때 불러옴. 엔진의 CPU 계산은 쓰지 않음
+    (자체 CSR, csr.py) - 예전 코드 호환용"""
     if check(device) == "gpu":
         import cupyx.scipy.sparse as cps
         return cps

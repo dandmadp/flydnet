@@ -225,7 +225,8 @@ def _segments(indptr):
 
 def spmm(M, x):
     """희소 CSR (n_rows, n) @ 밀집 (n, nb). GPU·float32면 전용 커널 (결정론적 - 같은 입력이면 늘 같은 비트.
-    CuPy 기본(cuSPARSE)은 실행마다 반올림이 달라 스파이크가 달라질 수 있음). 긴 행은 조각내 부하 균형"""
+    CuPy 기본(cuSPARSE)은 실행마다 반올림이 달라 스파이크가 달라질 수 있음). 긴 행은 조각내 부하 균형.
+    CPU는 M(자체 CSR, csr.py)의 곱 - 직접 작성한 C 커널 / scipy / numpy 중 쓸 수 있는 것"""
     if (B.device_of(x) != "gpu" or x.ndim != 2 or not _gpu_ok(x, M.data) or M.indices.dtype.itemsize != 4
             or _cuda() is None):
         return M @ x

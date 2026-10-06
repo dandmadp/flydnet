@@ -38,7 +38,10 @@ class Wiring(NamedTuple):
                       self.n_post, self.n_pre)
 
     def matrix(self, values):
-        """values 배열로 희소 행렬 (n_post, n_pre)"""
+        """values 배열로 희소 행렬 (n_post, n_pre). CPU = 자체 CSR (csr.py, scipy 없이), GPU = cupyx CSR"""
+        if self.device == "cpu":
+            from .csr import CSR
+            return CSR(values, self.pre, self.indptr, self.shape)
         sp = B.sparse(self.device)
         return sp.csr_matrix((values, self.pre, self.indptr), shape=self.shape)
 

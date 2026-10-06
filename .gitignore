@@ -9,3 +9,8 @@ dist/
 validation/shiu2024/model.py
 validation/shiu2024/brian2_*_*.json
 .verify/
+# CPU 희소 커널 빌드 결과 (scripts/build_csr.py, setup.py)
+src/flydnet/ganglion/_csr*.dll
+src/flydnet/ganglion/_csr*.so
+src/flydnet/ganglion/_csr*.dylib
+src/flydnet/ganglion/_csr*.pyd

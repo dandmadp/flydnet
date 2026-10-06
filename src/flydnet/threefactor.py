@@ -58,7 +58,8 @@ class ThreeFactor:
             self._F = F
         elif feedback == "connectome":
             c = layer.circuit
-            A = B.sparse("cpu").csr_matrix((c.weight.astype(np.float32), (c.post, c.pre)), shape=(N, N))
+            from .ganglion.csr import CSR
+            A = CSR.from_coo(c.weight.astype(np.float32), c.post, c.pre, (N, N))      # 같은 연결은 더함
             self._A = A                                                      # 받는 뉴런 x 주는 뉴런 (CPU)
         self._pending = None
 
@@ -71,7 +72,7 @@ class ThreeFactor:
         if key not in cache:
             a = getattr(self, name)
             if dev == "gpu":
-                a = B.sparse("gpu").csr_matrix(a) if hasattr(a, "tocsr") else B.to(a, "gpu")
+                a = a.to_cupy() if hasattr(a, "to_cupy") else B.to(a, "gpu")
             cache[key] = a
         return cache[key]
 

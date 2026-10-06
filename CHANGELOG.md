@@ -12,6 +12,12 @@
 - scipy를 쓰던 주변 기능을 numpy로: `fd.compare`의 95% 신뢰구간 (t 분위수 표 + 전개, scipy와 차이 2e-6 이하),
   `layer.reach`의 홉 수, `fd.column_map`의 이웃 평균 (결과 비트까지 같음), `python -m flydnet doctor`의 커널 확인.
   `Circuit.from_scipy`·`to_scipy`는 scipy를 그대로 씀 (쓸 때만 불러옴)
+- **CPU 희소 행렬 곱을 직접 작성한 C 커널로** (`flydnet/ganglion/csr.py`, `_csr.c`): 엔진의 CPU 계산이 scipy 희소 행렬 대신
+  자체 CSR (indptr int64, indices int32)을 씀. 행을 파이썬 스레드로 나눠 C 함수를 부름 (OpenMP 없음 → 플랫폼마다 런타임을
+  배포할 필요 없음, 스레드 수와 상관없이 같은 비트). 시각계 전체(연결 429만, 배치 32): scipy 17.5 ms → 2스레드 6.6 ms,
+  8스레드 2.8 ms. 경로 순서: C 커널 → scipy (있으면) → numpy (느림, 한 번 경고). `FLYDNET_SPARSE=c|scipy|numpy`,
+  `FLYDNET_THREADS=n`. 세 경로 모두 행마다 연결 순서대로 더해 같은 비트 (골든 시험이 세 경로에서 비트까지 같음).
+  역전파용 전치 구조는 배선마다 한 번만 만듦
 
 ### 버그 수정
 - **`fd.gradcheck`가 학습값 배열을 사본으로 바꿔 끼우던 것**: 되돌릴 때 원래 배열이 아니라 사본을 넣어, 같은 메모리를 쓰던
