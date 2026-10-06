@@ -555,7 +555,7 @@ opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch�
 
 ## 결과 요약
 
-12개 실험 (자세한 방법·수치·한계는 소스 저장소의 `REPORT.md`):
+12개 실험 (재현: `examples/`의 각 스크립트):
 
 | 질문 | 답 |
 |---|---|
