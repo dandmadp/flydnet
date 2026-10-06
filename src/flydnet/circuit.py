@@ -115,7 +115,7 @@ class Circuit:
         group_by: 주석 열 이름 (예: "cell_type")이면 각 그룹을 그 값마다 다시 나눔 → 그룹 이름 = 값
                   (값이 없는 뉴런은 "<그룹 이름>?"). 무작위 대조군(shuffled)도 이 단위로 섞임
         data_dir: None이면 flydnet.data_dir("flywire") (환경변수 → ~/.flydnet/config.json → ~/.flydnet/data)"""
-        from .data import require
+        from .data import read_connectivity, require
         d = require("flywire", data_dir)
         all_ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
         ann = pd.read_csv(d / annotations, sep="\t", low_memory=False,
@@ -157,11 +157,10 @@ class Circuit:
         glob = pd.Series(np.arange(len(all_ids)), index=all_ids)[ids].values
         local = np.full(len(all_ids), -1, np.int64); local[glob] = np.arange(len(ids))
 
-        df = pd.read_parquet(d / connectivity, columns=["Presynaptic_Index", "Postsynaptic_Index",
-                                                         "Connectivity", "Excitatory"])
-        pre, post = local[df.Presynaptic_Index.values], local[df.Postsynaptic_Index.values]
+        P, Q, W = read_connectivity(d, connectivity)                  # 바꿔 둔 npz (pyarrow 필요 없음) 또는 parquet
+        pre, post = local[P], local[Q]
         keep = (pre >= 0) & (post >= 0)
-        w = (df.Connectivity.values * df.Excitatory.values)[keep]
+        w = W[keep]
         a = ann.set_index("root_id").loc[ids]
         meta = a[["super_class", "cell_class", "cell_sub_class", "cell_type", "side"]].reset_index()
         return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})",
@@ -173,7 +172,7 @@ class Circuit:
                     completeness: str = "Completeness_783.csv") -> "Circuit":
         """전체 뇌 (FlyWire v783 138,639개 뉴런, Shiu et al. 2024 모델과 같은 뉴런·순서). 그룹 = 주석 group_by 값
         (주석이 없는 뉴런은 "unannotated"). fd.genetics.driver로 주석 조건이나 뉴런 ID로 집단을 고름"""
-        from .data import require
+        from .data import read_connectivity, require
         d = require("flywire", data_dir)
         ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
         cols = ["super_class", "cell_class", "cell_sub_class", "cell_type", "side"]
@@ -182,11 +181,10 @@ class Circuit:
         key = a[group_by].astype("string").fillna("unannotated").to_numpy()
         names, inv = np.unique(key, return_inverse=True)
         groups = {str(n): np.nonzero(inv == i)[0] for i, n in enumerate(names)}
-        df = pd.read_parquet(d / connectivity, columns=["Presynaptic_Index", "Postsynaptic_Index",
-                                                         "Connectivity", "Excitatory"])
-        w = (df.Connectivity.values * df.Excitatory.values).astype(np.float32)
+        P, Q, W = read_connectivity(d, connectivity)
+        w = W.astype(np.float32)
         meta = a[cols].reset_index().rename(columns={"index": "root_id"})
-        return cls(ids, groups, df.Presynaptic_Index.values, df.Postsynaptic_Index.values, w,
+        return cls(ids, groups, P, Q, w,
                    name="FlyWire 전체 뇌", meta=meta, pos=a[["pos_x", "pos_y", "pos_z"]].to_numpy(np.float32))
 
     # ─────────────── 어떤 그래프든 ───────────────

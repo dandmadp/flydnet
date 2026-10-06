@@ -3,7 +3,7 @@
   python -m flydnet                    # 데이터 상태 (어디서 무엇을 찾았는지)
   python -m flydnet download           # FlyWire v783 + DoOR 데이터 받기 (없는 파일만, 약 130 MB)
   python -m flydnet download flywire   # 한 묶음만
-  python -m flydnet verify             # 받은 파일이 기대한 버전인지 (크기 + SHA-256)
+  python -m flydnet verify             # 받은 파일이 기대한 버전인지 (크기 + SHA-256, 연결 npz는 내용 해시)
   python -m flydnet doctor             # 설치 진단: GPU·CUDA·CuPy·torch, 어떤 설치 옵션을 쓸지
 """
 import re
@@ -138,10 +138,14 @@ def main(argv=None):
         # 묶음을 안 주면 기본 다운로드(flywire·door) + 받아 둔 다른 묶음만 - 예전에는 기본으로 받지 않는 worm까지 확인해
         # 정상 설치에서도 missing·종료 코드 1이 나왔음
         default = [k for k in SOURCES if k in ("flywire", "door") or any((data_dir(k) / f).exists() for f in SOURCES[k])]
+        from .data import CONNECTIVITY_NPZ
         for kind in argv or default:
             for name, st in verify(kind).items():
+                if name == CONNECTIVITY_NPZ and st == "missing":            # parquet만 있음 (pyarrow로 읽음): 실패는 아님
+                    say(f"  {kind:<8} {name:<28} 아직 없음 - 만들기: python -m flydnet download flywire (pyarrow 없이 읽게)")
+                    continue
                 say(f"  {kind:<8} {name:<28} {st}")
-                bad += st != "ok"
+                bad += st not in ("ok", "not_needed")
         return 1 if bad else 0
     elif cmd == "doctor":
         return doctor()

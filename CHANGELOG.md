@@ -2,6 +2,15 @@
 
 ## [0.1.18] - 미배포
 
+### 엔진 정리: scipy·pyarrow 없이 (필수 의존성을 줄임)
+- `import flydnet`이 scipy·CuPy를 불러오지 않음 (처음 쓸 때 불러옴 - CuPy의 느린 초기화도 GPU를 쓸 때만).
+  `Circuit.to_networkx`의 networkx는 선택 설치 `pip install "flydnet[graph]"` (없으면 안내)
+- FlyWire 연결 parquet를 numpy 형식 `Connectivity_783.npz`(pre, post, weight)로 한 번 바꿔 두고 그것을 읽음 → 회로를 만드는 데
+  pyarrow가 필요 없음. `download`가 만들고, 예전에 받아 둔 사람은 parquet를 처음 읽을 때 만들어짐 (약 10초, 52 MB).
+  배열 내용의 SHA-256으로 확인 (`python -m flydnet verify`). npz만 있어도 됨 (parquet 없이 복사해 와도).
+  둘 다 읽을 수 없으면 무엇을 하면 되는지 알림
+
+### 버그 수정
 - **`fd.gradcheck`가 학습값 배열을 사본으로 바꿔 끼우던 것**: 되돌릴 때 원래 배열이 아니라 사본을 넣어, 같은 메모리를 쓰던
   `fd.torch.bridge`(torch 옵티마이저)와의 연결이 끊김 → 제자리로 바꿨다 되돌림
 - **`fd.torch.bridge`로 감싼 뒤 학습값이 생기면 (확장을 붙이는 등) torch가 '기울기 개수가 틀림' 오류**: 이름 목록을 다시 만들고
