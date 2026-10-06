@@ -9,6 +9,9 @@
   pyarrow가 필요 없음. `download`가 만들고, 예전에 받아 둔 사람은 parquet를 처음 읽을 때 만들어짐 (약 10초, 52 MB).
   배열 내용의 SHA-256으로 확인 (`python -m flydnet verify`). npz만 있어도 됨 (parquet 없이 복사해 와도).
   둘 다 읽을 수 없으면 무엇을 하면 되는지 알림
+- scipy를 쓰던 주변 기능을 numpy로: `fd.compare`의 95% 신뢰구간 (t 분위수 표 + 전개, scipy와 차이 2e-6 이하),
+  `layer.reach`의 홉 수, `fd.column_map`의 이웃 평균 (결과 비트까지 같음), `python -m flydnet doctor`의 커널 확인.
+  `Circuit.from_scipy`·`to_scipy`는 scipy를 그대로 씀 (쓸 때만 불러옴)
 
 ### 버그 수정
 - **`fd.gradcheck`가 학습값 배열을 사본으로 바꿔 끼우던 것**: 되돌릴 때 원래 배열이 아니라 사본을 넣어, 같은 메모리를 쓰던

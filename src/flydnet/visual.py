@@ -74,11 +74,13 @@ def column_map(circuit: Circuit, anchor: str = "Mi1", smooth: int = 3, columnar=
 
     m = is_col[circuit.pre] & is_col[circuit.post]
     i, j, w = circuit.pre[m], circuit.post[m], np.abs(circuit.weight[m]).astype(np.float64)
-    import scipy.sparse as sps
-    A = sps.coo_matrix((np.r_[w, w], (np.r_[i, j], np.r_[j, i])), shape=(circuit.N, circuit.N)).tocsr()
-    deg = np.maximum(np.bincount(np.r_[i, j], weights=np.r_[w, w], minlength=circuit.N), 1e-9)
+    rows, cols, ww = np.r_[i, j], np.r_[j, i], np.r_[w, w]                 # 방향 없는 이웃 (양쪽 방향)
+    deg = np.maximum(np.bincount(rows, weights=ww, minlength=circuit.N), 1e-9)
+
+    def neighbor_sum(Z):                                         # A @ Z (float64 그대로 - 좌표 정밀도)
+        return np.stack([np.bincount(rows, weights=ww * Z[cols, k], minlength=circuit.N) for k in range(Z.shape[1])], 1)
     for _ in range(smooth):
-        Z = 0.5 * Z + 0.5 * (A @ Z) / deg[:, None]
+        Z = 0.5 * Z + 0.5 * neighbor_sum(Z) / deg[:, None]
     Z = center(Z)
 
     Za = Z[anc] - Z[anc].mean(0)                                 # 등방으로 + 기둥 간격 단위로

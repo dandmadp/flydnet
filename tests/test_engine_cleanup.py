@@ -91,3 +91,29 @@ def test_to_networkx_without_networkx_says_how_to_install(monkeypatch):
     c = fd.graphs.layered([3, 4], 0.5, seed=0)
     with pytest.raises(ImportError, match=r"flydnet\[graph\]"):
         c.to_networkx()
+
+
+# ─────────────── 3단계: 주변부 scipy 교체 ───────────────
+def test_t975_matches_t_distribution():
+    """scipy.stats.t.ppf(0.975, df) 값 (소수 여섯째 자리)"""
+    from flydnet.controls import t975
+    for df, want in [(1, 12.706205), (2, 4.302653), (9, 2.262157), (30, 2.042272), (31, 2.039513),
+                     (60, 2.000298), (120, 1.979930), (10 ** 6, 1.959966)]:
+        assert abs(t975(df) - want) < 3e-6, (df, t975(df), want)
+
+
+def test_ci95_without_scipy(monkeypatch):
+    from flydnet.controls import _ci95
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "scipy.stats", None)
+    lo, hi = _ci95(np.array([0.5, 0.7, 0.6, 0.65]))
+    m, h = 0.6125, 3.182446 * np.std([0.5, 0.7, 0.6, 0.65], ddof=1) / 2
+    assert abs(lo - (m - h)) < 1e-9 and abs(hi - (m + h)) < 1e-9
+
+
+def test_reach_hops_numpy_csr():
+    """홉 수 BFS는 numpy CSR (예전 scipy). 발화율을 재는 순전파의 scipy 의존은 4단계에서 없앰"""
+    c = fd.graphs.layered([5, 8, 4], 0.5, seed=0)
+    layer = fd.Connectome(c, "in", "out", t_ms=20, device="cpu")
+    t = layer.reach(np.full((1, 5), 80, np.float32)).table
+    assert dict(zip(t.group, t.hops)) == {"in": 0.0, "h1": 1.0, "out": 2.0}

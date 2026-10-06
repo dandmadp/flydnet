@@ -1128,10 +1128,11 @@ class ConnectomeLayer(Tissue):
         출력이 조용할 때 원인 찾기 - 경로가 없어 늘 0인 것과 경로는 있는데 약해서 끊긴 것을 구분.
         반환 Reach (print하면 표와 판정, .table은 pandas)"""
         import pandas as pd
-        import scipy.sparse as sps
         rates = _batched(rates)
         c = self.circuit
-        A = sps.csr_matrix((np.ones(c.n_edges, np.int8), (c.pre, c.post)), shape=(c.N, c.N))
+        order = np.argsort(c.pre, kind="stable")                         # 보내는 뉴런 순 (CSR): 이웃 = post[indptr[i]:indptr[i+1]]
+        post_sorted = c.post[order]
+        indptr = np.concatenate([[0], np.cumsum(np.bincount(c.pre, minlength=c.N))])
         hop = np.full(c.N, np.inf)
         act = genetics_effects(self).get("act_idx")                       # activate로 자극하는 뉴런도 신호의 출발점
         frontier = np.unique(np.concatenate([B.numpy(self.in_idx)] + ([B.numpy(act)] if act is not None else [])))
@@ -1141,7 +1142,10 @@ class ConnectomeLayer(Tissue):
         d = 0
         while len(frontier):
             d += 1
-            nxt = np.unique(A[frontier].indices)
+            lo, hi = indptr[frontier], indptr[frontier + 1]
+            n_out = hi - lo
+            k = np.repeat(lo - np.concatenate([[0], np.cumsum(n_out)[:-1]]), n_out) + np.arange(n_out.sum())
+            nxt = np.unique(post_sorted[k])
             nxt = nxt[~np.isfinite(hop[nxt])]
             hop[nxt] = d
             frontier = nxt

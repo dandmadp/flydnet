@@ -143,13 +143,28 @@ def sign_flip_p(d: np.ndarray, n_perm: int = 20000, seed: int = 0) -> float:
     return (hits + 1) / (len(null) + 1)                                  # 표본: 관측값도 한 경우로 셈 - 예전에는 p = 0이 나올 수 있었음
 
 
+# t 분포 97.5% 분위수: 자유도 1 ~ 30은 표 (소수 여섯째 자리 - 셋째 자리 표는 차이가 최대 5e-4라 신뢰구간의 셋째 자리가
+# 반올림 경계에서 바뀌었음), 30 넘으면 Cornish-Fisher 전개 (scipy.stats.t.ppf와 차이 2e-6 이하)
+_T975 = [12.706205, 4.302653, 3.182446, 2.776445, 2.570582, 2.446912, 2.364624, 2.306004, 2.262157, 2.228139,
+         2.200985, 2.178813, 2.160369, 2.144787, 2.131450, 2.119905, 2.109816, 2.100922, 2.093024, 2.085963,
+         2.079614, 2.073873, 2.068658, 2.063899, 2.059539, 2.055529, 2.051831, 2.048407, 2.045230, 2.042272]
+
+
+def t975(df: int) -> float:
+    """t 분포의 97.5% 분위수 (scipy.stats.t.ppf(0.975, df) 대신 - scipy 없이)"""
+    if df <= 30:
+        return _T975[df - 1]
+    z = 1.959963984540054
+    return (z + (z ** 3 + z) / (4 * df) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * df ** 2)
+            + (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / (384 * df ** 3))
+
+
 def _ci95(x: np.ndarray):
     """평균의 95% 신뢰구간 (t 분포). 값이 하나면 (nan, nan)"""
     x = np.asarray(x, float)
     if len(x) < 2:
         return (math.nan, math.nan)
-    from scipy import stats
-    h = stats.t.ppf(0.975, len(x) - 1) * x.std(ddof=1) / math.sqrt(len(x))
+    h = t975(len(x) - 1) * x.std(ddof=1) / math.sqrt(len(x))
     return (x.mean() - h, x.mean() + h)
 
 

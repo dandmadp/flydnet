@@ -44,7 +44,6 @@ def _kernel_check() -> int:
     """전용 CUDA 커널을 실제로 컴파일·실행해 CuPy 기본 연산과 비교. 문제면 1"""
     import warnings
     import numpy as np
-    import scipy.sparse as sps
     from .ganglion import backend as B, kernels as K
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -54,12 +53,15 @@ def _kernel_check() -> int:
     if not ok:
         return 1
     rng = np.random.default_rng(0)
-    M = sps.random(50, 40, density=0.2, format="csr", dtype=np.float32, random_state=0)
+    D = np.where(rng.random((50, 40)) < 0.2, rng.random((50, 40)), 0).astype(np.float32)   # 밀도 0.2 무작위 희소 행렬
+    r, c = np.nonzero(D)                                                                  # 행 순 (CSR)
+    indptr = np.concatenate([[0], np.cumsum(np.bincount(r, minlength=50))])
     x = rng.standard_normal((40, 8)).astype(np.float32)
-    Mg = B.sparse("gpu").csr_matrix(M)
+    Mg = B.sparse("gpu").csr_matrix((B.to(D[r, c], "gpu"), B.to(c.astype(np.int32), "gpu"), B.to(indptr, "gpu")),
+                                    shape=D.shape)
     Mg.indices = Mg.indices.astype(np.int32)
     got = B.numpy(K.spmm(Mg, B.to(x, "gpu")))
-    if not np.allclose(got, M @ x, atol=1e-4):
+    if not np.allclose(got, D @ x, atol=1e-4):
         say("  ! 전용 GPU 커널 결과가 다름 - FLYDNET_DEVICE=cpu로 쓰고 이슈로 알려 주세요")
         return 1
     say("전용 GPU 커널: 컴파일·실행·결과 확인됨")
