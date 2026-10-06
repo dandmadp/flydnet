@@ -46,7 +46,7 @@ def task(n_in, seed, n=30):
 def score(circuit, seed, inp, out, **kw):
     (Xtr, ytr), (Xte, yte) = task(len(circuit.groups[inp]), seed)
     layer = fd.ConnectomeLayer(circuit, inp, out, t_ms=200, **kw)
-    f = lambda X: fd.extract(layer, None, X, batch=256, seed=seed)
+    f = lambda X: fd.extract(layer, X, batch=256, seed=seed)
     return fd.train_linear(f(Xtr), ytr, f(Xte), yte, epochs=60, seed=seed)["test_acc"]
 
 

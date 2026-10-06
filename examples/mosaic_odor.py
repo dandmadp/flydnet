@@ -59,7 +59,7 @@ def run(seed, cond):
     Xtr, ytr = make(args.samples, rng)
     Xte, yte = make(args.samples, rng)
     layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 3.0}, input_mode="regular")
-    F = fd.extract(layer, enc, Xtr, batch=200)                       # 정규화 기준 (드롭아웃 없이)
+    F = fd.extract(layer, Xtr, enc, batch=200)                       # 정규화 기준 (드롭아웃 없이)
     mu, sd = B.to(F.mean(0), layer.device), max(float((F - F.mean(0)).std()), 1e-6)
     readout = fd.Projection(F.shape[1], args.odors, seed=seed)
     rule = fd.AdaptivePlasticity(readout.synapses(), rate=1e-2, decay=1e-4)

@@ -193,7 +193,7 @@ def test_train_checks_val_before_training():
     with pytest.raises(ValueError, match="val"):
         fd.train(model, X, [0, 1, 0], val=(X,), epochs=1, verbose=False)
     with pytest.raises(ValueError):
-        fd.extract(model, None, np.zeros((0, 6)))
+        fd.extract(model, np.zeros((0, 6)))
 
 
 # ─────────────── 출력까지 신호가 가는지 ───────────────

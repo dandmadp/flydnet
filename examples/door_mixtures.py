@@ -57,7 +57,7 @@ for s in range(args.seeds):
     sets = [tuple(rng.choice(ok, 4, replace=False)) for _ in range(args.sets)]
     g = np.random.default_rng(10_000 + s)
     (xtr, ytr, ptr), (xte, yte, pte) = make(sets, args.n_train, g), make(sets, args.n_test, g)
-    F = {"glomeruli": (xtr, xte)} | {k: (fd.extract(L, enc, xtr), fd.extract(L, enc, xte)) for k, L in layers.items()}
+    F = {"glomeruli": (xtr, xte)} | {k: (fd.extract(L, xtr, enc), fd.extract(L, xte, enc)) for k, L in layers.items()}
     for k, (Ftr, Fte) in F.items():
         for p in range(args.sets):                               # 묶음마다 따로 학습 (한 마리가 한 과제를 배우듯)
             a, b = ptr == p, pte == p

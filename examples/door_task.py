@@ -52,7 +52,7 @@ def jitter(X, n, seed):
 
 
 def features(x):
-    return {"glomeruli": x} | {name: fd.extract(L, enc, x) for name, L in layers.items()}
+    return {"glomeruli": x} | {name: fd.extract(L, x, enc) for name, L in layers.items()}
 
 
 acc = lambda Ftr, ytr, Fte, yte: fd.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100

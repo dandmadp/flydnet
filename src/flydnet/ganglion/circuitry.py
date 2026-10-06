@@ -889,12 +889,14 @@ class ConnectomeLayer(Tissue):
         layer._build()
         return layer
 
-    def calibrate(self, rates, target=20.0, iters: int = 20, tol: float = 0.1, seed: int = 0, step: float = 0.5,
+    def calibrate(self, rates, target=None, iters: int = 20, tol: float = 0.1, seed: int = 0, step: float = 0.5,
                   relay_hz: float | None = 5.0, max_gain: float = 1000.0, verbose: bool = False):
         """가중치 자동 보정: 그룹마다 평균 발화율이 target이 되도록 그 그룹으로 들어오는 연결 종류의 배율(gains)을 조정
 
         rates:    대표 입력 (B, n_in) - 실제로 쓸 입력과 비슷하게
-        target:   {그룹: Hz} 또는 숫자 (출력 그룹 모두에, 기본 20 Hz). 예: {"KC": 5, "MBON": 20}
+        target:   {그룹: Hz} 또는 숫자 (출력 그룹 모두에). 기본 20 Hz. 예: {"KC": 5, "MBON": 20}
+                  연속값 뉴런(neuron="graded")은 Hz가 아니라 활동 (0 ~ r_max, 기본 10) - 기본 목표 r_max의 절반,
+                  목표·relay_hz는 r_max보다 작아야 함 (예전: 기본 20은 닿을 수 없어 배율만 상한까지 올라갔음)
         relay_hz: 입력 → 목표 그룹의 흥분성 경로 위에 있는 중간 그룹(중계)이 이보다 약하면 이 값까지 올림 (낮추지는 않음).
                   예전에는 목표 그룹으로 들어오는 연결만 키워서, 중간 층이 꺼져 있으면 배율이 256배가 돼도 출력이 0 Hz인
                   채로 끝났음. None이면 중계 그룹은 건드리지 않음
@@ -911,10 +913,19 @@ class ConnectomeLayer(Tissue):
         _C.pos("max_gain", max_gain)
         self._silent_checked = True                                     # 바로 이것을 고치는 중 - "출력이 모두 0" 경고는 안 냄
         rates = _batched(rates)
+        graded = self.neuron == "graded"
+        r_max = float(self.p.get("r_max", 10.0)) if graded else None
+        if target is None:
+            target = r_max / 2 if graded else 20.0
         tgt ={g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
         for g, v in tgt.items():
             if not (v > 0 and np.isfinite(v)):
                 raise ValueError(f"목표 발화율은 양수 (Hz): {g}={v} - 그룹을 끄려면 fd.genetics.silence")
+            if graded and v >= r_max:
+                raise ValueError(f"연속값 뉴런의 활동은 0 ~ r_max({r_max:g}) - 목표 {g}={v:g}에는 닿을 수 없음. "
+                                 f"r_max보다 작은 값으로 (기본: r_max의 절반 {r_max / 2:g})")
+        if graded and relay_hz is not None and relay_hz >= r_max:
+            raise ValueError(f"연속값 뉴런의 활동은 0 ~ r_max({r_max:g}) - relay_hz={relay_hz:g}는 r_max보다 작게 (또는 None)")
         for g in tgt:
             if g not in self.circuit.groups:
                 raise KeyError(f"회로에 없는 그룹: {g}")
@@ -1082,8 +1093,10 @@ class ConnectomeLayer(Tissue):
 
     def _input_spikes(self, r):
         """가장 활발한 입력 뉴런이 시행 하나에 내는 평균 스파이크 수 (입력 그룹이 없으면 None).
-        평균이 아니라 최대: 버섯체 PN의 절반처럼 일부러 입력 0인 뉴런이 섞여 있어도 오판하지 않게"""
-        if not self.n_in:
+        평균이 아니라 최대: 버섯체 PN의 절반처럼 일부러 입력 0인 뉴런이 섞여 있어도 오판하지 않게.
+        연속값 뉴런(graded)은 None: 입력·출력이 Hz가 아닌 활동값이라 '발화율 x 시간 = 스파이크 수'가 성립하지 않음
+        (예전: 활동 0~2를 Hz로 보고 calibrate가 "입력 뉴런이 거의 발화하지 않음"으로 멈췄음)"""
+        if not self.n_in or self.neuron == "graded":
             return None
         per = r[:, self.in_idx].mean(axis=0)
         dt = self.p["dt"]

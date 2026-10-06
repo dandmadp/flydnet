@@ -67,7 +67,7 @@ for s in range(args.seeds):
     g = np.random.default_rng(10_000 + s)
     (xtr, ytr, ptr) = fd.biconditional_mixtures(X0, sets, args.n_train, rng=g)
     (xte, yte, pte) = fd.biconditional_mixtures(X0, sets, args.n_test, rng=g)
-    F = {"사구체": (xtr, xte)} | {k: (fd.extract(L, enc, xtr), fd.extract(L, enc, xte)) for k, L in layers.items()}
+    F = {"사구체": (xtr, xte)} | {k: (fd.extract(L, xtr, enc), fd.extract(L, xte, enc)) for k, L in layers.items()}
     for fname, (Ftr, Fte) in F.items():
         for p in range(args.sets):
             a, b = ptr == p, pte == p

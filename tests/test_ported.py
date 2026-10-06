@@ -89,7 +89,7 @@ def test_train_linear_and_extract():
     r2 = fd.train_linear(X[:200], y[:200], X[200:], y[200:], epochs=200, device="cpu")
     assert r["test_acc"] == r2["test_acc"]                                    # 같은 seed → 같은 결과
     enc = fd.RateEncoder(5, 5, projection=None, device="cpu")
-    feats = fd.extract(lambda z: z * 2, enc, X, batch=64)
+    feats = fd.extract(lambda z: z * 2, X, enc, batch=64)
     assert feats.shape == (300, 5) and isinstance(feats, np.ndarray)
 
 

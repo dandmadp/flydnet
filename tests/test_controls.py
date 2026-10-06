@@ -184,9 +184,9 @@ def test_extract_does_not_swallow_layer_errors():
     def layer(x):                                                              # seed를 받지 않는 층 안에서 TypeError
         raise TypeError("층 안의 진짜 버그")
     with pytest.raises(TypeError, match="진짜 버그"):
-        fd.extract(layer, None, np.ones((2, 3)), batch=2)
+        fd.extract(layer, np.ones((2, 3)), batch=2)
     calls = []
-    fd.extract(lambda x, seed: calls.append(seed) or x, None, np.ones((4, 3)), batch=2, seed=10)
+    fd.extract(lambda x, seed: calls.append(seed) or x, np.ones((4, 3)), batch=2, seed=10)
     assert calls == [10, 12]
 
 

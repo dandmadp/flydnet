@@ -37,7 +37,7 @@ def run(circuit, seed):
     else:
         layer = fd.ConnectomeLayer(circuit, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 3.0}, input_mode="regular",
                                    timing=args.timing)
-        f = lambda X: fd.extract(layer, enc, X, batch=200)
+        f = lambda X: fd.extract(layer, X, enc, batch=200)
     return fd.train_linear(f(Xtr), ytr, f(Xte), yte, epochs=60, seed=seed)["test_acc"]
 
 

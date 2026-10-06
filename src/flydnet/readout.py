@@ -32,8 +32,18 @@ def _accepts_seed(fn) -> bool:
     return "seed" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
 
 
-def extract(layer, encoder, X, batch: int = 256, seed: int = 0, log_every: int = 0) -> np.ndarray:
-    """데이터 X 전체를 (encoder →) layer에 통과시켜 출력 특징 (n, n_out)을 numpy로. encoder=None이면 X를 바로"""
+def extract(layer, X, encoder=None, batch: int = 256, seed: int = 0, log_every: int = 0) -> np.ndarray:
+    """데이터 X 전체를 (encoder →) layer에 통과시켜 출력 특징 (n, n_out)을 numpy로. encoder=None이면 X를 바로
+
+      F = fd.extract(layer, X, enc)              # 또는 encoder=enc
+    0.1.17까지의 순서 extract(layer, encoder, X)도 동작 (둘째가 None·구조물·함수이고 셋째가 데이터일 때, DeprecationWarning)"""
+    if (X is None or callable(X)) and encoder is not None and not callable(encoder):
+        import warnings
+        warnings.warn("fd.extract(layer, encoder, X)는 예전 순서 - fd.extract(layer, X, encoder)로 (encoder가 없으면 "
+                      "fd.extract(layer, X))", DeprecationWarning, stacklevel=2)
+        X, encoder = encoder, X
+    if X is None or callable(X):
+        raise TypeError(f"X는 데이터 배열 (시료, 특징): {type(X).__name__}")
     _C.integer('batch', batch)
     if len(X) == 0:
         raise ValueError("데이터가 비어 있음 (시료 0개)")

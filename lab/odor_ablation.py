@@ -59,7 +59,7 @@ for C, K, noise, ntr in CONFIGS:
     for s in range(args.task_seeds):
         Xtr, ytr, Xte, yte = fd.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
         for key, L in layers.items():
-            res[key].append(acc(fd.extract(L, enc, Xtr), ytr, fd.extract(L, enc, Xte), yte))
+            res[key].append(acc(fd.extract(L, Xtr, enc), ytr, fd.extract(L, Xte, enc), yte))
     real = np.array(res[("실제", 0)])
     line = f"  실제 {real.mean():5.1f}"
     for cname in CONDITIONS:

@@ -302,3 +302,62 @@ def test_sparse_env_validation(monkeypatch):
     monkeypatch.setenv("FLYDNET_THREADS", "0")
     with pytest.raises(ValueError, match="FLYDNET_THREADS"):
         S.threads()
+
+
+# ─────────────── 6단계: 버그 ───────────────
+def _graded_layer(**kw):
+    c = fd.graphs.layered([30, 60, 10], 0.2, seed=0)
+    return fd.Connectome(c, "in", "out", t_ms=100, dt=1.0, neuron="graded", device="cpu",
+                         bias={"h1": 0.5, "out": 0.5}, **kw)
+
+
+def test_graded_calibrate_accepts_activity_input():
+    """연속값 뉴런: 입력이 Hz가 아닌 활동 (0~2) - 예전에는 "입력 뉴런이 거의 발화하지 않음"으로 멈췄음"""
+    import warnings
+    layer = _graded_layer()
+    act = (np.random.default_rng(0).random((4, 20, 30)) * 2).astype(np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                                  # 순전파·보정 모두 Hz 경고 없이
+        layer(act, seed=0)
+        t = layer.calibrate(act)
+    out = t[t.group == "out"].iloc[0]
+    assert out.role == "목표" and out.target_hz == 5.0                  # 기본 목표 = r_max(10)의 절반
+    assert abs(out.after_hz - 5.0) <= 0.5
+
+
+def test_graded_calibrate_rejects_unreachable_target():
+    layer = _graded_layer()
+    act = np.ones((2, 30), np.float32)
+    with pytest.raises(ValueError, match="r_max"):
+        layer.calibrate(act, target=20)
+    with pytest.raises(ValueError, match="relay_hz"):
+        layer.calibrate(act, target=3, relay_hz=12)
+    assert layer._input_spikes(np.ones((2, layer.circuit.N), np.float32)) is None
+
+
+def test_lif_calibrate_still_rejects_quiet_inputs():
+    """스파이킹 뉴런은 그대로: 0~1 값을 Hz로 넣으면 바로 오류"""
+    c = fd.graphs.layered([30, 60, 10], 0.2, seed=0)
+    layer = fd.Connectome(c, "in", "out", t_ms=50, device="cpu")
+    with pytest.raises(ValueError, match="거의 발화하지 않음"):
+        layer.calibrate(np.full((2, 30), 0.5, np.float32))
+
+
+def test_extract_new_and_old_order():
+    X = np.arange(12, dtype=np.float32).reshape(4, 3)
+    enc = lambda x: x * 2                                               # noqa: E731
+    layer = lambda x: x + 1                                             # noqa: E731
+    want = X * 2 + 1
+    np.testing.assert_array_equal(fd.extract(layer, X, enc), want)
+    np.testing.assert_array_equal(fd.extract(layer, X, encoder=enc, batch=3), want)
+    np.testing.assert_array_equal(fd.extract(layer, X), X + 1)
+    with pytest.warns(DeprecationWarning, match="예전 순서"):
+        np.testing.assert_array_equal(fd.extract(layer, enc, X), want)  # 예전: (layer, encoder, X)
+    with pytest.warns(DeprecationWarning):
+        np.testing.assert_array_equal(fd.extract(layer, None, X, batch=2), X + 1)
+    t = fd.Projection(3, 2, device="cpu")                                # 구조물(Tissue)도 예전 순서의 encoder로
+    with pytest.warns(DeprecationWarning):
+        old = fd.extract(layer, t, X)
+    np.testing.assert_array_equal(old, fd.extract(layer, X, t))
+    with pytest.raises(TypeError, match="데이터"):
+        fd.extract(layer, None)

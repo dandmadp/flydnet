@@ -42,7 +42,7 @@ print(mb)
 enc = fd.RateEncoder(784, len(mb.groups["PN"]), max_rate=args.max_rate)
 n_kc = len(mb.groups["KC"])
 
-feats = {"pixels": (Xtr, Xte), "PN": (fd.extract(enc, None, Xtr), fd.extract(enc, None, Xte))}
+feats = {"pixels": (Xtr, Xte), "PN": (fd.extract(enc, Xtr), fd.extract(enc, Xte))}
 circuits = [("real", mb)] + [(f"shuffled {k}", mb.shuffled(seed=k)) for k in range(args.n_shuffles)]
 tag = f"{args.n_train}_{args.n_test}_{args.t_ms:g}ms_g{args.pn_kc_gain:g}_r{args.max_rate:g}_{args.input_mode}_brian"
 for name, circ in circuits:
@@ -54,8 +54,8 @@ for name, circ in circuits:
         layer = fd.ConnectomeLayer(circ, "PN", ("KC", "MBON"), t_ms=args.t_ms,
                                    gains={"PN>KC": args.pn_kc_gain}, input_mode=args.input_mode)
         t = time.time()
-        Ftr = fd.extract(layer, enc, Xtr, batch=args.batch, seed=0)
-        Fte = fd.extract(layer, enc, Xte, batch=args.batch, seed=10**6)
+        Ftr = fd.extract(layer, Xtr, enc, batch=args.batch, seed=0)
+        Fte = fd.extract(layer, Xte, enc, batch=args.batch, seed=10**6)
         np.savez(cache, Ftr=Ftr, Fte=Fte)
         print(f"  {name}: 시뮬레이션 {time.time() - t:.0f}s", flush=True)
     print(f"  {name}: KC 활성 {(Ftr[:, :n_kc] > 0).mean() * 100:.1f}%", flush=True)

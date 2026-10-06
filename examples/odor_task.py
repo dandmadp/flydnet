@@ -51,7 +51,7 @@ for C, K, noise, ntr in CONFIGS:
         Xtr, ytr, Xte, yte = fd.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
         r = {"glomeruli": acc(Xtr, ytr, Xte, yte)}
         for name, L in layers.items():
-            r[name] = acc(fd.extract(L, enc, Xtr), ytr, fd.extract(L, enc, Xte), yte)
+            r[name] = acc(fd.extract(L, Xtr, enc), ytr, fd.extract(L, Xte, enc), yte)
         rows.append(r)
     glo = np.array([r["glomeruli"] for r in rows])
     real = np.array([r["real"] for r in rows])

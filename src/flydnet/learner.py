@@ -239,7 +239,7 @@ class Learner:
             raise RuntimeError(f"source {source!r}로 아직 learn()하지 않음")
         if X.shape[1] != self.n_in[source]:
             raise ValueError(f"source {source!r}의 특징 수는 {self.n_in[source]}: 받은 것 {X.shape[1]}")
-        return extract(self.layer, self.encoders[source], X, batch=self.batch, seed=self.seed).astype(np.float32)
+        return extract(self.layer, X, self.encoders[source], batch=self.batch, seed=self.seed).astype(np.float32)
 
     def _labels(self, y, grow: bool):
         out = np.empty(len(y), np.int64)

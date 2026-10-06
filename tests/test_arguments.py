@@ -61,7 +61,7 @@ TABLE = [
     ("train clip", lambda v: fd.train(fd.Pathway(P()), X, [0, 1, 0, 1], clip=v, epochs=1, verbose=False), "pos"),
     ("train_linear epochs", lambda v: fd.train_linear(X, [0, 1, 0, 1], X, [0, 1, 0, 1], epochs=v), "int_nonneg"),
     ("train_linear lr", lambda v: fd.train_linear(X, [0, 1, 0, 1], X, [0, 1, 0, 1], lr=v, epochs=1), "nonneg"),
-    ("extract batch", lambda v: fd.extract(L(), None, X, batch=v), "int_pos"),
+    ("extract batch", lambda v: fd.extract(L(), X, batch=v), "int_pos"),
     ("explain verify", lambda v: fd.explain(lambda l, s: l(X, seed=s).sum(), L(), verify=v), "int_nonneg"),
     ("compare ceiling", lambda v: fd.compare(lambda cc, s: 0.5 + s * 0.01, c, seeds=3, ceiling=v, verbose=False), "unit"),
     ("screen hz", lambda v: fd.genetics.screen(lambda l, s: 1.0, L0(), fd.genetics.lines(c), effector="activate", hz=v, seeds=2, verbose=False), "pos"),
