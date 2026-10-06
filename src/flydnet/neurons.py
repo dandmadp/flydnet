@@ -141,6 +141,8 @@ class Izhikevich(NeuronModel):
         _C.pos('tau_syn', tau_syn)
         _C.pos('slope', slope)
         _C.finite('gain', gain)
+        for k, v in (("a", a), ("b", b), ("c", c), ("d", d)):           # NaN이면 시뮬레이션 전체가 조용히 NaN
+            _C.finite(k, v)
         super().__init__(a=a, b=b, c=c, d=d, tau_syn=tau_syn, gain=gain, slope=slope)
 
     def init(self, ctx):

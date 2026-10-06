@@ -154,6 +154,17 @@ def oom_hint(what: str):
             "다른 프로그램(torch 등)이 GPU 메모리를 쥐고 있지 않은지 확인 / FLYDNET_DEVICE=cpu") from e
 
 
+def sample_labels(y, what: str = "라벨") -> np.ndarray:
+    """시료마다 클래스 번호 하나인 라벨 (n,) int64. (n, 1) 열 벡터(scikit-learn 습관)는 폄, 그 밖의 2차원 이상은 오류.
+    예전: (n, 1)을 그대로 두어 예측 (n,)과 비교할 때 (n, n)으로 퍼져 정확도가 조용히 틀렸음 (fd.evaluate 23.0 등)"""
+    y = labels(y)
+    if y.ndim == 2 and y.shape[1] == 1:
+        y = y[:, 0]
+    if y.ndim != 1:
+        raise ValueError(f"{what}은 시료마다 클래스 번호 하나 (1차원): 모양 {y.shape} - 원-핫이면 argmax로 번호를 만들 것")
+    return y
+
+
 def check_labels(y, n_classes: int, what: str = "라벨") -> np.ndarray:
     """정수 라벨이 0 ~ n_classes−1 안인지 (음수는 파이썬 음수 인덱스로 조용히 엉뚱한 칸을 고르므로 오류)"""
     y = labels(y)

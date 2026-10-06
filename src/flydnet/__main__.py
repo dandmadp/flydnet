@@ -133,15 +133,22 @@ def main(argv=None):
         if unknown:
             say(f"모르는 데이터 묶음: {unknown} (있는 것: {list(SOURCES)})")
             return 1
+        from .data import data_dir
         bad = 0
-        for kind in argv or SOURCES:
+        # 묶음을 안 주면 기본 다운로드(flywire·door) + 받아 둔 다른 묶음만 - 예전에는 기본으로 받지 않는 worm까지 확인해
+        # 정상 설치에서도 missing·종료 코드 1이 나왔음
+        default = [k for k in SOURCES if k in ("flywire", "door") or any((data_dir(k) / f).exists() for f in SOURCES[k])]
+        for kind in argv or default:
             for name, st in verify(kind).items():
                 say(f"  {kind:<8} {name:<28} {st}")
                 bad += st != "ok"
         return 1 if bad else 0
     elif cmd == "doctor":
         return doctor()
+    elif cmd in ("-h", "--help", "help"):                               # 도움말 요청은 성공 (예전: 모르는 명령처럼 1)
+        say(__doc__)
     else:
+        say(f"모르는 명령: {cmd!r}")
         say(__doc__)
         return 1
     return 0

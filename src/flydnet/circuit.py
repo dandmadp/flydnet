@@ -44,6 +44,18 @@ def _json_value(v):
     return str(v)
 
 
+def require_disjoint_groups(circuit, who: str):
+    """그룹끼리 뉴런이 겹치면 오류 - 층·Neuropil이 그룹마다 뉴런을 한 자리에 두는 계산 (입력 자리, 연결 종류 번호)이
+    겹친 뉴런에서 조용히 틀어지므로 (예전: 겹친 입력 뉴런이 두 번 들어가 한쪽 값만 쓰이거나 기울기가 두 번)"""
+    if not circuit.groups:
+        return
+    ids = np.concatenate([np.asarray(v, np.int64).reshape(-1) for v in circuit.groups.values()])
+    if len(np.unique(ids)) != len(ids):
+        u, n = np.unique(ids, return_counts=True)
+        raise ValueError(f"{who}: 회로의 그룹끼리 뉴런이 겹침 ({int((n > 1).sum())}개, 예: {u[n > 1][:5].tolist()}) - "
+                         f"그룹마다 다른 뉴런이어야 함: circuit.regroup({{이름: 번호}})로 다시 나눌 것")
+
+
 class Circuit:
     """뉴런 N개와 부호 있는 시냅스 목록 (pre → post, weight = ±시냅스 수)
 
@@ -100,8 +112,11 @@ class Circuit:
         ann = pd.read_csv(d / annotations, sep="\t", low_memory=False,
                           usecols=["root_id", "super_class", "cell_class", "cell_sub_class", "cell_type", "side",
                                    "pos_x", "pos_y", "pos_z"])
-        ann = ann[ann.root_id.isin(all_ids)]
-        if side:
+        ann = ann[ann.root_id.isin(all_ids)].drop_duplicates("root_id")    # whole_brain과 같게 (주석 파일 버전에 따라 같은
+        if side:                                                          # 뉴런이 두 번이면 meta·pos 행이 뉴런 수와 어긋남)
+            sides = sorted(ann.side.dropna().astype(str).unique())
+            if side not in sides:                                       # 예전: side="both" 등이 그룹이 모두 비었다는 오류로 보였음
+                raise ValueError(f"side는 {sides} 중 하나 또는 None (양쪽): {side!r}")
             ann = ann[ann.side == side]
 
         picked, gidx = [], {}
@@ -291,6 +306,10 @@ class Circuit:
 
     def regroup(self, groups: dict, rest: str = "rest") -> "Circuit":
         """그룹을 새로 정함 ({이름: 노드 번호}, 나머지는 rest). 연결·주석은 그대로"""
+        for k, v in groups.items():
+            a = np.asarray(v)
+            if a.ndim != 1 or (a.size and (a.dtype.kind not in "iu" or a.min() < 0 or a.max() >= self.N)):
+                raise ValueError(f"regroup: 그룹 {k!r}의 값은 노드 번호 배열 (0 ~ {self.N - 1}): {v!r}"[:200])
         return Circuit.from_edges(self.pre, self.post, self.weight, groups={k: np.asarray(v) for k, v in groups.items()},
                                   meta=self.meta if self.meta is not None else pd.DataFrame(index=range(self.N)),
                                   pos=self.pos, name=self.name, rest=rest)._with_ids(self.root_ids)
@@ -537,21 +556,3 @@ class Circuit:
         return cls(np.asarray(d[prefix + "root_ids"]), groups, np.asarray(d[prefix + "pre"]),
                    np.asarray(d[prefix + "post"]), np.asarray(d[prefix + "weight"]), name=info["name"],
                    meta=meta, pos=pos)
-
-    # 저장: 텐서·문자열·리스트만 써서 torch.load(weights_only=True)로 안전하게 읽힘
-    def to_dict(self) -> dict:
-        import torch
-        meta = None
-        if self.meta is not None:
-            meta = {c: [None if pd.isna(v) else str(v) for v in self.meta[c]] for c in self.meta.columns}
-        return dict(root_ids=torch.from_numpy(self.root_ids), pre=torch.from_numpy(self.pre),
-                    post=torch.from_numpy(self.post), weight=torch.from_numpy(self.weight),
-                    groups={k: torch.from_numpy(v) for k, v in self.groups.items()}, name=self.name, meta=meta,
-                    pos=torch.from_numpy(self.pos) if self.pos is not None else None)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Circuit":
-        meta = pd.DataFrame(d["meta"]) if d.get("meta") is not None else None
-        return cls(d["root_ids"].numpy(), {k: v.numpy() for k, v in d["groups"].items()}, d["pre"].numpy(),
-                   d["post"].numpy(), d["weight"].numpy(), name=d["name"], meta=meta,
-                   pos=d["pos"].numpy() if d.get("pos") is not None else None)

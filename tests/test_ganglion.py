@@ -4,9 +4,13 @@
 2. torch를 정답지로: 같은 입력에서 출력·기울기·가소성 규칙 결과가 같은지 (torch가 있을 때)
 3. CPU ↔ GPU: 같은 계산이 양쪽에서 같은지 (CuPy·GPU가 있을 때)
 """
+import pathlib
+import sys
+
 import numpy as np
 import pytest
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))   # _ref_models
 import flydnet as fd
 import flydnet.ganglion as G
 from flydnet.ganglion import backend as B
@@ -226,33 +230,20 @@ def test_mushroom_body_output_matches_assoc_readout():
     assert mbo.predict(X, classes=[1, 2]).max() <= 2
 
 
-@needs_torch
-def test_assoc_and_dopamine_readouts_match_torch():
-    """자체 엔진판 AssocReadout·DopamineReadout = torch판 (같은 순서로 학습하면 같은 시냅스)"""
-    rng = np.random.default_rng(1)
-    X = rng.random((200, 30)).astype(np.float32); y = rng.integers(0, 4, 200)
-    for make in (lambda m: m.AssocReadout(30, 4, per_class=3, device="cpu"),
-                 *[lambda m, mode=mode: m.DopamineReadout(30, 4, mode=mode, device="cpu")
-                   for mode in ("bidir", "assoc", "ltd", "ltd_err", "ltp")]):
-        a, t = make(fd), make(fd.torch)
-        for i in range(0, 200, 50):
-            a.step(X[i:i + 50], y[i:i + 50])
-            t.step(torch.tensor(X[i:i + 50]), torch.tensor(y[i:i + 50]))
-        np.testing.assert_allclose(a.W, t.W.numpy(), atol=1e-5)
-        assert (a.predict(X) == t.predict(torch.tensor(X)).numpy()).all()
-
-
 # ─────────────── 2. torch를 정답지로 ───────────────
 @needs_torch
 def test_matches_torch_neuropil_and_adam():
-    from flydnet.torch.anatomy import Neuropil as TorchNeuropil
+    """Neuropil(train="edge") = 밀집 torch 계산 (값 = 원래 세기 x exp(log_scale), 연결 칸만), Adam 3스텝 뒤 같은 매개변수"""
     c = _pn_kc(signs=True)
-    tn = TorchNeuropil(c, "PN", "KC", train="edge", device="cpu")
     gn = G.Neuropil(c, "PN", "KC", train="edge", device="cpu")
+    post, pre = B.numpy(gn.wiring.post), B.numpy(gn.wiring.pre)
+    base = torch.tensor(B.numpy(gn.base))
+    ls = torch.nn.Parameter(torch.zeros(len(base)))
+    tn = lambda x: x @ torch.zeros(gn.out_features, gn.in_features).index_put(
+        (torch.tensor(post), torch.tensor(pre)), base * ls.exp()).T
     x = RNG.normal(size=(5, 30)).astype(np.float32)
     np.testing.assert_allclose(gn(x).numpy(), tn(torch.tensor(x)).detach().numpy(), atol=1e-5)
-    # 같은 손실로 Adam 3번 → 같은 매개변수
-    topt = torch.optim.Adam(tn.parameters(), lr=1e-2)
+    topt = torch.optim.Adam([ls], lr=1e-2)
     gopt = G.AdaptivePlasticity(gn.synapses(), rate=1e-2)
     target = RNG.normal(size=(5, 200)).astype(np.float32)
     for _ in range(3):
@@ -261,7 +252,7 @@ def test_matches_torch_neuropil_and_adam():
         gl = ((gn(x) - target) ** 2).mean()
         gopt.clear(); gl.retrograde(); gopt.step()
         assert abs(tl.item() - gl.item()) < 1e-5
-    np.testing.assert_allclose(gn.log_scale.numpy(), tn.log_scale.detach().numpy(), atol=1e-5)
+    np.testing.assert_allclose(gn.log_scale.numpy(), ls.detach().numpy(), atol=1e-5)
 
 
 @needs_torch
@@ -341,7 +332,9 @@ def test_flydnet_works_without_torch():
             assert "flydnet[torch]" in str(e)
         print("ok")
     """)
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    import os                                        # 자식의 한글 출력(경고 등)을 콘솔 인코딩(cp949)으로 읽다 실패하지 않게
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr
 
 
@@ -365,23 +358,24 @@ def _tiny(n_in=5, n_out=12, n_edges=120, seed=0):
     ("graded", dict(params={"w_syn": 0.3}, bias={"OUT": 0.2}, train_neurons=True, dt=1.0)),
 ])
 def test_connectome_layer_matches_torch(neuron, kw):
-    from flydnet.torch.layers import ConnectomeLayer as TL
+    """legacy LIF·graded 뉴런 = torch 기본 연산으로 다시 짠 참조 구현 (tests/_ref_models.py, torch autograd).
+    0.1.17까지는 torch판 ConnectomeLayer가 기준이었음"""
+    from _ref_models import torch_graded, torch_legacy_lif
     c = _tiny()
-    tl = TL(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", **kw)
-    gl = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu", timing="legacy", **kw)  # torch판 = legacy
-    gl.phase0 = tl.phase0.numpy().ravel().copy()
-    gl.v_frac = tl.v_frac.numpy().ravel().copy()
+    gl = G.ConnectomeLayer(c, "IN", "OUT", t_ms=30, neuron=neuron, trainable=True, device="cpu",
+                           timing="legacy", **kw)
     x = (np.random.default_rng(3).random((4, 5)) * (200 if neuron == "lif" else 1)).astype(np.float32)
-    t_out = tl(torch.tensor(x))
+    xt = torch.tensor(x, dtype=torch.float64, requires_grad=True)
+    t_out, P = (torch_legacy_lif if neuron == "lif" else torch_graded)(gl, xt)
     g_out = gl(x)
     np.testing.assert_allclose(g_out.numpy(), t_out.detach().numpy(), atol=1e-4)
     w = np.random.default_rng(4).normal(size=g_out.shape).astype(np.float32)
-    (t_out * torch.tensor(w)).sum().backward()
+    (t_out * torch.tensor(w, dtype=torch.float64)).sum().backward()
     (g_out * w).sum().retrograde()
-    np.testing.assert_allclose(gl.log_scale.retro, tl.log_scale.grad.numpy(), rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(gl.log_scale.retro, P["log_scale"].grad.numpy(), rtol=1e-3, atol=1e-4)
     if "train_neurons" in kw:
-        np.testing.assert_allclose(gl.bias.retro, tl.bias.grad.numpy(), rtol=1e-3, atol=1e-4)
-        np.testing.assert_allclose(gl.log_t_mbr.retro, tl.log_t_mbr.grad.numpy(), rtol=1e-3, atol=1e-4)
+        np.testing.assert_allclose(gl.bias.retro, P["bias"].grad.numpy(), rtol=1e-3, atol=1e-4)
+        np.testing.assert_allclose(gl.log_t_mbr.retro, P["log_t_mbr"].grad.numpy(), rtol=1e-3, atol=1e-4)
 
 
 @pytest.mark.parametrize("neuron,mode", [("lif", "poisson"), ("lif", "regular"), ("graded", "regular")])
@@ -447,19 +441,20 @@ def test_connectome_layer_gpu_matches_cpu():
 
 
 @needs_torch
-def test_pair_order_matches_torch_with_unsorted_group_names():
-    """그룹 이름이 알파벳순이 아닐 때도 연결 종류 순서가 torch판과 같아야 함 (실제 데이터에서 잡힌 버그)"""
-    from flydnet.torch.layers import ConnectomeLayer as TL
+def test_pair_order_with_unsorted_group_names():
+    """그룹 이름이 알파벳순이 아닐 때도 연결 종류(share="pair")의 순서는 이름순, 배율 기울기가 제 종류로 감
+    (실제 데이터에서 잡힌 버그) - 참조 구현과 기울기 비교"""
+    from _ref_models import torch_graded
     c = _tiny()
     c = fd.Circuit(c.root_ids, {"Zin": c.groups["IN"], "Aout": c.groups["OUT"]}, c.pre, c.post, c.weight)
     kw = dict(t_ms=20, dt=1.0, neuron="graded", params={"w_syn": 0.3}, bias=0.2, trainable=True, share="pair")
-    tl = TL(c, "Zin", "Aout", device="cpu", **kw)
     gl = G.ConnectomeLayer(c, "Zin", "Aout", device="cpu", **kw)
-    assert gl.train_pairs == list(tl.train_pairs)
+    assert gl.train_pairs == sorted(gl.train_pairs)
     x = np.random.default_rng(0).random((2, 5)).astype(np.float32)
-    tl(torch.tensor(x)).sum().backward()
+    t_out, P = torch_graded(gl, torch.tensor(x, dtype=torch.float64))
+    t_out.sum().backward()
     gl(x).sum().retrograde()
-    np.testing.assert_allclose(gl.log_scale.retro, tl.log_scale.grad.numpy(), rtol=1e-3, atol=1e-5)
+    np.testing.assert_allclose(gl.log_scale.retro, P["log_scale"].grad.numpy(), rtol=1e-3, atol=1e-5)
 
 
 @needs_gpu
@@ -510,8 +505,8 @@ def test_gpu_predict_returns_numpy_and_rule_follows_device():
 def test_device_env_override_and_check():
     import subprocess, sys, os
     code = "import flydnet.ganglion as G; print(G.default_device())"
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                       env=dict(os.environ, FLYDNET_DEVICE="cpu"))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=dict(os.environ, FLYDNET_DEVICE="cpu", PYTHONIOENCODING="utf-8"))
     assert r.stdout.strip() == "cpu"
     with pytest.raises(ValueError):
         B.check("cuda")                                                        # torch식 이름은 안내 오류

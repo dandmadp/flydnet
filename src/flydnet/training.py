@@ -38,7 +38,7 @@ def evaluate(model, X, y, batch: int = 256, seed: int = 10 ** 6) -> float:
     """정확도 (역전파 경로 없이, 배치로)"""
     _C.integer('batch', batch)
     X = _rows(X)
-    y = B.labels(y)
+    y = B.sample_labels(y)
     if len(X) != len(y):
         raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
     if len(X) == 0:
@@ -47,7 +47,10 @@ def evaluate(model, X, y, batch: int = 256, seed: int = 10 ** 6) -> float:
     with quiescent():
         for i in range(0, len(X), batch):
             out = _call(model, X[i:i + batch], seed + i)
-            hits += int((B.numpy(out.data if isinstance(out, Signal) else out).argmax(-1) == y[i:i + batch]).sum())
+            o = B.numpy(out.data if isinstance(out, Signal) else out)
+            if o.ndim != 2 or len(o) != len(y[i:i + batch]):                 # (배치, 시간, 클래스) 등: argmax가 (배치, 시간)이
+                raise ValueError(f"evaluate는 시료마다 클래스 점수 (시료, 클래스) 출력: 모양 {o.shape}")   # 되어 라벨과 퍼져 비교됨
+            hits += int((o.argmax(-1) == y[i:i + batch]).sum())
     return hits / max(len(y), 1)
 
 
@@ -60,12 +63,13 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
     val:      (X, y)면 에폭마다 정확도
     loss:     loss(logits, y_batch) → 값 하나인 Signal (기본 교차 엔트로피)
     synapses: 바꿀 시냅스 (기본 model.named_synapses())
-    반환: dict(loss=[에폭별 평균 손실], val_acc=[에폭별 정확도], train_acc=마지막, rule=가소성 규칙)"""
+    반환: dict(loss=[에폭별 평균 손실], val_acc=[에폭별 정확도], train_acc=마지막 (라벨이 시료마다 하나일 때, 아니면 None),
+          rule=가소성 규칙)"""
     _C.nonneg('rate', rate)
     _C.nonneg('decay', decay)
     _C.optional(_C.pos, 'clip', clip)
     X = _rows(X)
-    y = B.labels(y)
+    y = B.sample_labels(y) if loss is surprise else B.labels(y)            # 손실을 직접 주면 (B, T) 같은 라벨도
     if len(X) != len(y):
         raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
     if len(X) == 0:
@@ -79,8 +83,8 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
     if val is not None:                                             # 첫 에폭을 다 돈 뒤에 실패하지 않게 미리
         if not (isinstance(val, (tuple, list)) and len(val) == 2):
             raise ValueError("val은 (X, y) 두 개")
-        if len(val[0]) != len(B.labels(val[1])) or len(val[0]) == 0:
-            raise ValueError(f"val의 X와 y 개수가 다르거나 비어 있음: {len(val[0])} 대 {len(B.labels(val[1]))}")
+        if len(val[0]) != len(B.sample_labels(val[1], "val 라벨")) or len(val[0]) == 0:
+            raise ValueError(f"val의 X와 y 개수가 다르거나 비어 있음: {len(val[0])} 대 {len(B.sample_labels(val[1]))}")
     if getattr(model, "auto_calibrate", False) and not model.is_calibrated:   # fd.ConnectomeModel: 첫 배치가 아니라 X로
         model.prepare(X)
     if synapses is None:
@@ -108,7 +112,8 @@ def train(model, X, y, epochs: int = 10, batch: int = 32, rate: float = 3e-3, de
         if verbose:
             extra = f", 평가 정확도 {hist['val_acc'][-1]:.3f}" if val is not None else ""
             say(f"  에폭 {ep + 1}/{epochs}: 손실 {hist['loss'][-1]:.4f}{extra}", flush=True)
-    hist["train_acc"] = evaluate(model, X, y)
+    hist["train_acc"] = evaluate(model, X, y) if y.ndim == 1 else None   # (B, T) 같은 라벨(손실을 직접 줌)은 정확도가 정의되지
+    #                                                                       않음 - 예전: 모든 에폭을 마친 뒤 여기서 오류로 멈춰 결과를 잃음
     hist["rule"] = rule
     return hist
 

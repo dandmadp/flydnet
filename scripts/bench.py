@@ -1,7 +1,7 @@
 """성능 측정: 전체 뇌 ConnectomeLayer 학습 1스텝 (순전파 + 역전파 + 가소성) 과 시뮬레이션 (역전파 없음)
 
   python scripts/bench.py                  # GPU, 약 2분
-  python scripts/bench.py --torch          # + torch 모델 안에서: 연결 장치(fd.torch.bridge) 대 0.1 torch판 복사본
+  python scripts/bench.py --torch          # + torch 모델 안에서 연결 장치(fd.torch.bridge)로 학습 1스텝
 
 설정: 전체 뇌 138,639개 뉴런·연결 1,509만, 입력 = 감각 뉴런, 출력 = 하행 뉴런, 연결마다 학습, 20 ms (200스텝),
 체크포인팅 20스텝마다
@@ -60,8 +60,7 @@ def main():
 def bench_torch(brain, a):
     import torch
     kw = dict(t_ms=a.t_ms, trainable=True, checkpoint_every=20)
-    makers = [("연결 장치 (자체 엔진)", lambda: fd.torch.bridge(fd.ConnectomeLayer(brain, "sensory", "descending", **kw), seed=0)),
-              ("0.1 torch판 복사본", lambda: fd.torch.ConnectomeLayer(brain, "sensory", "descending", device="cuda", **kw))]
+    makers = [("연결 장치 (자체 엔진)", lambda: fd.torch.bridge(fd.ConnectomeLayer(brain, "sensory", "descending", **kw), seed=0))]
     for name, make in makers:
         m = make()
         opt = torch.optim.Adam(m.parameters(), lr=1e-3)

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import urllib.request
@@ -168,7 +169,8 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
                 say(f"  받는 중 {name}", flush=True)
             try:
                 _fetch(url, tmp, quiet)
-            except (OSError, ValueError) as e:                 # URLError·시간 초과·연결 끊김
+            except (OSError, ValueError, http.client.HTTPException) as e:   # URLError·시간 초과·연결 끊김 (받는 도중
+                #                                                         끊기면 IncompleteRead - OSError가 아니라 예전엔 안 잡힘)
                 if tmp.exists():
                     tmp.unlink()
                 raise IOError(f"{name} 받기 실패 ({type(e).__name__}: {e}) - 인터넷 연결을 확인하고 다시: "

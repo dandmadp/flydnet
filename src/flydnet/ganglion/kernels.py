@@ -30,6 +30,32 @@ __global__ void spmm_rm(const int* indptr, const int* indices, const float* data
         out[row * nb + b] = s;
     }
 }
+// segmented spmm (load balance for long rows, deterministic): each row is cut into fixed pieces of at most S nonzeros;
+// a group of gw threads computes each piece over the batch columns (same order inside a piece as spmm_rm), then
+// seg_reduce adds the pieces of a row in fixed order. Rows with one piece give exactly the spmm_rm bits.
+__global__ void spmm_seg(const int* seg_start, const int* seg_end, const int* indices, const float* data,
+                         const float* x, float* part, const int n_seg, const int nb, const int gw) {
+    const long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long seg = tid / gw;
+    const int lane = (int)(tid % gw);
+    if (seg >= n_seg || lane >= nb) return;
+    const int start = seg_start[seg], end = seg_end[seg];
+    for (int b = lane; b < nb; b += gw) {
+        float s = 0.f;
+        for (int k = start; k < end; ++k) s += data[k] * x[(long long)indices[k] * nb + b];
+        part[seg * nb + b] = s;
+    }
+}
+__global__ void seg_reduce(const int* row_seg, const float* part, float* out, const int n_rows, const int nb) {
+    const long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= (long long)n_rows * nb) return;
+    const long long row = tid / nb;
+    const int b = (int)(tid % nb);
+    const int s0 = row_seg[row], s1 = row_seg[row + 1];
+    float s = 0.f;
+    for (int q = s0; q < s1; ++q) s += part[(long long)q * nb + b];
+    out[tid] = s;
+}
 // one thread per edge (small batches)
 __global__ void edge_dot_thread(const int* post, const int* pre, const float* g, const float* x,
                                 float* out, const long long n_edges, const int nb) {
@@ -139,6 +165,8 @@ __global__ void lif_brian_bwd(const float* gV3, const float* gG3, const float* g
 }
 """
 # 커널 설명: spmm_rm = 받는 뉴런(행) 하나를 스레드 gw개가 (배치가 작으면 워프 하나가 행 여러 개), 행 우선이라 연속 읽기
+#            spmm_seg + seg_reduce = 긴 행을 연결 SEG개씩 조각내 동시에 계산하고 정해진 순서로 더함 (부하 균형, 결정론적).
+#            버섯체 APL(입력 2,597개)·MBON처럼 긴 행 하나가 끝날 때까지 나머지가 기다리던 것 - 배치 256에서 약 10배
 #            edge_dot_rm = 연결마다 Σ_b g[post, b]·x[pre, b], 워프 안에서 합산 / edge_dot_thread = 배치가 작을 때 연결마다 스레드 하나
 # 소스는 ASCII만 (CuPy가 시스템 인코딩으로 파일을 써서, 한국어 윈도우(cp949)에서 다른 문자가 있으면 컴파일 실패)
 assert _CUDA_SRC.isascii()
@@ -151,7 +179,7 @@ def _cuda():
         import cupy as cp
         try:
             mod = cp.RawModule(code=_CUDA_SRC)
-            for name in ("spmm_rm", "edge_dot_rm", "edge_dot_thread", "edge_dot_u8", "poisson_spikes", "lif_brian_fwd",
+            for name in ("spmm_rm", "spmm_seg", "seg_reduce", "edge_dot_rm", "edge_dot_thread", "edge_dot_u8", "poisson_spikes", "lif_brian_fwd",
                          "lif_brian_bwd"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
                 mod.get_function(name)
         except Exception as e:
@@ -168,19 +196,51 @@ def _gpu_ok(*arrays) -> bool:
     return all(a.dtype == cp.float32 and a.flags.c_contiguous for a in arrays)
 
 
+SEG = 64                                                            # 행 조각의 최대 연결 수
+_SEGS = {}
+
+
+def _segments(indptr):
+    """행 조각 (조각마다 시작·끝, 행마다 조각 범위). 배선마다 한 번 (같은 indptr 객체면 재사용 - 순전파 행렬은 배선의
+    indptr을 그대로 씀). 반환 (seg_start, seg_end, row_seg) GPU int32"""
+    hit = _SEGS.get(id(indptr))
+    if hit is not None and hit[0] is indptr:
+        return hit[1]
+    import cupy as cp
+    ip = cp.asnumpy(indptr).astype(np.int64)
+    n = np.diff(ip)
+    k = np.maximum(1, -(-n // SEG))                                    # 빈 행도 조각 하나 (0을 씀)
+    row_seg = np.zeros(len(n) + 1, np.int64)
+    row_seg[1:] = np.cumsum(k)
+    seg_row = np.repeat(np.arange(len(n)), k)
+    j = np.arange(row_seg[-1]) - row_seg[:-1][seg_row]
+    st = ip[:-1][seg_row] + j * SEG
+    en = np.minimum(st + SEG, ip[1:][seg_row])
+    segs = tuple(cp.asarray(a.astype(np.int32)) for a in (st, en, row_seg))
+    if len(_SEGS) > 64:
+        _SEGS.clear()
+    _SEGS[id(indptr)] = (indptr, segs)                                 # 객체를 붙잡아 같은 주소의 다른 배열과 섞이지 않게
+    return segs
+
+
 def spmm(M, x):
-    """희소 CSR (n_rows, n) @ 밀집 (n, nb). GPU·float32면 행 우선 전용 커널 (CuPy 기본보다 몇 배 빠름)"""
+    """희소 CSR (n_rows, n) @ 밀집 (n, nb). GPU·float32면 전용 커널 (결정론적 - 같은 입력이면 늘 같은 비트.
+    CuPy 기본(cuSPARSE)은 실행마다 반올림이 달라 스파이크가 달라질 수 있음). 긴 행은 조각내 부하 균형"""
     if (B.device_of(x) != "gpu" or x.ndim != 2 or not _gpu_ok(x, M.data) or M.indices.dtype.itemsize != 4
             or _cuda() is None):
         return M @ x
     import cupy as cp
     n_rows, nb = M.shape[0], x.shape[1]
-    out = cp.empty((n_rows, nb), dtype=cp.float32)
-    gw = min(32, 1 << max(0, (nb - 1).bit_length()))                 # 배치가 작으면 워프 하나가 행 여러 개
+    st, en, row_seg = _segments(M.indptr)
+    n_seg = len(st)
+    gw = min(32, 1 << max(0, (nb - 1).bit_length()))                 # 배치가 작으면 워프 하나가 조각 여러 개
     threads = 256
-    blocks = (n_rows * gw + threads - 1) // threads
-    _cuda().get_function("spmm_rm")((blocks,), (threads,), (M.indptr, M.indices, M.data, x, out,
-                                                              np.int32(n_rows), np.int32(nb), np.int32(gw)))
+    part = cp.empty((n_seg, nb), dtype=cp.float32)
+    _cuda().get_function("spmm_seg")(((n_seg * gw + threads - 1) // threads,), (threads,),
+                                     (st, en, M.indices, M.data, x, part, np.int32(n_seg), np.int32(nb), np.int32(gw)))
+    out = cp.empty((n_rows, nb), dtype=cp.float32)
+    _cuda().get_function("seg_reduce")(((n_rows * nb + threads - 1) // threads,), (threads,),
+                                       (row_seg, part, out, np.int32(n_rows), np.int32(nb)))
     return out
 
 
@@ -293,7 +353,7 @@ def _reduce_to(g, like):
 
 def lif_step(V: Signal, G: Signal, I: Signal, p_in: Signal, spikes, act, in_idx, v_eq, a, gd: float,
              poi_w: float, v_th: float, v_rst: float, scale: float, slope: float):
-    """LIF 한 스텝. 반환 (V, G, spk) - torch판 ConnectomeLayer의 한 스텝과 같은 계산
+    """LIF 한 스텝 (timing="legacy"). 반환 (V, G, spk) - 0.1의 torch판과 같은 계산
       G1 = G + I;  V1 = act ? V + (v_eq - V + G1)·a : V;  G2 = act ? G1·gd : G1
       V2 = V1 + 입력 스파이크·poi_w (입력 뉴런 행);  spk = (V2 - v_th)/scale > 0
       V3 = spk ? v_rst : V2;  G3 = spk ? 0 : G2

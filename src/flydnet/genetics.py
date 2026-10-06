@@ -97,6 +97,8 @@ def driver(circuit, group: str | None = None, root_ids=None, name: str | None = 
                 값이 re.compile("MBON.*")이면 정규식"""
     if group is None and root_ids is None and not annotation:
         raise ValueError("group, root_ids, 주석 조건 중 하나는 필요")
+    if missing not in ("error", "warn", "ignore"):                       # 예전: 오타("skip" 등)가 조용히 ignore처럼
+        raise ValueError(f"missing은 'error', 'warn', 'ignore' 중 하나: {missing!r}")
     keep = np.ones(circuit.N, bool)
     parts = []
     if group is not None:
@@ -330,9 +332,13 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     make = {"silence": silence, "block": block, "activate": lambda L, l: activate(L, l, hz=hz)}
     if effector not in make:
         raise ValueError(f"effector는 {list(make)} 중 하나")
+    if not lines_:
+        raise ValueError("lines_가 비어 있음 - {이름: Line} (fd.genetics.lines(...) 등)")
     import warnings
     seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
-    min_p = 2 / 2 ** len(seeds)                                     # 부호 뒤집기 검정이 낼 수 있는 가장 작은 p
+    if len(set(seeds)) != len(seeds):                               # 같은 seed = 같은 짝을 두 번 세어 p가 작아짐 (유사 반복)
+        raise ValueError(f"seeds에 같은 값이 있음: {seeds} - 짝마다 다른 seed")
+    min_p = 2 / 2 ** len(seeds)                                    # 부호 뒤집기 검정이 낼 수 있는 가장 작은 p
     if min_p > 0.05:
         warnings.warn(f"seed {len(seeds)}개로는 p가 {min_p:.3g} 아래로 내려갈 수 없음 - 효과가 커도 유의하지 않게 나옴. "
                       "seeds=6 이상 (p < 0.05가 가능한 최소)", stacklevel=2)
@@ -352,6 +358,8 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     for i, (name, line) in enumerate(lines_.items()):
         with make[effector](layer, line):
             val = np.array([float(measure(layer, s)) for s in seeds])
+        if not np.isfinite(val).all():                                  # 어느 집단에서 생겼는지 알리게
+            raise ValueError(f"screen: 집단 '{name}'에 {effector}를 발현한 측정값에 NaN·무한대: {val.tolist()}")
         d = val - base
         rows.append(dict(line=name, n=len(line), baseline=base.mean(), manipulated=val.mean(), change=d.mean(),
                          rel_change=d.mean() / base.mean() if base.mean() else np.nan,

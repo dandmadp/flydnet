@@ -37,7 +37,6 @@ class RateEncoder(Tissue):
     - n_in == n_out 이고 projection=None: 특징 하나 = 뉴런 하나
     - 아니면 고정 무작위 희소 투영: 뉴런마다 특징 k개를 모아 받음 (사구체가 여러 수용체 입력을 모으듯)
     출력은 샘플마다 최댓값이 max_rate가 되도록 정규화 (음수는 0)
-    torch판(flydnet.torch.RateEncoder)과 투영의 무작위 선택은 다름 (난수 생성기가 다름)
     """
 
     def __init__(self, n_in: int, n_out: int, max_rate: float = 100.0, k: int = 20, seed: int = 0,

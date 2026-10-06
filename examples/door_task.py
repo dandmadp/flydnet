@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 없이 실행
 import flydnet as fd
@@ -34,39 +33,39 @@ ap.add_argument("--min-class-size", type=int, default=7, help="B에서 쓸 계�
 args = ap.parse_args()
 
 mb = fd.Circuit.from_flywire()
-enc = fd.torch.GlomerularEncoder(mb)
-door = fd.torch.door_odors(enc.glomeruli, args.data, min_measured=args.min_measured)
+enc = fd.GlomerularEncoder(mb)
+door = fd.door_odors(enc.glomeruli, args.data, min_measured=args.min_measured)
 X0, classes = door["X"], np.asarray(door["classes"])
 print(f"{mb}\nDoOR 냄새 {len(X0)}개 | 사구체 {enc.n_glomeruli}개 중 측정 {int(door['measured'].any(0).sum())}개 | "
-      f"냄새당 켜진 사구체 {(X0 > 0.05).sum(1).float().mean():.1f}개\n")
+      f"냄새당 켜진 사구체 {(X0 > 0.05).sum(1).mean():.1f}개\n")
 
-mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
+mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
 
 
 def jitter(X, n, seed):
     """냄새마다 n개 샘플: 세기 흔들림 × exp(N(0, noise)) + |N(0, add_noise)|"""
-    g = torch.Generator().manual_seed(seed)
-    y = torch.arange(len(X)).repeat_interleave(n)
-    x = X[y] * torch.exp(args.noise * torch.randn(len(y), X.shape[1], generator=g))
-    return x + (args.add_noise * torch.randn(len(y), X.shape[1], generator=g)).abs(), y
+    g = np.random.default_rng(seed)
+    y = np.repeat(np.arange(len(X)), n)
+    x = X[y] * np.exp(args.noise * g.standard_normal((len(y), X.shape[1])))
+    return (x + np.abs(args.add_noise * g.standard_normal((len(y), X.shape[1])))).astype(np.float32), y
 
 
 def features(x):
-    return {"glomeruli": x} | {name: fd.torch.extract(L, enc, x) for name, L in layers.items()}
+    return {"glomeruli": x} | {name: fd.extract(L, enc, x) for name, L in layers.items()}
 
 
-acc = lambda Ftr, ytr, Fte, yte: fd.torch.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
+acc = lambda Ftr, ytr, Fte, yte: fd.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
 
 
 def report(title, res):
-    glo, real = torch.tensor(res["glomeruli"]), torch.tensor(res["real"])
-    shuf = torch.tensor([res[f"shuffled{k}"] for k in range(args.shuffles)]).T   # (반복, 무작위)
+    glo, real = np.array(res["glomeruli"]), np.array(res["real"])
+    shuf = np.array([res[f"shuffled{k}"] for k in range(args.shuffles)]).T   # (반복, 무작위)
     diff = real - shuf.mean(1)
     print(f"{title}\n  glomeruli {glo.mean():5.1f} | KC real {real.mean():5.1f} | KC shuffled {shuf.mean():5.1f} "
           f"(무작위끼리 범위 {shuf.mean(0).min():.1f}~{shuf.mean(0).max():.1f})\n"
-          f"  실제 - 무작위: {diff.mean():+.2f} ± {diff.std() / len(diff) ** 0.5:.2f} (표준오차, {len(diff)}회) | "
-          f"양수 {int((diff > 0).sum())}/{len(diff)} | 실제가 이긴 비율 {(real[:, None] > shuf).float().mean() * 100:.0f}%",
+          f"  실제 - 무작위: {diff.mean():+.2f} ± {diff.std(ddof=1) / len(diff) ** 0.5:.2f} (표준오차, {len(diff)}회) | "
+          f"양수 {int((diff > 0).sum())}/{len(diff)} | 실제가 이긴 비율 {(real[:, None] > shuf).mean() * 100:.0f}%",
           flush=True)
 
 
@@ -85,9 +84,9 @@ t = time.time()
 names, counts = np.unique(classes, return_counts=True)
 use = [c for c, n in zip(names, counts) if n >= args.min_class_size and c != "other"]
 idx = np.nonzero(np.isin(classes, use))[0]
-lab = torch.tensor([use.index(c) for c in classes[idx]])
+lab = np.array([use.index(c) for c in classes[idx]])
 print(f"\nB. 화학 계열: " + ", ".join(f"{c} {int((classes == c).sum())}" for c in use)
-      + f" (냄새 {len(idx)}개, 가장 큰 계열만 찍으면 {lab.bincount().max() / len(lab) * 100:.0f}%)")
+      + f" (냄새 {len(idx)}개, 가장 큰 계열만 찍으면 {np.bincount(lab).max() / len(lab) * 100:.0f}%)")
 res = {k: [] for k in ["glomeruli"] + list(layers)}
 for s in range(args.seeds):
     x, which = jitter(X0[idx], 20, seed=100 + s)                 # which = 몇 번째 냄새의 샘플인지
@@ -96,10 +95,10 @@ for s in range(args.seeds):
     rng = np.random.default_rng(s)
     fold = np.empty(len(idx), int)                               # 계열별로 고르게 5겹 나누기
     for c in range(len(use)):
-        members = rng.permutation(np.nonzero(lab.numpy() == c)[0])
+        members = rng.permutation(np.nonzero(lab == c)[0])
         fold[members] = np.arange(len(members)) % 5
     for f in range(5):
-        te = torch.tensor(fold[which.numpy()] == f)
+        te = fold[which] == f
         for k in res:
             res[k].append(acc(F[k][~te], y[~te], F[k][te], y[te]))
 report(f"  학습에 안 쓴 냄새의 계열 정확도 (5겹 × seed {args.seeds}개, {time.time() - t:.0f}s)", res)

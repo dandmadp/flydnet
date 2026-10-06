@@ -19,8 +19,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 없이 실행
 import flydnet as fd
@@ -35,18 +33,31 @@ ap.add_argument("--k-frac", type=float, default=0.2)
 ap.add_argument("--projection", default="gaussian", choices=["sparse", "gaussian"])
 ap.add_argument("--side", default="both", choices=["right", "both"], help="both = 양쪽 버섯체 (KC 약 2배)")
 args = ap.parse_args()
-dev = "cuda" if torch.cuda.is_available() else "cpu"
-if dev == "cuda":
-    torch.cuda.set_per_process_memory_fraction(0.75)
 
 
 # ─────────────── 1. 사전학습 특징 (캐시) ───────────────
 def features():
-    cache = Path(args.data) / f"cifar100_{args.backbone}_feats.pt"
+    """ImageNet 사전학습 특징 (torch·torchvision이 필요한 곳은 처음 한 번 뽑을 때뿐). 캐시는 numpy (.npz)"""
+    cache = Path(args.data) / f"cifar100_{args.backbone}_feats.npz"
     if cache.exists():
-        return torch.load(cache)
+        with np.load(cache) as z:
+            return z["Xtr"], z["ytr"], z["Xte"], z["yte"]
+    old = cache.with_suffix(".pt")                                    # 예전 torch 캐시가 있으면 옮김
+    if old.exists():
+        import torch
+        out = [t.numpy() for t in torch.load(old)]
+    else:
+        out = _extract_with_torch()
+    np.savez(cache, Xtr=out[0], ytr=out[1], Xte=out[2], yte=out[3])
+    return tuple(out)
+
+
+def _extract_with_torch():
+    import torch
+    import torch.nn as nn
     import torchvision
     import torchvision.transforms as T
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
     w = {"resnet18": torchvision.models.ResNet18_Weights.IMAGENET1K_V1,
          "resnet50": torchvision.models.ResNet50_Weights.IMAGENET1K_V2}[args.backbone]
     net = getattr(torchvision.models, args.backbone)(weights=w)
@@ -62,16 +73,17 @@ def features():
         with torch.no_grad(), torch.autocast(dev, dtype=torch.float16, enabled=dev == "cuda"):
             for x, y in dl:
                 F.append(net(x.to(dev)).float().cpu()); Y.append(y)
-        out += [torch.cat(F), torch.cat(Y)]
+        out += [torch.cat(F).numpy(), torch.cat(Y).numpy()]
         print(f"  특징 {'학습' if train else '평가'} {len(out[-1])}개, {time.time() - t:.0f}s", flush=True)
-    torch.save(tuple(out), cache)
-    return tuple(out)
+    return out
 
 
 Xtr, ytr, Xte, yte = features()
+Xtr, Xte = Xtr.astype(np.float32), Xte.astype(np.float32)
+ytr, yte = ytr.astype(np.int64), yte.astype(np.int64)
 print(f"특징 {args.backbone}: {tuple(Xtr.shape)}")
-order = torch.randperm(100, generator=torch.Generator().manual_seed(args.seed))
-tasks = order.view(args.tasks, -1)                                    # 과제별 클래스
+order = np.random.default_rng(args.seed).permutation(100)
+tasks = order.reshape(args.tasks, -1)                                 # 과제별 클래스
 
 
 def run_task_loop(learn, predict):
@@ -79,50 +91,53 @@ def run_task_loop(learn, predict):
     accs, seen = [], []
     for t, cls in enumerate(tasks):
         seen += cls.tolist()
-        m = torch.isin(ytr, cls)
+        m = np.isin(ytr, cls)
         learn(Xtr[m], ytr[m], seen)
-        mt = torch.isin(yte, torch.tensor(seen))
-        accs.append((predict(Xte[mt], seen).cpu() == yte[mt]).float().mean().item())
+        mt = np.isin(yte, seen)
+        accs.append(float((np.asarray(predict(Xte[mt], seen)) == yte[mt]).mean()))
     return accs
 
 
 # ─────────────── 2. 역전파 기준선 ───────────────
-mu, sd = Xtr.mean(0), Xtr.std(0).clamp_min(1e-6)
-norm = lambda X: ((X - mu) / sd).to(dev)
+mu, sd = Xtr.mean(0), np.maximum(Xtr.std(0), 1e-6)
+norm = lambda X: ((X - mu) / sd).astype(np.float32)
+
+
+def _mask(seen):
+    m = np.full(100, -1e9, np.float32)                                 # 아직 안 본 클래스는 고르지 않음
+    m[seen] = 0
+    return m
 
 
 def linear_cl(buffer_per_class=0, epochs=1, lr=1e-3):
-    torch.manual_seed(0)
-    lin = nn.Linear(Xtr.shape[1], 100).to(dev)
-    opt = torch.optim.Adam(lin.parameters(), lr=lr)
+    lin = fd.Projection(Xtr.shape[1], 100, seed=0)
+    rule = fd.Adaptive(lin.named_synapses(), rate=lr)
     buf_x, buf_y = [], []
 
     def learn(X, y, seen):
         Xb, yb = X, y
         if buf_x:
-            Xb, yb = torch.cat([X] + buf_x), torch.cat([y] + buf_y)
-        mask = torch.full((100,), float("-inf"), device=dev); mask[seen] = 0
-        g = torch.Generator().manual_seed(len(seen))
+            Xb, yb = np.concatenate([X] + buf_x), np.concatenate([y] + buf_y)
+        mask = _mask(seen)
+        g = np.random.default_rng(len(seen))
         for _ in range(epochs):
-            perm = torch.randperm(len(Xb), generator=g)
+            perm = g.permutation(len(Xb))
             for i in range(0, len(Xb), 64):
                 j = perm[i:i + 64]
-                loss = nn.functional.cross_entropy(lin(norm(Xb[j])) + mask, yb[j].to(dev))
-                opt.zero_grad(); loss.backward(); opt.step()
+                rule.clear(); fd.surprise(lin(norm(Xb[j])) + mask, yb[j]).retrograde(); rule.step()
         if buffer_per_class:
-            for c in y.unique():
-                idx = torch.nonzero(y == c)[:buffer_per_class, 0]
+            for c in np.unique(y):
+                idx = np.nonzero(y == c)[0][:buffer_per_class]
                 buf_x.append(X[idx]); buf_y.append(y[idx])
 
     def predict(X, seen):
-        mask = torch.full((100,), float("-inf"), device=dev); mask[seen] = 0
-        with torch.no_grad():
-            return (lin(norm(X)) + mask).argmax(1)
+        with fd.quiescent():
+            return (lin(norm(X)).numpy() + _mask(seen)).argmax(1)
     return run_task_loop(learn, predict)
 
 
 def assoc_cl(encode, k):
-    ro = fd.torch.AssocReadout(encode(Xtr[:2]).shape[1], 100, per_class=k, device=dev)
+    ro = fd.AssocReadout(int(np.shape(encode(Xtr[:2]))[1]), 100, per_class=k)
     learn = lambda X, y, seen: ro.fit(encode(X), y, batch=256)
     predict = lambda X, seen: ro.predict(encode(X), classes=seen)
     return run_task_loop(learn, predict)
@@ -130,7 +145,7 @@ def assoc_cl(encode, k):
 
 results = {}
 t0 = time.time()
-r = fd.torch.train_linear(Xtr, ytr, Xte, yte, n_classes=100, epochs=30)
+r = fd.train_linear(Xtr, ytr, Xte, yte, n_classes=100, epochs=30)
 results["joint (상한선, 연속 학습 아님)"] = [r["test_acc"]]
 results["finetune 선형"] = linear_cl()
 results["replay-20 선형"] = linear_cl(buffer_per_class=20)
@@ -140,13 +155,15 @@ print(f"역전파 기준선 {time.time() - t0:.0f}s", flush=True)
 mb = fd.Circuit.from_flywire(side=None if args.side == "both" else "right")
 n_in = Xtr.shape[1]
 expanders = {
-    "KC 실제 배선": fd.torch.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection),
-    "KC 무작위 배선": fd.torch.KCExpansion(mb.shuffled(seed=0), n_in=n_in, k_frac=args.k_frac, projection=args.projection),
+    "KC 실제 배선": fd.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection),
+    "KC 무작위 배선": fd.KCExpansion(mb.shuffled(seed=0), n_in=n_in, k_frac=args.k_frac, projection=args.projection),
 }
-# 같은 크기의 가우스 무작위 확장 (커넥톰 없이 흔히 쓰는 방식) — 같은 PN 투영 뒤 밀집 무작위 행렬
-g_exp = fd.torch.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection)
-g_exp.W = torch.randn(g_exp.W.shape, generator=torch.Generator().manual_seed(1)).abs().to(g_exp.W.device) \
-    * (torch.rand(g_exp.W.shape, generator=torch.Generator().manual_seed(2)) < (g_exp.W > 0).float().mean().item()).to(g_exp.W.device)
+# 같은 크기의 희소 무작위 확장 (커넥톰 없이 흔히 쓰는 방식) — 같은 PN 투영 뒤, 같은 연결 밀도의 무작위 행렬
+g_exp = fd.KCExpansion(mb, n_in=n_in, k_frac=args.k_frac, projection=args.projection)
+W0 = fd.ganglion.backend.numpy(g_exp.W)
+rng = np.random.default_rng(1)
+W = (np.abs(rng.standard_normal(W0.shape)) * (rng.random(W0.shape) < (W0 > 0).mean())).astype(np.float32)
+g_exp.buffer("W", fd.ganglion.backend.to(W, fd.ganglion.backend.device_of(g_exp.W)))
 g_exp.name = "희소 무작위 (같은 연결 밀도)"
 expanders["KC 희소 무작위 행렬"] = g_exp
 print(expanders["KC 실제 배선"])

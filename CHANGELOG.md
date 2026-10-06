@@ -1,5 +1,179 @@
 # 변경 기록
 
+## [0.1.18] - 미배포
+
+- **`fd.gradcheck`가 학습값 배열을 사본으로 바꿔 끼우던 것**: 되돌릴 때 원래 배열이 아니라 사본을 넣어, 같은 메모리를 쓰던
+  `fd.torch.bridge`(torch 옵티마이저)와의 연결이 끊김 → 제자리로 바꿨다 되돌림
+- **`fd.torch.bridge`로 감싼 뒤 학습값이 생기면 (확장을 붙이는 등) torch가 '기울기 개수가 틀림' 오류**: 이름 목록을 다시 만들고
+  순전파 맨 앞에서 맞춤 (옵티마이저를 다시 만들라는 경고는 그대로)
+- **`fd.train`에 손실을 직접 주고 (B, T) 라벨이면 모든 에폭을 마친 뒤 오류로 멈춰 결과를 잃던 것** (0.1.18의 라벨 검사) →
+  train_acc는 라벨이 시료마다 하나일 때만 (아니면 None)
+- `fd.graphs.watts_strogatz`: 다시 잇기에서 자기 자신·이미 있는 상대를 뽑으면 나중에 버려 연결이 n·k개보다 적었음
+  (beta 1에서 1.3% 적음) → 피해서 다시 뽑음 (networkx와 같음, 같은 seed의 그래프가 바뀜 - `examples/any_graph.py` 수치도)
+- `fd.STDP`·`fd.Monitor`를 연속값 뉴런 층에: 그 순전파는 관찰자를 부르지 않아 STDP는 알기 어려운 오류, 직접 만든 관찰자는
+  조용히 아무것도 안 함 → 만들 때 알림
+- `fd.compare`: 점수가 0~1이 아니면 (발화율 Hz 등) "과제가 너무 쉬움" 상한 경고를 내지 않음 (예전: 늘 붙었음)
+- `fd.genetics.screen`: 빈 집단 목록·조작 뒤 측정값 NaN을 어느 집단인지 알림, `driver(missing=)` 오타는 오류
+- `fd.KCExpansion`: 빈 입력에 빈 출력 (예전: concatenate 오류), `fd.neurons.Izhikevich`: a·b·c·d NaN 확인
+- 데이터 받기: 받는 도중 연결이 끊기는 IncompleteRead도 안내 오류로 (예전: 원래 오류 그대로)
+- `Circuit.from_flywire`: 주석의 같은 뉴런이 두 번이면 버림 (whole_brain과 같게 - 지금 데이터에는 없음)
+
+- **그룹끼리 뉴런이 겹치는 회로로 만든 층·Neuropil이 조용히 틀린 계산을 하던 것**: 겹친 입력 뉴런이 입력 자리에 두 번 들어가
+  순전파는 마지막 값만, 역전파는 두 자리 모두에 기울기 (Neuropil은 첫 자리 값을 버림), 연결 종류 번호도 마지막 그룹으로.
+  `fd.Circuit`은 겹침을 허용하므로 (확인은 `circuit.check()`) 층·Neuropil이 만들 때 알림. 제공하는 회로(버섯체·전체 뇌·
+  시각계·선충·합성 그래프)는 겹치지 않음
+- **`ConnectomeLayer.load`가 저장 파일에 적힌 모듈·클래스를 그대로 불러 실행하던 것** (0.1.18의 확장 자리): 남이 만든 파일로
+  코드가 돌 수 있었음 (pickle과 같은 위험) → flydnet 안의 확장(Tissue + extension_config)만 다시 붙임
+- `where(조건, a, b)`: GPU 조건 + CPU 신호에서 TypeError → 조건을 신호의 장치로
+- `ConnectomeLayer(trainable="PN>KC")` (문자열 하나): 글자마다 연결 종류로 봐서 엉뚱한 오류 → 연결 종류 하나로
+- `fd.flywire(side="both")` 등 없는 side가 "그룹이 모두 비었음"으로 보이던 것 → 쓸 수 있는 값 안내 (양쪽은 side=None)
+
+- **`fd.sign_flip_p`에 NaN이 섞이면 p = 0 (유의)으로 나오던 것**: 평균이 NaN이 되어 모든 비교가 거짓 → 실패한 seed 하나가
+  "6/6 유의"처럼 보였음. 이제 NaN·무한대는 오류, (n, 1)은 폄 (`compare`·`genetics.screen`도 이 함수를 씀)
+- **`Learner.learn`이 배우다 실패하면 새 라벨만 남던 것**: 나중에 그중 일부만 배우면 backprop의 빈 클래스 가중치가 빈 평균(NaN)
+  → 실패하면 새 라벨을 되돌림
+- `fd.evaluate`: 출력이 (시료, 클래스)가 아니면 오류 - (배치, 시간, 클래스)면 argmax가 (배치, 시간)이 되어 시간 길이 = 배치일 때
+  라벨과 퍼져 조용히 틀린 정확도
+- `Learner(rule="backprop")` 저장에 학습 관성(Adam)도 - 불러온 뒤 이어 배우면 저장 안 한 것과 같은 결과 (예전: 점수가 0.08 다름)
+- `AssocReadout`·`DopamineReadout.fit`에 pandas: 행 이름으로 골라 KeyError → numpy로
+- `lab.grow_contrastive`: 상한이 차서 아무것도 안 만들 때도 인자(tau·samples·candidates·augment)를 확인
+- `python -m flydnet --help`가 실패(종료 코드 1)로 끝나던 것 → 0. 모르는 명령은 무엇이 틀렸는지 알림
+- 알기 어려운 오류 대신 안내: `graphs.stochastic_block`에 사전이 아닌 sizes, `Circuit.regroup`에 노드 번호가 아닌 값
+
+- **(n, 1) 모양 라벨에서 정확도가 조용히 틀리던 것**: scikit-learn 습관대로 라벨을 열 벡터로 주면 예측 (n,)과 비교할 때
+  (n, n)으로 퍼져 `fd.evaluate`가 23.0 같은 값을, `AssocReadout.accuracy`가 다른 정확도를 냄 (`DopamineReadout.fit`·`fd.train`·
+  `train_linear`은 알기 어려운 오류). 이제 분류용 함수 모두 (n, 1)을 펴고, 그 밖의 2차원 라벨은 알기 쉬운 오류
+  (`fd.train`에 손실을 직접 주면 (B, T) 같은 라벨은 그대로)
+
+- **`grow`·`prune`이 잘못된 인자를 조용히 넘기던 것**: 추가 연결 상한이 찼거나 추가 연결이 없으면, 필요한 인자(`rates`·`loss`·
+  `inputs`)가 빠졌거나 `prune(frac=5)`처럼 범위 밖이어도 0개를 돌려주며 넘어갔음 → 인자 확인을 먼저
+
+- **`calibrate`가 진동하다 목표에 못 닿던 것**: 반응이 가파른 회로(예: PN→KC 연결 80%를 끊은 버섯체)에서 보폭 0.5로 두 배율
+  사이를 오가다 끝나 KC 8.1 Hz (목표 5)로 남았음. 지금은 목표를 넘었다 못 미쳤다를 연속 두 번 오가는 그룹만 보폭을 반으로 줄이고,
+  그래도 못 닿으면 반복 중 가장 가까웠던 배율로 되돌림. 진동 없이 수렴하던 보정은 예전과 같은 배율 (손상 없는 버섯체 KC·MBON 확인)
+
+- **한 줄 학습기 `fd.Learner`**: 커넥톰 고정, 데이터 한 번 훑기로 학습, 새 데이터는 이어서 (앞에서 배운 것 유지).
+  입력 변환·연결 세기 보정은 처음 데이터로 자동 (보정은 한 번만 - 나중에 바꾸면 기억과 특징이 어긋남)
+  - `learn(X, y)`, `predict`, `score`, `features`, `save`·`Learner.load` (불러온 뒤에도 계속 배움). 라벨은 문자열 등 아무 값
+  - `source="이름"`: 특징 수가 다른 데이터는 입력 변환만 따로, 커넥톰·기억은 공유
+  - `rule="lda"` (기본): 흐름 선형 판별 (streaming LDA, Hayes & Kanan 2020) - 클래스 평균 + 공유 공분산을 정확히 누적
+    (묶음·순서와 무관), 공분산 축소 자동 (max(OAS, 특징 수 / 시료 수)). 차례로 배우기: 냄새 24개 0.859 (assoc 0.744,
+    한 번에 0.865), MNIST KC 특징 0.896 (assoc 0.728), CIFAR-100 resnet18 특징 0.640 (assoc 0.539, 선형 상한 0.658)
+  - `rule="assoc"`: AssocReadout과 같은 도파민 연합 학습 - 다른 클래스 기억은 한 비트도 안 바뀜
+  - `rule="backprop"`: 망각을 줄인 역전파 - 새 클래스 가중치를 그 클래스 평균 특징으로 시작, 이번 learn()에 나온 클래스끼리만
+    경쟁, 코사인 점수 (특징 중심은 처음 데이터로 고정). class-incremental CIFAR-100 (resnet18 특징, 과제당 1에폭, 재생 없음)
+    24.7% → 58.5% (연합 53.9%), MNIST KC 특징 41.9% → 65.6% (연합 72.8%)
+  - DoOR 냄새 24개를 6개씩 차례로: lda 85.9%, 연합 74.4%, 역전파 70.8%. 한 번에 전부: lda 86.5%, 연합 71.2%,
+    역전파 84.1% (seed 3개)
+
+- **GPU 연결 전달이 크게 빨라짐 (결정론 유지)**: 긴 행(입력이 많은 뉴런)을 연결 64개씩 조각내 동시에 계산하고 정해진
+  순서로 더하는 커널. 예전 커널은 행 하나를 스레드 한 묶음이 끝까지 맡아, 버섯체 APL(입력 2,597개)·MBON처럼 긴 행 하나가
+  끝날 때까지 나머지가 기다렸음 (배치가 클수록 심함 - torch판보다 2배 느렸던 원인)
+  - 연결 전달 1번: 버섯체 배치 256 970 → 102 µs, 배치 1 82 → 22 µs, 전체 뇌 배치 8 1.2 → 0.4 ms
+  - 버섯체 순전파 (100 ms, 배치 256): 1,048 → 148 ms (예전 torch판 553 ms)
+  - 결정론적: 같은 입력이면 늘 같은 비트 (cuSPARSE는 실행마다 반올림이 달라 쓰지 않음). 짧은 행(조각 하나)은 예전과
+    비트 단위로 같고, 긴 행은 덧셈 순서가 바뀌어 반올림 수준(1e-4)으로 다름
+- **GPU에서 결과가 실행마다 미세하게 달라지던 곳** (cuSPARSE를 그대로 쓰던 곳): `Neuropil`의 전달·입력 기울기,
+  `ThreeFactor(feedback="connectome")`의 오차 전파 → 위 결정론적 커널
+- **[실험적] 추가 연결 (구조적 가소성, `growth`)** - 인터페이스·기본값이 바뀌거나 없어질 수 있음, 효과는 조건부: 실제 배선(고정)은 그대로 두고, 학습으로 생기고 없어지는 시냅스를 따로 얹음.
+  타고난 회로 위에 경험으로 시냅스가 덧붙고 없어지는 뇌의 방식 - 크기·연결이 고정이던 커넥톰 층의 한계를 풀면서 실제 배선은
+  늘 기준으로 남음. 엔진에는 들어 있지 않고 `flydnet.lab`의 부품: `g = lab.Growth(layer, allow=["PN>KC"], budget=5000)`
+    (층에 붙어 `layer.growth`, 저장·불러오기 때 같이 다시 붙음)
+  - `g.grow(n, rule=...)`: `"random"` (허용된 그룹 쌍 안에서), `"coactive"` (헤브 - 함께 많이 발화한 뉴런 쌍),
+    `"homeostatic"` (항상성, 정답 없이 - 그룹 평균보다 덜 발화하는 받는 뉴런이 모자란 만큼 새 입력을 받음, 보내는 뉴런은 무작위),
+    (정답 없는 대조 학습 성장은 엔진이 아니라 `flydnet.lab.grow_contrastive` - 라벨 없는 데이터 `inputs`를 `augment`로 두 번
+    따로 흔들어(`encoder`가 있으면 그다음 변환) 각 시료의 출력이 자기 짝을 찾도록 하는 대조 손실(InfoNCE, `lab.info_nce`)의
+    기울기로 `rule="gradient"`처럼 고름),
+    `"gradient"` (세기 0으로 넣었을 때 손실이 가장 줄 자리, RigL과 같은 생각). `g.prune(frac)`·`prune(below=)`는 추가
+    연결만, `g.extra_edges()`는 표
+  - 생물학적 제약: 허용된 그룹 쌍(기본 = 실제 배선에 있는 쌍) 안에서만, 이미 있는 연결·자기 연결 없음, 부호 = 보내는 뉴런의
+    실제 부호 (데일의 법칙), 전체 상한 `budget`, 받는 뉴런마다 상한 `per_neuron`
+  - 받는 뉴런마다 상한 `per_neuron` 기본 `"auto"` = ceil(budget / 받을 수 있는 뉴런 수) (SRigL의 일정한 fan-in). 상한이
+    없으면 기울기·헤브 규칙이 소수 뉴런에 연결을 몰아 그 뉴런들이 반응을 독차지 - MNIST 손상 회복에서 대조 학습이 KC 상위
+    10%에 51%를 몰아 0.825, 상한 3이면 0.851 (무작위 0.861). `per_neuron=None`이면 상한 없음
+  - 세기 = 시냅스 `init_syn`개 x 그 경로의 배율(gains) x exp(학습값) - 추가 시냅스 1개 = 같은 경로의 실제 시냅스 1개.
+    `init_syn` 기본 `"median"` = 그 그룹 쌍 실제 연결의 시냅스 수 중앙값 (버섯체 PN>KC 10개). 처음엔 시냅스 1개였는데,
+    실제 연결의 1/10이라 추가 연결 4,000개를 합쳐도 PN>KC 입력의 2.7%뿐이고 학습으로도 거의 안 커져 (중앙값 1.00~1.02개)
+    결과에 영향이 없었음
+  - 같은 지연, 같은 효과기(silence·block·activate·mosaic), 체크포인팅, 저장·불러오기(연결 수가 달라도), CPU·GPU, torch 연결 장치.
+    추가 연결이 없으면 계산이 전과 똑같음 (엔진 비트 비교). ThreeFactor·STDP는 고정 배선만 학습 (알림)
+  - 검증: 추가 연결을 얹은 층 = 그 연결을 처음부터 회로에 넣어 만든 층 (출력·입력 기울기·연결 기울기, LIF·graded, CPU·GPU)
+  - 가소성 규칙: prune·grow 뒤에도 살아남은 추가 연결의 관성·적응 상태(Adam 단계 수 포함)는 그 연결을 따라가고 새 연결만
+    0에서 시작 (연결 수가 같아도 자리가 바뀌면 옮김). 새 연결의 첫 변화량은 다른 연결과 같은 크기 (단계 수가 연결마다)
+  - 예제 `lab/growth_odor.py` (멀쩡한 회로): 실제 배선만 대 무작위·헤브·기울기·대조 학습 추가 연결 (에폭마다 약한 20%
+    없애고 다시 채움, 처음 채운 뒤 KC 5 Hz로 다시 보정, seed 6개). 이득 없음 (실제 배선만 0.881, 무작위 0.883, 헤브 0.874,
+    기울기 0.890, 대조 학습 0.884 - 모두 p ≥ 0.16). 상한이 없으면 헤브는 해로웠음 (0.803, 6/6, p = 0.031)
+  - 예제 `lab/growth_lesion.py` (손상 회복): PN→KC 연결 80%를 끊으면 0.877 → 0.823 (냄새 48개를 A·B로 나눠 B로 평가,
+    seed 6개). **정답 없이** 대조 학습(`lab.grow_contrastive`)으로 고른 추가 연결 1,350개(잃은 연결의 1/8)로 0.873 - 손상 전과
+    차이 없음, 무작위 1,350개 0.841보다 +0.032 (6/6, p = 0.031). 데이터를 만든 잡음과 무관한 SCARF 보기로도 같음 (순환 아님).
+    다른 과제 정답으로 고른 기울기 연결도 비슷 (0.870 / 5,400개 0.891), 활동만 보는 항상성 규칙은 무작위보다 못함
+  - 예제 `lab/growth_lesion_mnist.py` (MNIST 재현): **대조 학습의 이득 없음** - 80% 손상 0.862 → 0.812, 무작위 5,400개로
+    0.862 (회복), 대조 학습 0.851. 상한이 없으면 소수 KC에 몰려 0.825로 무작위보다 확실히 못했음 → 받는 뉴런 상한 auto로
+    손해는 사라짐. 입력 채널에 뜻이 있는 냄새에서는 통하고, 무작위로 섞인 MNIST 입력에서는 통하지 않음
+- **`flydnet.lab` (실험실)과 `lab/` 폴더**: 효과가 조건부이거나 증명되지 않은 것을 핵심에서 분리. `from flydnet import lab`로
+  따로 불러야 씀 (최상위 `fd.`에는 없음), 인터페이스가 바뀌거나 없어질 수 있음. 엔진에는 확장 자리 `ConnectomeLayer.attach(name,
+  부품)`만 있음 - 부품이 순전파마다 추가 경로를 내고(`paths()`), 배율 변화(`on_build()`)·학습 신호 필요 여부·표시·저장 인자를
+  알려 줌. 붙인 것이 없으면 엔진 계산은 전과 같음 (엔진 비트 비교). 지금: 추가 연결 `lab.Growth`, 대조 학습 성장 `lab.grow_contrastive`,
+  `lab.info_nce`, `lab.contrastive_loss`, 보기 만들기 `lab.views`·`lab.corrupt` (SCARF). 실험적 기능의 연구 예제는 `lab/`
+  (`growth_odor`·`growth_lesion`·`growth_lesion_mnist`) - 전체 검증에 기본으로 들어가지 않음 (`verify.py --lab`로 함께).
+  결론이 안정된 연구 재현 예제 `door_assoc`·`odor_ablation`도 `lab/`으로 - 다른 예제가 이미 실행하는 코드만 쓰고(고유 함수
+  0~2개, 단위 테스트가 확인) 버그를 잡은 기록이 없어 배포 검증에서 뺌 (전체 검증 순차 기준 약 67분 줄어듦)
+- **torch판 복사본 제거 (`fd.torch.ConnectomeLayer`, `fd.torch.RateEncoder` 등 0.1의 torch판 전부)**: 같은 기능이
+  flydnet 최상위에 있고, 계산 방식이 둘(legacy·brian)이라 버그가 쌍둥이로 나고(이번에도 RateEncoder·KCExpansion) 관리
+  부담이 컸음. **`fd.torch.bridge`는 그대로** - torch 모델 안에서 flydnet을 쓰는 방법은 이것 하나 (계산은 자체 엔진).
+  - 옮기는 법: `fd.torch.이름` → `fd.이름` (결과는 numpy·Signal). torch 학습 루프를 그대로 쓰려면
+    `fd.torch.bridge(fd.ConnectomeLayer(...))` (예: `examples/visual_motion.py`, `examples/torch_bridge.py`)
+  - 예제 13개를 자체 엔진으로 옮김. 계산이 legacy → brian(원본 Brian2와 같은 계산)으로 바뀌어 숫자가 조금 바뀜
+    (README 결과 갱신). 같은 배율에서 KC 활성 비율이 조금 높음 (PN>KC 3.0: 약 6% → 8%)
+  - MNIST 특징 캐시는 `.npz` (`feat_..._brian_*.npz`), CIFAR-100 특징 캐시도 `.npz` (예전 `.pt`가 있으면 한 번 옮김)
+  - `Circuit.to_dict`·`from_dict` 제거 (torch판 저장에만 쓰던 것. 저장은 `layer.save`의 np.savez)
+  - 테스트: torch판과 값을 비교하던 검사를 독립 기준으로 바꿈 - legacy LIF·graded 뉴런은 torch 기본 연산으로 다시 짠
+    참조 구현(`tests/_ref_models.py`)과 값·기울기 비교, 인코더·KC 확장·시각 도구는 수식으로 직접 계산한 값과
+- **입력 → 출력 경로를 찾을 때 입력으로 되돌아가는 우회와 출력을 지나 도는 고리를 경로로 세던 것** (세 곳이 같은 원인).
+  버섯체에는 PN → MBON → PN 흥분성 고리가 있어서, PN → KC 층에서 MBON이 "KC로 가는 중계"로 잡혔음:
+  - `layer.calibrate(R, {"KC": 5})`가 목표에 없는 MBON의 들어오는 연결까지 2배로 키움 (MBON 0 → 20.6 Hz) - 회로가 의도와
+    다르게 바뀜. `fd.MushroomBody`·`fd.ConnectomeModel`의 자동 보정도 같음
+  - `trainable="path"` (`fd.ConnectomeModel` 기본)가 KC 출력 모델에서 출력과 상관없는 `PN>MBON`·`KC>MBON`까지 학습
+    (이제 `PN>KC`·`KC>KC`만)
+  - `layer.reach`가 출력 KC가 거의 0 Hz인데 "신호가 MBON에서 끊김"으로 엉뚱한 그룹을 지목
+- `Reach.break_at`: 출력이 발화하면 꺼진 중계가 있어도 None (다른 경로로 신호를 받음 - 끊긴 곳이 아님). 꺼진 중계는 따로 알림
+- **`fd.compare`의 해석이 비교하지 않은 단계를 건너뛰고 원인을 단정하던 것**: `controls=["shuffled"]`만 비교해 실제 배선이
+  이기면 위치 구조일 수도 있는데 "중요한 구조: 세부 배선"으로 말했음 → 사이 단계 구조를 모두 후보로 ("다음 중 하나 이상")
+- `fd.sign_flip_p`: seed 15개 이상(표본 순열)에서 p = 0이 나올 수 있던 것 → (맞은 수 + 1) / (표본 수 + 1)
+- `fd.graphs.barabasi_albert`: 새 노드마다 m개라고 했지만 중복을 버려 연결이 약 3% 적었음 → 서로 다른 m개
+  (같은 seed의 그래프가 바뀜, `examples/any_graph.py` 수치도)
+- `fd.explain(verify=...)`: `fd.genetics.training()` 안에서 부르면 확인(실제로 끄기)할 때만 mosaic 드롭아웃이 켜져
+  예측과 다른 모델을 비교했음
+- **`fd.KCExpansion(n_in=...)`이 특징 20개 이하에서 입력 정보를 전부 잃던 것**: PN마다 특징 k_in(20)개
+  평균인데 k_in이 특징 수 이상이면 모든 PN이 같은 값 → 평균 빼기 뒤 0 → 입력과 상관없이 같은 KC 코드 (특징 16개, 시료 6개에
+  코드 2가지, 값 1e-5). 0.1.17의 RateEncoder 수정과 같은 규칙: k_in은 특징 수의 절반 이하 (특징 40개 이상이면 예전과 같음)
+- `load_state`가 버퍼 모양을 확인하지 않던 것: 다른 크기로 만든 구조물(RateEncoder의 투영 P, Neuropil 등)의 상태를 불러오면
+  조용히 바꿔 끼워 출력 크기가 달라졌음 → 학습 값처럼 먼저 확인하고 오류
+- `python -m flydnet verify`: 묶음을 안 주면 기본으로 받지 않는 worm까지 확인해 정상 설치에서도 missing·종료 코드 1
+  → 기본 묶음과 받아 둔 묶음만
+- **시료 하나 (n,)를 넣으면 오류로 죽던 곳** (층·Projection은 받는데): `model.predict`, `layer.reach`, `layer.calibrate`,
+  `Neuropil`, `DopamineReadout.predict`·`fit(리스트)` → 시료 하나는 (1, n) 묶음으로, predict는 클래스 번호 하나
+- `layer.gains["PN>KC"] = 2`처럼 직접 바꾸면 저장 파일에만 들어가고 순전파는 예전 세기 그대로였던 것 → 다음 순전파에 반영
+  (저장 전후 동작이 달랐음)
+- `fd.compare`·`genetics.screen`: 같은 seed를 두 번 주면 같은 짝을 두 번 세어 p가 작아짐 (유사 반복) → 오류
+- `fd.ConnectomeModel(target_hz="auto")`: 시행당 출력 스파이크 수를 t_ms 전체로 계산 → 스파이크를 세는 시간
+  (t_ms - count_from_ms)으로 (count_from_ms를 쓸 때만 달라짐)
+- **`Signal(불리언) + 숫자`가 논리합이 되던 것**: 숫자를 신호의 불리언형으로 바꿔 `[True, False] + 1`이 `[True, True]`
+  (numpy는 `[2, 1]`). 비교 결과(`s > 0`)를 세거나 더할 때 조용히 틀렸음
+- `MushroomBodyOutput`·`kenyon_code`: 시료 하나 (n,)를 (n, 1)로 봄 (위 DopamineReadout과 같은 패턴). predict는 클래스 번호 하나
+- 예제: `genetics_sugar.py`의 `rate_100Hz` 열에 발화율 대신 무자극 대비 증가량이 들어가던 것 (따로 `rise_100Hz`),
+  `any_graph.py` 설명문 (0.1.17부터 출력 그룹 평균 발화율로 맞춤)
+- **검증 도구** (`scripts/verify.py`, `tests/ref_*.py`):
+  - 참조 검사 10종 (약 1분): Signal 연산 55종의 값·기울기 대 torch autograd (꺾이는 점·동점·경계 포함), 역전파 엔진
+    구조, 최적화기 대 torch.optim (단계별), 내장 LIF 커널 대 일반 Signal 연산으로 짠 LIF (출력 스파이크 같음, 기울기
+    float64로 1e-7), legacy·graded 대 참조 구현, 층 대 torch nn, ThreeFactor 출력 쪽 = 역전파 (31조합), STDP = 직접 센
+    쌍 기반, 무작위 대조군 불변량, 회로·데이터 대 원본 파일 직접 집계, CPU = GPU·torch 연결 장치
+  - `scripts/verify.py`: 빠른 것부터 실패하면 멈춤, 테스트를 둘로 나눠 동시에, 예제를 GPU 메모리를 보며 병렬로.
+    `--changed`는 실제로 실행되는 flydnet 함수의 소스가 바뀐 예제만 다시 (함수 단위 지문, 주석만 바꾸면 그대로)
+  - `tests/snapshot.py`: 엔진 비트 단위 비교 (기준 `.verify/snapshot_base.npz`)
+- 테스트 강화: graded 음수 입력이 실제로 전달되는지, `fd.train`이 연결을 바꾸고 손실을 줄이는지 (예전엔 오류가 없는지만)
+- 테스트: 자식 프로세스의 한글 출력을 콘솔 인코딩(cp949)으로 읽다 실패하던 것 (환경 변수에 따라. 0.1.17에서 원인을 못 찾은 간헐 실패도 이것으로 보임)
+
 ## [0.1.17] - 2026-10-05
 
 - **전체 코드 검토 (3회 + 5회, 회차마다 다른 관점)**. 고친 뒤마다 이전 커밋과 82개 배열 비트 단위 비교·옵션 조합 시험·

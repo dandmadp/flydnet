@@ -69,6 +69,7 @@ def test_generators_structure():
     ws = G.watts_strogatz(100, 6, 0.0, inhibitory=0)
     assert ws.n_edges == 600 and np.all(np.bincount(ws.pre, minlength=100) == 6)
     ba = G.barabasi_albert(300, 3)
+    assert ba.n_edges == (300 - 3) * 3 and np.all(np.bincount(ba.pre, minlength=300)[3:] == 3)   # 새 노드마다 정확히 m개
     indeg = np.bincount(ba.post, minlength=300)
     assert indeg.max() > 5 * np.median(indeg[indeg > 0])                   # 허브
     sb = G.stochastic_block({"A": 100, "B": 100}, {("A", "A"): 0.2, ("A", "B"): 0.01}, inhibitory=0)

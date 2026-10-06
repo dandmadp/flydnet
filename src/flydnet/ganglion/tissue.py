@@ -119,6 +119,9 @@ class Tissue:
     def _loaded(self):
         """load_state 뒤 각 조직이 따로 할 일 (예: 불러온 버퍼로 설정 다시 세우기)"""
 
+    def _before_load(self, state: dict, prefix: str):
+        """load_state가 모양을 확인하기 전 각 조직이 따로 할 일 (예: 길이가 바뀌는 추가 연결 목록 맞추기)"""
+
     def clear_retro(self):
         """쌓인 역행성 신호(기울기) 지우기 (zero_grad)"""
         for s in self.synapses():
@@ -140,6 +143,11 @@ class Tissue:
 
     def load_state(self, state: dict, strict: bool = True):
         """state()로 저장한 것을 불러옴 (load_state_dict)"""
+        def pre(t, prefix):                                     # 길이가 바뀌는 상태(추가 연결)를 먼저 맞춤
+            t._before_load(state, prefix)
+            for n, c in t._tissues.items():
+                pre(c, prefix + n + ".")
+        pre(self, "")
         mine = self.state()
         optional = set()
 
@@ -171,6 +179,10 @@ class Tissue:
                 walk(c, prefix + n + ".")
         bad = [f"{n}: 모양 {tuple(np.shape(arr))} ≠ {tuple(syn[n].shape)}" for n, arr in state.items()
                if n in syn and tuple(np.shape(arr)) != tuple(syn[n].shape)]
+        bad += [f"{n}: 모양 {tuple(np.shape(state[n]))} ≠ {tuple(np.shape(mine[n]))}" for n in mine
+                if n not in syn and n not in optional and n in state and np.shape(state[n]) != np.shape(mine[n])]
+        # 버퍼도 (예전: 학습 값만 확인해서 다른 크기로 만든 RateEncoder의 투영 P 등을 조용히 바꿔 끼워 출력 크기가 바뀌었음.
+        # 길이가 달라도 되는 선택 항목 - gain_code 등 - 은 빼고)
         if bad:                                                 # 모두 먼저 확인 (예전: 앞의 값을 바꾼 뒤에 오류 → 반쯤 불러온 모델)
             raise ValueError("; ".join(bad))
         for n, arr in state.items():
@@ -328,6 +340,11 @@ class Neuropil(Tissue):
         for g in pre + post:
             if g not in circuit.groups:
                 raise ValueError(f"회로에 없는 그룹: {g}")
+        for role, gl in (("pre", pre), ("post", post)):
+            if len(set(gl)) != len(gl):
+                raise ValueError(f"Neuropil {role} 그룹에 같은 이름이 여러 번: {gl}")
+        from ..circuit import require_disjoint_groups
+        require_disjoint_groups(circuit, "Neuropil")                     # 예전: 겹친 입력 뉴런의 첫 자리 값이 조용히 버려짐
         pre_idx = np.concatenate([circuit.groups[g] for g in pre])
         post_idx = np.concatenate([circuit.groups[g] for g in post])
         lp = np.full(circuit.N, -1, np.int64); lp[pre_idx] = np.arange(len(pre_idx))
@@ -387,8 +404,11 @@ class Neuropil(Tissue):
 
     def forward(self, x):
         x = as_input(x, B.device_of(self.base))
-        out = P.transmit(x, self.values(), self.wiring)
-        return out + self.bias if self.bias is not None else out
+        lead = x.shape[:-1]                                              # (n_pre,) · (B, T, n_pre)도 Projection처럼
+        x2 = x if x.ndim == 2 else x.reshape(-1, x.shape[-1])            # (예전: 2차원만 받아 시료 하나가 오류)
+        out = P.transmit(x2, self.values(), self.wiring)
+        out = out + self.bias if self.bias is not None else out
+        return out if x.ndim == 2 else out.reshape(*lead, self.out_features)
 
     def dense(self) -> np.ndarray:
         """밀집 가중치 (n_post, n_pre), numpy - 확인용"""
@@ -499,7 +519,8 @@ class MushroomBodyOutput(Tissue):
 
     def activity(self, x):
         a = as_input(x, B.device_of(self.prototypes)).data
-        a = a.reshape(len(a), -1).astype(self.prototypes.dtype, copy=False)
+        a = a.reshape(1, -1) if a.ndim == 1 else a.reshape(len(a), -1)   # 시료 하나 (n,)도 (예전: (n, 1)로 봄)
+        a = a.astype(self.prototypes.dtype, copy=False)
         if self.binary:
             return (a > 0).astype(a.dtype)
         xp = B.xp(B.device_of(a))
@@ -515,20 +536,21 @@ class MushroomBodyOutput(Tissue):
     def learn(self, x, y, batch: int = 256):
         """도파민 강화 (physiology.reinforce_ - AssocReadout과 같은 규칙)"""
         a_all = self.activity(x)
-        y_all = B.labels(y)
+        y_all = B.sample_labels(y)
         for s in range(0, len(a_all), batch):
             P.reinforce_(self.prototypes, self.count, a_all[s:s + batch], y_all[s:s + batch], self.per_class)
         return self
 
     def predict(self, x, classes=None) -> np.ndarray:
-        """예측 클래스 (numpy, 장치와 상관없이 - 정답 라벨과 바로 비교하도록)"""
+        """예측 클래스 (numpy, 장치와 상관없이 - 정답 라벨과 바로 비교하도록). 시료 하나 (n,)면 클래스 번호 하나"""
         s = self._scores(self.activity(x))
         xp = B.xp(B.device_of(s))
         if classes is not None:
             mask = xp.full(self.n_classes, -xp.inf, dtype=s.dtype)
             mask[xp.asarray(list(classes))] = 0
             s = s + mask
-        return B.numpy(s.argmax(1))
+        out = B.numpy(s.argmax(1))
+        return out[0] if np.ndim(x.data if isinstance(x, Signal) else x) == 1 else out
 
     def extra_repr(self):
         n = int((B.numpy(self.count).reshape(self.n_classes, self.per_class).sum(1) > 0).sum())

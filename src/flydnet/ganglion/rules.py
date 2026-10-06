@@ -75,9 +75,43 @@ class _Rule:
                 if self.clip is not None and self.last_norm > self.clip:
                     scale = self.clip / (self.last_norm + 1e-12)
             for i, s in live:
+                st = self.state[i]
+                ref = st[0] if isinstance(st, tuple) else st
+                if ref is not None and (tuple(ref.shape) != tuple(s.shape) or getattr(s, "remap", None) is not None):
+                    self._reshape_state(i, s, ref)                      # 추가 연결이 바뀜 (수가 같아도 연결이 다를 수 있음)
+                elif getattr(s, "remap", None) is not None:
+                    s.remap = None                                      # 아직 상태가 없음 - 옮길 것 없음
                 if self.state[i] is not None:                           # 시냅스가 다른 장치로 옮겨졌으면 상태도
                     self.state[i] = _to_device(self.state[i], s.device)
+                    if hasattr(self, "t") and np.ndim(self.t[i]):
+                        self.t[i] = B.to(self.t[i], s.device)
                 self._update(i, s, s.retro * scale if scale != 1.0 else s.retro)
+
+    def _reshape_state(self, i, s, ref):
+        """학습 값의 모양이 바뀜 (추가 연결 변화). 층이 남긴 s.remap = (예전 길이, 새 자리마다 예전 번호 또는 -1)이 맞으면
+        살아남은 연결의 상태는 새 자리로 옮기고 새 연결만 0에서 (Adam 단계 수도 연결마다 - 새 연결은 0부터 → 처음 변화량이
+        다른 연결과 같은 크기). 없거나 안 맞으면 전체를 처음부터 (예전: 늘 처음부터 - 살아남은 연결도 관성을 잃었음)"""
+        rm = getattr(s, "remap", None)
+        s.remap = None
+        if rm is None or rm[0] != ref.shape[0] or len(rm[1]) != s.shape[0]:
+            self.state[i] = None
+            if hasattr(self, "t"):
+                self.t[i] = 0
+            return
+        xp = s.xp
+        idx = B.to(rm[1], s.device)
+        live = idx >= 0
+        src = xp.maximum(idx, 0)
+
+        def move(a):
+            a = B.to(a, s.device)
+            return xp.where(live.reshape((-1,) + (1,) * (a.ndim - 1)), a[src], 0).astype(a.dtype)
+        st = self.state[i]
+        self.state[i] = tuple(move(a) for a in st) if isinstance(st, tuple) else move(st)
+        if hasattr(self, "t"):
+            t = self.t[i]
+            t = xp.full(ref.shape[0], t, dtype=xp.int64) if np.ndim(t) == 0 else B.to(t, s.device)
+            self.t[i] = xp.where(live, t[src], 0).reshape((-1,) + (1,) * (s.data.ndim - 1))
 
     def _update(self, i, s, g):
         raise NotImplementedError

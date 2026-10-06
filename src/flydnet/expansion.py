@@ -6,7 +6,6 @@
 버섯체가 하는 일을 앞먹임 계산으로 줄인 것 (FlyHash, Dasgupta et al. 2017과 같은 구조, 단 배선은 실제 FlyWire):
   특징 ─(고정 투영)─▶ PN 활동 ─(평균 빼기: 촉각엽의 측억제)─▶ ─(실제 PN→KC 시냅스 수)─▶ KC 입력
        ─(상위 k_frac만 남김: APL 억제)─▶ KC 코드
-torch판(flydnet.torch.KCExpansion)과 투영의 무작위 선택은 다름 (난수 생성기가 다름).
 """
 from __future__ import annotations
 
@@ -51,7 +50,8 @@ class KCExpansion(Tissue):
         if n_in is not None:
             rng = np.random.default_rng(seed)
             if projection == "sparse":
-                k_in = min(k_in, n_in)
+                k_in = min(k_in, max(1, n_in // 2))                   # 특징 수의 절반 이하: k_in >= n_in이면 모든 PN이 같은 평균 →
+                                                                     # 평균 빼기 뒤 0이 되어 입력과 상관없이 같은 KC 코드였음 (n_in <= 20)
                 proj = np.zeros((len(P), n_in), np.float32)
                 for i in range(len(P)):
                     proj[i, rng.choice(n_in, k_in, replace=False)] = 1.0 / k_in
@@ -79,6 +79,8 @@ class KCExpansion(Tissue):
         if xs.ndim != 2 or xs.shape[1] != self.n_in:
             raise ValueError(f"KCExpansion: 입력은 (시료, {self.n_in}): {tuple(xs.shape)}")
         xp = B.xp(B.device_of(self.W))
+        if len(xs) == 0:                                                  # 빈 입력 → 빈 출력 (다른 층과 같게, 예전: concatenate 오류)
+            return Signal(xp.zeros((0, self.n_out), dtype=self.W.dtype))
         out = [kenyon_code(xs[i:i + batch], self.W, self.k, self.proj, self.center, self.binary)
                for i in range(0, len(xs), batch)]
         out = xp.concatenate(out)

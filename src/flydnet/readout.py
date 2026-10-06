@@ -64,7 +64,7 @@ def train_linear(Xtr, ytr, Xte, yte, n_classes=None, epochs: int = 30, lr: float
     _C.integer('batch', batch)
     dev = B.check(device) if device is not None else B.default_device()
     Xtr, Xte = _np(Xtr).astype(np.float32), _np(Xte).astype(np.float32)
-    ytr, yte = B.labels(ytr), B.labels(yte)
+    ytr, yte = B.sample_labels(ytr, "학습 라벨"), B.sample_labels(yte, "평가 라벨")
     if len(Xtr) == 0 or len(Xte) == 0:
         raise ValueError(f"데이터가 비어 있음: 학습 {len(Xtr)}개, 평가 {len(Xte)}개")
     if len(Xtr) != len(ytr) or len(Xte) != len(yte):

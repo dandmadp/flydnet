@@ -1,8 +1,8 @@
 """
 실험 ⑦: 연합 학습(AssocReadout)에 KC 층이 필요한가? — 실제 냄새 조건부 구별 (XOR형)
 
-  python examples/door_assoc.py
-  python examples/door_assoc.py --sets 30 --seeds 1   # 빠르게
+  python lab/door_assoc.py
+  python lab/door_assoc.py --sets 30 --seeds 1   # 빠르게
 
 과제는 실험 ⑤와 같음: 냄새 4개 묶음마다 AB+, CD+, AC−, BD− (선형 분류기로는 못 품)
 특징 × 리드아웃을 묶음마다 따로 학습·평가 (찍기 50%)
@@ -16,8 +16,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 없이 실행
 import flydnet as fd
@@ -32,35 +30,33 @@ ap.add_argument("--n-train", type=int, default=10, help="묶음마다 혼합물 
 ap.add_argument("--n-test", type=int, default=20)
 args = ap.parse_args()
 KS = [int(k) for k in args.ks.split(",")]
-dev = "cuda" if torch.cuda.is_available() else "cpu"
 
 mb = fd.Circuit.from_flywire()
-enc = fd.torch.GlomerularEncoder(mb)
-X0 = fd.torch.door_odors(enc.glomeruli, args.data)["X"]
-ok = np.nonzero(((X0 > 0.05).sum(1) >= 3).numpy())[0]
-mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
+enc = fd.GlomerularEncoder(mb)
+X0 = fd.door_odors(enc.glomeruli, args.data)["X"]
+ok = np.nonzero((X0 > 0.05).sum(1) >= 3)[0]
+mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"KC 실제": mk(mb), "KC 무작위": mk(mb.shuffled(seed=0))}
 
 
 def mlp(Ftr, ytr, Fte, yte, hidden=64, steps=300, seed=0):
-    """비교용 역전파 MLP (은닉 1층)"""
-    mu, sd = Ftr.mean(0), (Ftr - Ftr.mean(0)).std().clamp_min(1e-6)
-    f = lambda X: ((X - mu) / sd).float().to(dev)
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(seed)
-        net = nn.Sequential(nn.Linear(Ftr.shape[1], hidden), nn.ReLU(), nn.Linear(hidden, 2)).to(dev)
-    opt = torch.optim.Adam(net.parameters(), lr=1e-2, weight_decay=1e-4)
-    x, t = f(Ftr), ytr.to(dev)
+    """비교용 역전파 MLP (은닉 1층, 자체 엔진): 전체 배치 Adam 300스텝"""
+    mu = Ftr.mean(0)
+    sd = max(float((Ftr - mu).std()), 1e-6)
+    f = lambda X: ((X - mu) / sd).astype(np.float32)
+    net = fd.Pathway(fd.Projection(Ftr.shape[1], hidden, seed=seed), fd.Activation("relu"),
+                     fd.Projection(hidden, 2, seed=seed + 1))
+    rule = fd.Adaptive(net.named_synapses(), rate=1e-2, decay=1e-4)           # 약한 감쇠 (AdamW식, 예전 torch판은 L2)
+    x = f(Ftr)
     for _ in range(steps):
-        loss = nn.functional.cross_entropy(net(x), t)
-        opt.zero_grad(); loss.backward(); opt.step()
-    with torch.no_grad():
-        return (net(f(Fte)).argmax(1).cpu() == yte).float().mean().item()
+        rule.clear(); fd.surprise(net(x), ytr).retrograde(); rule.step()
+    with fd.quiescent():
+        return float((net(f(Fte)).numpy().argmax(1) == yte).mean())
 
 
-readouts = {"로지스틱": lambda a, b, c, d: fd.torch.train_linear(a, b, c, d, n_classes=2)["test_acc"], "MLP": mlp}
+readouts = {"로지스틱": lambda a, b, c, d: fd.train_linear(a, b, c, d, n_classes=2)["test_acc"], "MLP": mlp}
 for k in KS:
-    readouts[f"연합 k={k}"] = lambda a, b, c, d, k=k: fd.torch.AssocReadout(a.shape[1], 2, per_class=k).fit(a, b).accuracy(c, d)
+    readouts[f"연합 k={k}"] = lambda a, b, c, d, k=k: fd.AssocReadout(a.shape[1], 2, per_class=k).fit(a, b).accuracy(c, d)
 
 feat_names = ["사구체"] + list(layers)
 res = {(f, r): [] for f in feat_names for r in readouts}
@@ -68,10 +64,10 @@ for s in range(args.seeds):
     t = time.time()
     rng = np.random.default_rng(s)
     sets = [tuple(rng.choice(ok, 4, replace=False)) for _ in range(args.sets)]
-    g = torch.Generator().manual_seed(s)
-    (xtr, ytr, ptr) = fd.torch.biconditional_mixtures(X0, sets, args.n_train, generator=g)
-    (xte, yte, pte) = fd.torch.biconditional_mixtures(X0, sets, args.n_test, generator=g)
-    F = {"사구체": (xtr, xte)} | {k: (fd.torch.extract(L, enc, xtr), fd.torch.extract(L, enc, xte)) for k, L in layers.items()}
+    g = np.random.default_rng(10_000 + s)
+    (xtr, ytr, ptr) = fd.biconditional_mixtures(X0, sets, args.n_train, rng=g)
+    (xte, yte, pte) = fd.biconditional_mixtures(X0, sets, args.n_test, rng=g)
+    F = {"사구체": (xtr, xte)} | {k: (fd.extract(L, enc, xtr), fd.extract(L, enc, xte)) for k, L in layers.items()}
     for fname, (Ftr, Fte) in F.items():
         for p in range(args.sets):
             a, b = ptr == p, pte == p
@@ -85,6 +81,6 @@ print(f"{'리드아웃':<12}" + "".join(f"{f:>18}" for f in feat_names))
 for r in readouts:
     row = f"{r:<12}"
     for f in feat_names:
-        v = torch.tensor(res[(f, r)])
-        row += f"{v.mean():>11.1f} ± {v.std() / len(v) ** 0.5:.1f}"
+        v = np.array(res[(f, r)])
+        row += f"{v.mean():>11.1f} ± {v.std(ddof=1) / len(v) ** 0.5:.1f}"
     print(row)

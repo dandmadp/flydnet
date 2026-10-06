@@ -29,6 +29,8 @@ def _arr(x, device):
         x = x.data
     elif hasattr(x, "detach"):                                         # torch 텐서
         x = x.detach().cpu().numpy()
+    elif hasattr(x, "to_numpy"):                                       # pandas (예전: 행 이름으로 고르다 KeyError)
+        x = x.to_numpy()
     return B.to(np.asarray(x) if not hasattr(x, "shape") else x, device)
 
 
@@ -95,7 +97,9 @@ class DopamineReadout(_Saveable):
                     binary=self.binary, homeostasis=self.homeostasis)
 
     def activity(self, X):
-        X = _arr(X, self.device).reshape(len(X), -1).astype(np.float32, copy=False)
+        X = _arr(X, self.device)
+        X = X.reshape(1, -1) if X.ndim == 1 else X.reshape(len(X), -1)    # 시료 하나 (n,)도 (예전: (n, 1)로 봐서 오류)
+        X = X.astype(np.float32, copy=False)
         if self.binary:
             return (X > 0).astype(np.float32)
         return X / self.xp.maximum(X.max(axis=1, keepdims=True), 1e-8)
@@ -117,12 +121,14 @@ class DopamineReadout(_Saveable):
         return s + mask
 
     def predict(self, X, classes=None) -> np.ndarray:
-        return B.numpy(self._masked(self.scores(X), classes).argmax(1))
+        """예측 클래스 (numpy). 시료 하나 (n,)면 클래스 번호 하나"""
+        out = B.numpy(self._masked(self.scores(X), classes).argmax(1))
+        return out[0] if np.ndim(X.data if isinstance(X, Signal) else X) == 1 else out
 
     def dopamine(self, X, y, classes=None):
         """(B, C) 도파민 신호"""
         xp = self.xp
-        y = B.to(B.check_labels(y, self.n_classes), self.device)
+        y = B.to(B.check_labels(B.sample_labels(y), self.n_classes), self.device)
         onehot = xp.eye(self.n_classes, dtype=xp.float32)[y]
         if self.mode == "bidir":
             win = self._masked(self.scores(X), classes).argmax(1)
@@ -154,7 +160,13 @@ class DopamineReadout(_Saveable):
 
     def fit(self, X, y, epochs: int = 1, batch: int = 32, seed: int = 0, classes=None):
         rng = np.random.default_rng(seed)
-        y = B.labels(y)
+        y = B.sample_labels(y)
+        if hasattr(X, "to_numpy"):                                          # pandas (예전: 행 이름으로 골라 KeyError)
+            X = X.to_numpy()
+        if not hasattr(X, "shape") and not isinstance(X, Signal):           # 리스트 (예전: 번호 배열로 고르다 TypeError)
+            X = np.asarray(X, np.float32)
+        if len(X) != len(y):
+            raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
         for _ in range(epochs):
             perm = rng.permutation(len(X))
             for i in range(0, len(X), batch):
@@ -163,7 +175,7 @@ class DopamineReadout(_Saveable):
         return self
 
     def accuracy(self, X, y, classes=None) -> float:
-        return float((self.predict(X, classes) == B.labels(y)).mean())
+        return float((self.predict(X, classes) == B.sample_labels(y)).mean())
 
 
 def _take(X, idx):
@@ -206,4 +218,4 @@ class AssocReadout(DopamineReadout):
 
     def step(self, X, y, classes=None):
         """정답 클래스의 원형만 강화 (classes는 학습에 영향 없음 - 예측의 경쟁 범위에만 쓰임: predict(X, classes))"""
-        reinforce_(self.W, self.count, self.activity(X), y, self.k)
+        reinforce_(self.W, self.count, self.activity(X), B.sample_labels(y), self.k)

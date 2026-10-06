@@ -65,7 +65,7 @@ if dev == "cuda":
 DIRS = 8
 
 vc = fd.visual_circuit()
-xy_full = fd.torch.column_map(vc)                                     # 지도는 실제 배선(시각계 전체)으로 만들고 모든 조건에 똑같이
+xy_full = fd.column_map(vc)                                           # 지도는 실제 배선(시각계 전체)으로 만들고 모든 조건에 똑같이
 keep = np.concatenate([vc.groups[g] for g in fd.MOTION_PATHWAY if g in vc.groups]) if args.pathway == "motion"     else np.arange(vc.N)
 xy = xy_full[keep]                                              # subset은 그룹 순서대로 뉴런을 남김
 if args.pathway == "motion":
@@ -80,15 +80,16 @@ else:
 circ = circ.normalized()
 OUT = [f"T{k}{d}" for k in "45" for d in "abcd"]
 train = not args.freeze_circuit
-layer = fd.torch.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, neuron="graded",
-                           params={"w_syn": args.w_syn},
+engine = fd.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, neuron="graded",
+                           params={"w_syn": args.w_syn}, device="gpu" if dev == "cuda" else "cpu",
                            bias={g: (0.0 if g in fd.PHOTORECEPTORS else args.bias) for g in circ.groups},
                            count_from_ms=args.count_from, trainable=train, share="pair",
                            train_neurons=train, checkpoint_every=args.checkpoint_every)
-print(layer, flush=True)
+layer = fd.torch.bridge(engine)                                 # 계산은 자체 엔진, 학습 루프는 torch
+print(engine, flush=True)
 
 # 칸 나누기: 광수용체와 T4/T5 모두 시야 좌표로 칸 번호
-in_np, out_np = layer.in_idx.cpu().numpy(), layer.out_idx.cpu().numpy()
+in_np, out_np = fd.ganglion.backend.numpy(engine.in_idx), fd.ganglion.backend.numpy(engine.out_idx)
 lo = np.nanmin(xy[np.r_[in_np, out_np]], 0)
 cell = lambda idx: tuple(np.floor((xy[idx] - lo) / args.region).astype(int).T)
 gx, gy = cell(out_np)
@@ -99,12 +100,12 @@ cnt = np.zeros((nx * ny, len(OUT)), int)
 np.add.at(cnt, (out_cell, out_type), 1)
 cells = np.nonzero((cnt >= args.min_per_type).all(1))[0]       # 아형 8개 모두 충분한 칸만
 print(f"칸 {len(cells)}개 사용 (격자 {nx}×{ny}, 칸당 아형별 뉴런 중앙값 {int(np.median(cnt[cells]))})", flush=True)
-pool = torch.zeros(len(cells), len(OUT), layer.n_out)
+pool = torch.zeros(len(cells), len(OUT), engine.n_out)
 for r, c in enumerate(cells):
     for t in range(len(OUT)):
         m = (out_cell == c) & (out_type == t)
         pool[r, t, np.nonzero(m)[0]] = 1.0 / m.sum()
-pool = pool.reshape(-1, layer.n_out).to_sparse().to(dev)        # (칸×8, n_out)
+pool = pool.reshape(-1, engine.n_out).to_sparse().to(dev)        # (칸×8, n_out)
 ix, iy = cell(in_np)
 in_cell = np.clip(ix, 0, nx - 1) * ny + np.clip(iy, 0, ny - 1)
 in_r = torch.tensor(np.searchsorted(cells, in_cell).clip(0, len(cells) - 1))
@@ -135,7 +136,7 @@ def sample(n, gen):
 
 
 def features(x):
-    return (pool @ layer(x).T).T.reshape(len(x), len(cells), len(OUT))       # (B, 칸, 8)
+    return (pool @ layer(x.to(dev)).T).T.reshape(len(x), len(cells), len(OUT))       # (B, 칸, 8)
 
 
 def evaluate(n=64, seed=12345):
@@ -157,12 +158,12 @@ def neuron_dsi(reps=4):
     """뉴런별 방향 선택 지수 (전체 시야 격자, 잡음 없이). 실제 T4/T5는 대략 0.3~0.8.
     agree = 같은 아형 뉴런들의 선호 방향 일치도 (0~1)"""
     g = torch.Generator().manual_seed(999)
-    R = torch.zeros(DIRS, layer.n_out)
+    R = torch.zeros(DIRS, engine.n_out)
     with torch.no_grad():
         for _ in range(reps):
             ph = (torch.rand(DIRS, 1, generator=g) * 2 * np.pi).expand(-1, len(cells))
             y = torch.arange(DIRS)[:, None].expand(-1, len(cells))
-            R += layer(stimulus(y, ph, noise=0.0)).cpu() / reps
+            R += layer(stimulus(y, ph, noise=0.0).to(dev)).cpu() / reps
     th = torch.tensor(np.radians(np.arange(DIRS) * 360.0 / DIRS), dtype=torch.float32)
     v = (R * torch.exp(1j * th)[:, None]).sum(0)
     d = (v.abs() / R.sum(0).clamp_min(1e-9)).numpy()
@@ -217,8 +218,7 @@ for step in range(1, args.steps + 1):
         print(f"  eval step {step}: acc {acc * 100:.1f}% (정반대 {opp * 100:.1f}%) 검증 손실 {vloss:.3f}{mark}", flush=True)
         hist.append(dict(step=step, acc=acc, opp=opp, loss=loss.item(), val_loss=vloss))
 
-layer.load_state_dict(best["state"]["layer"]); readout.load_state_dict(best["state"]["readout"])
-layer._build()
+layer.load_state_dict(best["state"]["layer"]); readout.load_state_dict(best["state"]["readout"])   # 제자리 복사 → 엔진에도
 print(f"검증 손실이 가장 낮았던 step {best['step']} ({best['loss']:.3f})의 모델로 최종 평가", flush=True)
 
 out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
@@ -230,9 +230,10 @@ print(f"\n최종 ({tag}, 256개 × 칸 {len(cells)}개): acc {acc * 100:.1f}%, �
 print("뉴런별 방향 선택 지수 (중앙값/상위10%/선호방향 일치/선호방향):",
       " ".join(f"{k}:{v['median']:.3f}/{v['p90']:.3f}/{v['agree']:.2f}/{v['pref']:.0f}°" for k, v in nd.items()),
       flush=True)
-json.dump(dict(args=vars(args), hist=hist, final=dict(acc=acc, opp=opp, test_loss=test_loss, best_step=best["step"],
-                                                       neuron_dsi=nd, n_cells=len(cells))),
-          open(out / f"{tag}.json", "w"), ensure_ascii=False, indent=1)
+(out / f"{tag}.json").write_text(json.dumps(dict(args=vars(args), hist=hist,
+                                                 final=dict(acc=acc, opp=opp, test_loss=test_loss, best_step=best["step"],
+                                                            neuron_dsi=nd, n_cells=len(cells))),
+                                            ensure_ascii=False, indent=1), encoding="utf-8")
 if train:
-    layer.save(out / f"{tag}_layer.pt")
+    engine.save(out / f"{tag}_layer")                             # 자체 엔진 저장 (.npz)
 torch.save(readout.state_dict(), out / f"{tag}_readout.pt")

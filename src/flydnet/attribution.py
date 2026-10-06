@@ -176,16 +176,21 @@ def explain(score, layer, by: str | None = None, pathways: bool = False, verify:
         spread = rest.name.iloc[np.unique(np.linspace(0, len(rest) - 1, min(verify, len(rest))).round().astype(int))]             if len(rest) else []
         pick = top + list(spread)
         rows = []
-        with quiescent():
-            b0 = np.mean([float(score(layer, s).data.reshape(-1)[0]) for s in seeds])
-            for name in pick:
-                line = G.Line(circuit, np.nonzero(labels.astype(str) == name)[0], name)
-                with G.silence(layer, line):
-                    v = np.mean([float(score(layer, s).data.reshape(-1)[0]) for s in seeds])
-                rows.append(dict(name=name, n=len(line),
-                                 pred_drop=float(groups.pred_drop[groups.name == name].iloc[0]), actual_drop=b0 - v))
-                if verbose:
-                    from ._console import say
-                    say(f"  확인 {name}: 예측 {rows[-1]['pred_drop']:.3g}, 실제 {rows[-1]['actual_drop']:.3g}", flush=True)
+        for e in mos:                                                     # 예측과 같은 조건 (드롭아웃 끔) - 예전에는 genetics.training()
+            e.remove()                                                    # 안에서 부르면 확인 때만 드롭아웃이 켜져 다른 모델을 비교했음
+        try:
+            with quiescent():
+                b0 = np.mean([float(score(layer, s).data.reshape(-1)[0]) for s in seeds])
+                for name in pick:
+                    line = G.Line(circuit, np.nonzero(labels.astype(str) == name)[0], name)
+                    with G.silence(layer, line):
+                        v = np.mean([float(score(layer, s).data.reshape(-1)[0]) for s in seeds])
+                    rows.append(dict(name=name, n=len(line),
+                                     pred_drop=float(groups.pred_drop[groups.name == name].iloc[0]), actual_drop=b0 - v))
+                    if verbose:
+                        from ._console import say
+                        say(f"  확인 {name}: 예측 {rows[-1]['pred_drop']:.3g}, 실제 {rows[-1]['actual_drop']:.3g}", flush=True)
+        finally:
+            layer._effects.extend(m for m in mos if m not in layer._effects)
         verified = pd.DataFrame(rows)
     return Explanation(base_mean, by, g_n, groups, paths, verified, seeds, G.active(layer))

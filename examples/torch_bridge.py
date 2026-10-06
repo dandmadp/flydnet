@@ -7,9 +7,7 @@ fd.torch.bridge 예: torch 모델 안에 flydnet 자체 엔진의 버섯체 층�
   사구체 → [torch] 고정된 사구체 → PN 사상 → [flydnet] 버섯체 ConnectomeLayer (PN → KC → MBON, 연결 학습)
          → [torch] LayerNorm → Linear → 냄새 클래스
 과제: DoOR 2.0 실제 냄새 12개 (잡음 섞인 시료)
-참고: 같은 구조를 0.1의 torch판 복사본(fd.torch.ConnectomeLayer, 예전 계산)으로 - 학습 1스텝 시간만 비교
-  (정확도는 계산 방식·난수가 달라 seed 하나로는 비교하지 않음). 이 크기(뉴런 3천)에서는 torch판이 조금 빠르고,
-  전체 뇌(13.9만)에서는 자체 엔진이 약 4배 빠름 (1.1초 대 4.7초, 배치 8)
+torch 쪽은 바깥 층·옵티마이저·학습률 스케줄만, 커넥톰 계산은 전부 자체 엔진 (원본 Brian2와 같은 계산, 전용 GPU 커널)
 """
 import argparse
 import sys
@@ -27,7 +25,6 @@ ap.add_argument("--odors", type=int, default=12)
 ap.add_argument("--samples", type=int, default=24)
 ap.add_argument("--noise", type=float, default=0.8)
 ap.add_argument("--epochs", type=int, default=12)
-ap.add_argument("--no-legacy", action="store_true", help="torch판 복사본과 비교하지 않음")
 args = ap.parse_args()
 fd.ganglion.limit_gpu_memory(0.6)
 dev = "cuda" if torch.cuda.is_available() and fd.ganglion.gpu_available() else "cpu"
@@ -87,7 +84,3 @@ print(f"장치 {dev}, 냄새 {args.odors}개, 시료 {len(Xtr)}개")
 layer = fd.ConnectomeLayer(mb, "PN", "MBON", device="gpu" if dev == "cuda" else "cpu", **kw)
 model = train(fd.torch.bridge(layer, seed=0), "flydnet 자체 엔진 (bridge, timing=brian)")
 print(f"  학습한 커넥톰 값이 자체 엔진에도 반영됨: 배율 평균 {np.exp(layer.log_scale.numpy()).mean():.3f} (처음 1.000)")
-
-if not args.no_legacy:
-    legacy = fd.torch.ConnectomeLayer(mb, "PN", "MBON", device=dev, **kw)
-    train(legacy, "0.1 torch판 복사본 (fd.torch.ConnectomeLayer)", show_acc=False)

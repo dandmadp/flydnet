@@ -43,6 +43,10 @@ class ThreeFactor:
             raise ValueError("세포 유형별 뉴런 매개변수(bias·t_mbr)를 쓰는 층은 아직 지원 안 함")
         if hops < 1:
             raise ValueError("hops는 1 이상")
+        if getattr(layer, "_extensions", None):
+            import warnings
+            warnings.warn(f"ThreeFactor는 고정 배선의 학습 연결만 바꿈 - 붙은 확장({', '.join(layer._extensions)})의 추가 경로는 "
+                          "순전파에는 쓰이지만 이 규칙으로는 학습되지 않음 (역전파나 그 확장의 방법으로)", stacklevel=2)
         self.layer, self.feedback, self.hops = layer, feedback, hops
         N, dev = layer.circuit.N, layer.device
         self.out_idx = B.numpy(layer.out_idx)
@@ -96,7 +100,7 @@ class ThreeFactor:
             src = xp.zeros((N, Bn), dtype=xp.float32); src[self.layer.out_idx] = d
             h, cur = xp.zeros_like(src), src
             for _ in range(self.hops):
-                cur = self._on("_A") @ cur
+                cur = K.spmm(self._on("_A"), xp.ascontiguousarray(cur))     # GPU면 결정론적 전용 커널 (cuSPARSE 아님)
                 h += cur
         h = h * self._on("_hidden")[:, None]
         rms_h = float(xp.sqrt((h ** 2).mean())) if h.size else 0.0

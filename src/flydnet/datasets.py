@@ -1,4 +1,4 @@
-"""시험용 데이터 (자체 엔진판, torch 없음, 결과는 numpy). torch판(flydnet.torch)과 난수 생성기가 달라 값은 다름"""
+"""시험용 데이터 (torch 없음, 결과는 numpy)"""
 from __future__ import annotations
 
 from . import _check as _C

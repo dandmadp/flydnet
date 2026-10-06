@@ -72,11 +72,21 @@ def transmit(x, values: Signal, w: Wiring, edge_chunk: int = 1 << 26, matrix=Non
     xp = x.xp
     W = w.matrix(values.data) if matrix is None else matrix
     xd = x.data
-    out = (W @ xd.T).T                                           # (B, n_post)
+    if x.device == "gpu":                                        # 전용 커널: 결정론적 (cuSPARSE는 실행마다 반올림이 다름)
+        from . import kernels as K
+        out = K.spmm(W, xp.ascontiguousarray(xd.T)).T            # (B, n_post)
+    else:
+        out = (W @ xd.T).T
     out = xp.ascontiguousarray(out)
 
     def back(g):
-        dx = (W.T @ g.T).T if x.plastic else None
+        if x.plastic and x.device == "gpu":
+            from . import kernels as K
+            WT = W.T.tocsr()
+            WT.sort_indices()
+            dx = K.spmm(WT, xp.ascontiguousarray(g.T)).T
+        else:
+            dx = (W.T @ g.T).T if x.plastic else None
         dv = None
         if values.plastic:
             E = len(w.pre)
@@ -248,7 +258,8 @@ def kenyon_code(x, w_pn_kc, k: int, projection=None, center: bool = True, binary
     w_pn_kc: (n_kc, n_pn), projection: (n_pn, n_in) 또는 None"""
     W = _arr(w_pn_kc)
     xp = B.xp(B.device_of(W))
-    a = B.to(_arr(x), B.device_of(W)).reshape(len(_arr(x)), -1).astype(W.dtype, copy=False)
+    a = B.to(_arr(x), B.device_of(W))
+    a = (a.reshape(1, -1) if a.ndim == 1 else a.reshape(len(a), -1)).astype(W.dtype, copy=False)   # 시료 하나 (n,)도
     if projection is not None:
         a = a @ _arr(projection).T
     if center:

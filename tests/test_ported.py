@@ -1,13 +1,12 @@
-"""0.1 기능의 자체 엔진판 (torch 없음) — torch판과 같은 결과인지
-
-난수가 없는 계산은 값이 같아야 함. 난수를 쓰는 부분(무작위 투영, 데이터 생성)은 생성기가 달라 모양·성질만 확인.
+"""0.1 기능의 자체 엔진판 (torch 없음): 인코더·KC 확장·데이터셋·리드아웃·시각계 도구가 수식대로인지
+0.1.17까지는 torch판 복사본과 값을 비교했음 - 0.1.18에서 torch판을 빼며 수식으로 직접 계산한 기대값과 비교로 바꿈
 """
 import numpy as np
 import pytest
 
 import flydnet as fd
+from flydnet.ganglion import backend as B
 
-torch = pytest.importorskip("torch")
 needs_data = pytest.mark.skipif(bool(fd.data.missing("flywire")), reason="FlyWire 데이터 없음")
 
 
@@ -16,15 +15,16 @@ def mb():
     return fd.Circuit.from_flywire()
 
 
-def test_rate_encoder_identity_matches_torch():
+def test_rate_encoder_identity_is_formula():
+    """특징 하나 = 뉴런 하나: 음수는 0, 시료마다 최댓값 = max_rate"""
     x = np.random.default_rng(0).normal(size=(5, 12)).astype(np.float32)
     a = fd.RateEncoder(12, 12, projection=None, device="cpu")(x).numpy()
-    b = fd.torch.RateEncoder(12, 12, projection=None)(torch.tensor(x)).numpy()
-    np.testing.assert_allclose(a, b, rtol=1e-6)
-    r = fd.RateEncoder(50, 20, k=5, device="cpu")
-    out = r(np.random.rand(3, 50)).numpy()
+    r = np.maximum(x, 0)
+    np.testing.assert_allclose(a, r / np.maximum(r.max(1, keepdims=True), 1e-8) * 100, rtol=1e-6)
+    enc = fd.RateEncoder(50, 20, k=5, device="cpu")
+    out = enc(np.random.rand(3, 50)).numpy()
     assert out.shape == (3, 20) and np.allclose(out.max(1), 100) and (out >= 0).all()
-    assert ((r.P > 0).sum(1) == 5).all()
+    assert ((B.numpy(enc.P) > 0).sum(1) == 5).all()
 
 
 def test_rate_encoder_is_differentiable():
@@ -35,25 +35,39 @@ def test_rate_encoder_is_differentiable():
 
 
 @needs_data
-def test_glomerular_encoder_and_door_match_torch(mb):
-    a, b = fd.GlomerularEncoder(mb, device="cpu"), fd.torch.GlomerularEncoder(mb)
-    assert a.glomeruli == b.glomeruli
+def test_glomerular_encoder_and_door_are_formula(mb):
+    """같은 사구체의 단일 사구체형 PN = 같은 발화율 (사구체 반응을 PN으로 복사한 뒤 최댓값 정규화)"""
+    a = fd.GlomerularEncoder(mb, device="cpu")
+    pm = mb.meta.iloc[mb.groups["PN"]]
+    uni = pm.cell_sub_class.astype(str).eq("uniglomerular").values
+    glom = pm.cell_type.astype(str).str.split("_").str[0].values
+    assert a.glomeruli == sorted(set(glom[uni]))
     x = np.random.default_rng(1).random((3, a.n_glomeruli)).astype(np.float32)
-    np.testing.assert_allclose(a(x).numpy(), b(torch.tensor(x)).numpy(), rtol=1e-5)
+    pn = np.zeros((3, len(pm)), np.float32)
+    for i in np.nonzero(uni)[0]:
+        pn[:, i] = x[:, a.glomeruli.index(glom[i])]
+    np.testing.assert_allclose(a(x).numpy(), pn / pn.max(1, keepdims=True) * 100, rtol=1e-5)
     if not fd.data.missing("door"):
-        da, dt = fd.door_odors(a.glomeruli), fd.torch.door_odors(a.glomeruli)
-        assert np.array_equal(da["X"], dt["X"].numpy()) and np.array_equal(da["measured"], dt["measured"].numpy())
-        assert list(da["names"]) == list(dt["names"])
+        d = fd.door_odors(a.glomeruli)
+        assert d["X"].shape == (len(d["names"]), a.n_glomeruli) and (d["X"] >= 0).all()
 
 
 @needs_data
-def test_kc_expansion_matches_torch_on_pn_input(mb):
+def test_kc_expansion_is_formula_on_pn_input(mb):
+    """W = 실제 PN→KC 흥분성 시냅스 수, 코드 = PN 활동 평균 빼기 → W → 상위 k만 (음수는 0)"""
     a = fd.KCExpansion(mb, k_frac=0.05, device="cpu")
-    b = fd.torch.KCExpansion(mb, k_frac=0.05, device="cpu")
-    np.testing.assert_array_equal(a.W, b.W.numpy())
+    P, K = mb.groups["PN"], mb.groups["KC"]
+    m = np.isin(mb.pre, P) & np.isin(mb.post, K) & (mb.weight > 0)
+    W = np.zeros((len(K), len(P)), np.float32)
+    np.add.at(W, (np.searchsorted(K, mb.post[m]), np.searchsorted(P, mb.pre[m])), mb.weight[m])
+    np.testing.assert_array_equal(B.numpy(a.W), W)
     x = np.random.default_rng(2).random((6, a.n_pn)).astype(np.float32)
-    ca, cb = a(x).numpy(), b(torch.tensor(x)).numpy()
-    assert ((ca > 0) == (cb > 0)).mean() > 0.999 and np.allclose(ca, cb, atol=1e-3)
+    d = (x - x.mean(1, keepdims=True)) @ W.T
+    ref = np.zeros_like(d)
+    for i in range(len(d)):
+        top = np.argsort(-d[i])[:a.k]
+        ref[i, top] = np.maximum(d[i, top], 0)
+    np.testing.assert_allclose(a(x).numpy(), ref, rtol=1e-4, atol=1e-3)
     g = fd.KCExpansion(mb, n_in=50, projection="gaussian", k_frac=0.1, binary=True, device="cpu")
     out = g(np.random.rand(4, 50)).numpy()
     assert out.shape == (4, 2597) and (out.sum(1) == g.k).all()
@@ -89,26 +103,29 @@ def test_readout_save_load(tmp_path):
 
 
 @needs_data
-def test_visual_tools_match_torch():
-    import warnings
+def test_visual_tools():
+    """시야 지도: 기둥 세포만 좌표, 결정론적 / 격자: 밝기 = contrast·sin(k·xy - 2π f t + 위상), 시작 전 0"""
     vc = fd.visual_circuit()
     a = fd.column_map(vc)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        b = fd.torch.column_map(vc)
-    np.testing.assert_allclose(a, b, atol=1e-5, equal_nan=True)
+    np.testing.assert_array_equal(a, fd.column_map(vc))
+    assert np.isfinite(a[vc.groups["Mi1"]]).all() and np.isnan(a[vc.groups["HSE"]]).all()
     xy = a[vc.groups["R1-6"]]
-    np.testing.assert_allclose(fd.drifting_grating(xy, [0, 45], 60, 12, onset_ms=10),
-                               fd.torch.drifting_grating(xy, [0, 45], 60, 12, onset_ms=10).numpy(), atol=1e-5)
+    lum = fd.drifting_grating(xy, [0, 45], 60, 12, onset_ms=10, wavelength=8.0, temporal_hz=5.0)
+    t = (np.arange(12) + 0.5) * 60 / 12
+    th = np.radians([0, 45])
+    k = np.stack([np.cos(th), np.sin(th)], 1) * 2 * np.pi / 8.0
+    ref = np.sin((k @ np.nan_to_num(xy).T)[:, None, :] - 2 * np.pi * 5.0 * (np.maximum(t - 10, 0) / 1000)[None, :, None])
+    ref = ref * (t >= 10)[None, :, None]
+    np.testing.assert_allclose(lum, ref, atol=1e-4)
 
 
-@pytest.mark.parametrize("script", sorted(p.name for p in __import__("pathlib").Path(__file__).resolve()
-                                          .parents[1].joinpath("examples").glob("*.py")))
+@pytest.mark.parametrize("script", sorted(f"{d}/{p.name}" for d in ("examples", "lab") for p in __import__("pathlib").Path(__file__)
+                                          .resolve().parents[1].joinpath(d).glob("*.py") if not p.name.startswith("_")))
 def test_example_help_runs(script):
-    """예제의 --help가 죽지 않는지 (도움말 문장의 %는 %%로 써야 함 — 실제로 잡힌 버그)"""
+    """예제(examples/, lab/)의 --help가 죽지 않는지 (도움말 문장의 %는 %%로 써야 함 — 실제로 잡힌 버그)"""
     import subprocess, sys, os
     from pathlib import Path
-    path = Path(__file__).resolve().parents[1] / "examples" / script
+    path = Path(__file__).resolve().parents[1] / script
     r = subprocess.run([sys.executable, str(path), "--help"], capture_output=True, text=True, encoding="utf-8",
                        env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=300)
     assert r.returncode == 0, r.stderr[-500:]

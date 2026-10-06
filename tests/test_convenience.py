@@ -55,7 +55,9 @@ def test_overlapping_io_warns():
 
 def test_negative_inputs_allowed_for_graded():
     L = fd.ConnectomeLayer(_c(), "IN", "O", t_ms=20, device="cpu", neuron="graded")
-    L(-np.ones((2, 6), np.float32))                                        # 연속값 뉴런은 활동값이라 음수 가능
+    with fd.quiescent():                                                   # 연속값 뉴런은 활동값이라 음수 가능
+        neg = L(-np.ones((2, 6), np.float32), return_all=True).numpy()
+    assert np.all(neg[:, _c().groups["IN"]] == -1)                        # 음수가 0으로 잘리지 않고 입력 뉴런에 그대로
 
 
 # ─────────────── Homeostasis·Pathway seed ───────────────
@@ -102,13 +104,21 @@ def test_train_and_evaluate():
 
 
 def test_train_with_connectome_layer():
+    """fd.train이 커넥톰 연결을 실제로 바꾸고 손실을 줄이는지 (seed 고정 - 결정론적. 작은 회로라 seed에 따라 학습이
+    들쭉날쭉해서, 예전엔 분류 층 seed가 없어 실행마다 통과·실패가 갈렸음)"""
     c = _c()
     L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu", trainable=True)
-    Xs = np.random.default_rng(1).uniform(20, 200, (24, 6)).astype(np.float32)
+    Xs = np.random.default_rng(1).uniform(20, 200, (48, 6)).astype(np.float32)
     ys = (Xs[:, 0] > Xs[:, 1]).astype(int)
-    m = fd.Pathway(L, fd.Homeostasis(), fd.Projection(5, 2, device="cpu"))
-    h = fd.train(m, Xs, ys, epochs=3, batch=8, verbose=False)
+    m = fd.Pathway(L, fd.Homeostasis(), fd.Projection(5, 2, device="cpu", seed=0))
+    with fd.quiescent():
+        before = float(fd.surprise(m(Xs, seed=0), ys).data)
+    h = fd.train(m, Xs, ys, epochs=12, batch=8, rate=1e-2, verbose=False, seed=0)
+    with fd.quiescent():
+        after = float(fd.surprise(m(Xs, seed=0), ys).data)
     assert np.isfinite(h["loss"]).all() and L.log_scale.retro is not None
+    assert np.abs(L.log_scale.numpy()).max() > 0                           # 커넥톰 연결이 실제로 학습됨
+    assert after < before - 0.05                                           # 손실이 줄어듦 (0.756 → 0.638)
 
 
 def test_door_task():

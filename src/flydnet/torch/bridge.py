@@ -15,8 +15,6 @@
   - torch.no_grad()면 자체 엔진도 quiescent (경로를 만들지 않음)
   - 장치: 구조물이 gpu면 cuda 텐서, cpu면 cpu 텐서를 넣을 것
 
-flydnet.torch의 다른 것들(ConnectomeLayer 등)은 0.1의 torch판 복사본 (예전 결과 재현용, timing="legacy"와 같음).
-torch 모델에서 flydnet을 쓸 때는 이 연결 장치를 쓸 것.
 """
 from __future__ import annotations
 
@@ -57,7 +55,6 @@ class _Run(torch.autograd.Function):
         inputs, params = tensors[:n_in], tensors[n_in:]
         dev = owner.tissue.device
         sig = [None if t is None else Signal(to_engine(t, dev), plastic=t.requires_grad) for t in inputs]
-        owner._sync()
         for s in owner.synapses:
             s.retro = None
         out = owner.tissue(*sig, **owner.kwargs)
@@ -89,7 +86,6 @@ class Bridge(torch.nn.Module):
     def __init__(self, tissue, **kwargs):
         super().__init__()
         self.tissue, self.kwargs = tissue, kwargs
-        self._names = [n for n, _ in tissue.named_synapses()]
         self._wrap()
 
     @property
@@ -98,6 +94,9 @@ class Bridge(torch.nn.Module):
 
     def _wrap(self):
         """Synapse 배열 → 같은 메모리의 torch Parameter (이름의 '.'은 '__'로)"""
+        for n in getattr(self, "_names", []):                           # 예전 이름의 Parameter는 지움 (학습 값이 없어졌을 수도)
+            self._parameters.pop(n.replace(".", "__"), None)
+        self._names = [n for n, _ in self.tissue.named_synapses()]       # 감싼 뒤 학습 값이 생기거나 없어져도 (확장을 붙이는 등)
         self._ptrs = []
         for n, s in zip(self._names, self.synapses):
             if not s.data.flags.c_contiguous:
@@ -108,14 +107,16 @@ class Bridge(torch.nn.Module):
     def _sync(self):
         """자체 엔진 쪽에서 배열을 바꿔 끼웠으면 (.to로 장치를 옮김 등) Parameter를 다시 묶음 - 이미 만든 torch 옵티마이저는
         옛 Parameter를 갱신하므로 다시 만들어야 함 (안 그러면 학습이 모델에 반영되지 않음)"""
-        if [_ptr(s.data) for s in self.synapses] != self._ptrs:
+        names = [n for n, _ in self.tissue.named_synapses()]
+        if names != self._names or [_ptr(s.data) for s in self.synapses] != self._ptrs:
             import warnings
             warnings.warn("자체 엔진 구조물의 학습 값 배열이 바뀌어(.to 등) torch Parameter를 새로 만듦 - 옵티마이저를 "
                           "model.parameters()로 다시 만들 것 (옛 옵티마이저는 쓰이지 않는 값을 갱신함)", stacklevel=4)
             self._wrap()
 
     def forward(self, *inputs):
-        params = [self._parameters[n.replace(".", "__")] for n in self._names]
+        self._sync()                                                     # 학습 값 목록을 먼저 맞춤 (autograd 함수에 넘길 개수가
+        params = [self._parameters[n.replace(".", "__")] for n in self._names]   # 기울기 개수와 같아야 함)
         if not torch.is_grad_enabled():
             dev = self.tissue.device
             with quiescent():
