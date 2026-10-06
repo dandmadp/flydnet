@@ -14,10 +14,24 @@ Own autograd engine on NumPy (CPU) / CuPy (GPU); PyTorch optional. Docs in Korea
 ## 설치
 
 ```bash
-pip install flydnet                  # CPU (NumPy·SciPy). torch 없음. CuPy가 이미 있으면(Colab 등) GPU도 자동으로 씀
+pip install flydnet                  # CPU. 필요한 것은 numpy·pandas뿐 (scipy·pyarrow·torch 없음). CuPy가 이미 있으면 GPU도 자동
 python -m flydnet doctor             # 설치 진단: GPU 드라이버 CUDA·CuPy·torch, 어떤 옵션을 쓸지 알려 줌
 python -m flydnet download           # FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130 MB, 버전 고정·SHA-256 확인)
 ```
+
+FlyWire 연결 파일(parquet)은 받은 뒤 한 번 numpy 형식(`Connectivity_783.npz`)으로 바꿔 두고 그것을 읽는다.
+바꾸는 데만 pyarrow가 필요하다: `pip install "flydnet[parquet]"` 후 `python -m flydnet download flywire` (그 뒤에는 필요 없음,
+다른 컴퓨터에서 만든 npz를 같은 폴더에 복사해도 됨). 이미 받아 두었고 pyarrow가 있으면 처음 회로를 만들 때 자동으로 바뀐다.
+
+선택 설치 (필요한 기능만):
+
+| 옵션 | 무엇 | 언제 |
+|---|---|---|
+| `[parquet]` | pyarrow | 연결 parquet → npz 변환 (한 번) |
+| `[scipy]` | scipy | `Circuit.from_scipy`·`to_scipy`, C 커널이 없는 플랫폼의 CPU 희소 연산 |
+| `[graph]` | networkx | `Circuit.to_networkx` |
+| `[torch]` | torch | `fd.torch` 연동 |
+| `[gpu-cuda13]`·`[gpu-cuda12]` | CuPy + CUDA 런타임 | GPU (아래) |
 
 GPU: **CuPy가 없을 때만** 드라이버 CUDA 버전(`nvidia-smi` 오른쪽 위)에 맞는 옵션 하나를 쓴다.
 
@@ -30,6 +44,28 @@ Colab처럼 CuPy가 이미 깔린 곳에 GPU 옵션을 붙이면 CuPy가 두 개
 망가질 수 있다 (`doctor`가 잡아 줌. Colab이면 런타임을 삭제하고 옵션 없이 다시 설치).
 드라이버를 업데이트해도 설치한 CuPy는 그대로 돈다 (드라이버는 하위 호환). CUDA·CuPy를 바꾼 뒤에는 `doctor`를 한 번 돌릴 것.
 데이터 위치는 `~/.flydnet/data` (`fd.set_data_dir(...)`로 바꿈). `FLYDNET_DEVICE=cpu`로 CPU를 강제할 수 있다.
+
+### CPU 희소 연산
+
+CPU에서 커넥톰 전달(희소 행렬 x 배치)은 직접 작성한 C 커널이 한다 (`flydnet/ganglion/csr.py`, `_csr.c`).
+Linux (x86_64·aarch64)·macOS (x86_64·arm64)·Windows (x86_64) 휠에 들어 있고, 파이썬 스레드로 행을 나눠 계산한다
+(OpenMP를 쓰지 않아 런타임 설치가 필요 없고, 스레드 수와 상관없이 결과 비트가 같음). 쓸 수 있는 경로를 이 순서로 고른다:
+
+1. C 커널 (휠에 들어 있거나 소스에서 `python scripts/build_csr.py`로 빌드)
+2. scipy (설치되어 있으면)
+3. numpy (느림 - 처음 한 번 경고)
+
+세 경로 모두 행마다 연결 순서대로 더해 **같은 입력이면 같은 비트**를 낸다 (`tests/test_golden.py`가 세 경로에서 확인).
+
+| 시각계 전체 (연결 429만, 배치 32, float32) | 시간 |
+|---|---|
+| C 커널, 8 스레드 | 2.8 ms |
+| C 커널, 2 스레드 | 6.6 ms |
+| scipy | 17.5 ms |
+| numpy | 489 ms |
+
+`FLYDNET_SPARSE=c|scipy|numpy`로 경로를, `FLYDNET_THREADS=n`으로 스레드 수(기본 CPU 수, 최대 8)를 정한다.
+비교: `python scripts/bench_sparse.py`. GPU는 이 경로를 쓰지 않는다 (전용 CUDA 커널).
 
 ## 빠른 시작
 
@@ -298,7 +334,7 @@ c = fd.Circuit.from_networkx(G)                  # 노드 속성 → 주석, "gr
 worm = fd.worm()                     # 예쁜꼬마선충 (Cook et al. 2019), python -m flydnet download worm
 g = fd.graphs.watts_strogatz(400, 12, 0.1, groups={"in": range(20), "out": range(360, 400)})
 #   erdos_renyi / watts_strogatz / barabasi_albert / stochastic_block / layered (억제 비율·데일의 법칙)
-c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
+c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()   # scipy·networkx는 선택 설치 ([scipy]·[graph])
 ```
 
 - 주석이 없는 그래프에서는 `explain`·`mosaic`·`genetics.lines`가 그룹 단위로 동작한다 (주석이 있으면 `cell_type`).
@@ -534,10 +570,14 @@ opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch�
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install --no-cache-dir -e ".[examples,dev,gpu-cuda13]"
-.venv\Scripts\python -m pytest -q                       # 테스트
+.venv\Scripts\python scripts\build_csr.py               # CPU C 커널 (컴파일러: CC, pip install ziglang, gcc·clang)
+.venv\Scripts\python -m pytest -q                       # 테스트 (tests/test_golden.py = 엔진 정리 전 결과와 비교)
 .venv\Scripts\python scripts\release.py bump patch      # 버전 올리기 + CHANGELOG 틀
 .venv\Scripts\python scripts\release.py check --upload  # 커밋·CHANGELOG·PyPI 중복·테스트·빌드·설치 확인 후 업로드
 ```
+
+플랫폼 휠(C 커널 포함)은 GitHub Actions(`.github/workflows/wheels.yml`, cibuildwheel)가 만들고 플랫폼마다 골든 시험을 돌린다.
+결과물을 `wheelhouse/`에 풀어 두면 `release.py check`가 순수 파이썬 휠·sdist와 함께 확인·업로드한다.
 
 데이터 출처: FlyWire v783 연결(Shiu et al. 2024, MIT), 세포 주석(Schlegel et al. 2024), DoOR 2.0(CC BY-SA 4.0).
 MIT 라이선스.
