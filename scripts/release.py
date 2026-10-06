@@ -11,6 +11,8 @@ check가 하는 일 (하나라도 실패하면 멈춤):
   3. PyPI에 이 버전이 아직 없고 최신보다 큰지 → 버전 올리기를 잊은 업로드 방지 (같은 번호는 영구히 재사용 불가)
   4. 테스트 전체 통과 (경고도 실패로)
   5. dist/ 를 비우고 새로 빌드 + twine check  → 옛 버전 파일이 같이 올라가는 것 방지
+     여기서 만드는 것은 sdist와 순수 파이썬 휠(py3-none-any, FLYDNET_PURE=1)뿐. C 커널을 넣은 플랫폼 휠은 GitHub Actions
+     (.github/workflows/wheels.yml)가 만듦 → 그 결과물을 wheelhouse/에 풀어 두면 같은 버전의 것을 함께 확인·업로드
   6. 빌드한 wheel을 임시 폴더에 따로 설치해 불러오기·버전·명령줄 확인
   7. git 태그 v<버전>                        → 어떤 커밋을 배포했는지 기록
 """
@@ -117,16 +119,27 @@ def check(upload: bool, test: bool):
 
     for d in ("dist", "build", f"src/{NAME}.egg-info"):
         shutil.rmtree(ROOT / d, ignore_errors=True)
-    if run([PY, "-m", "build"], capture_output=True).returncode:
-        fail("빌드 실패 → python -m build 로 직접 확인")
+    env_pure = dict(os.environ, FLYDNET_PURE="1")              # 컴파일러가 없어도 바이너리 없는 '플랫폼 휠'이 나오지 않게
+    if run([PY, "-m", "build"], capture_output=True, env=env_pure).returncode:
+        fail("빌드 실패 → FLYDNET_PURE=1 python -m build 로 직접 확인")
     files = sorted((ROOT / "dist").iterdir())
+    if not any(f.name.endswith("-py3-none-any.whl") for f in files):
+        fail(f"순수 파이썬 휠이 아님: {[f.name for f in files]}")
+    house = ROOT / "wheelhouse"
+    platform = sorted(house.glob(f"{NAME}-{v}-*.whl")) if house.exists() else []
+    if platform:
+        ok(f"wheelhouse/의 플랫폼 휠 {len(platform)}개도 함께: {', '.join(f.name for f in platform)}")
+    else:
+        print("  (wheelhouse/에 플랫폼 휠 없음 - 순수 파이썬 휠만 올리면 CPU 희소 연산은 scipy·numpy 경로)", flush=True)
+    pure = next(f for f in files if f.name.endswith("-py3-none-any.whl"))
+    files = files + platform
     if any(v not in f.name for f in files):
         fail(f"dist/에 다른 버전 파일이 섞임: {[f.name for f in files]}")
     if run([PY, "-m", "twine", "check", *map(str, files)]).returncode:
         fail("twine check 실패 (README 형식 등)")
     ok(f"빌드: {', '.join(f'{f.name} ({f.stat().st_size // 1024} KB)' for f in files)}")
 
-    whl = next(f for f in files if f.suffix == ".whl")
+    whl = pure
     with tempfile.TemporaryDirectory() as tmp:
         if run([PY, "-m", "pip", "install", "-q", "--no-deps", "--target", tmp, str(whl)]).returncode:
             fail("wheel 설치 실패")

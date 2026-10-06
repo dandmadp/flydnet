@@ -1,0 +1,117 @@
+# 휠 빌드: 플랫폼마다 CPU 희소 행렬 C 커널(_csr)을 넣은 휠 + 순수 파이썬 휠(py3-none-any) + sdist
+#
+# - C 커널은 파이썬 API를 쓰지 않아 안정 ABI(abi3, cp310)로 빌드 → 플랫폼마다 휠 하나가 Python 3.10 이상 모두에서 동작.
+#   cibuildwheel은 abi3 휠을 한 번 만들고 나머지 Python 버전에서는 같은 휠을 설치해 시험만 함
+# - 병렬화는 OpenMP가 아니라 파이썬 스레드 (ctypes 호출 동안 GIL을 놓음) → macOS도 libomp 없이 여러 스레드
+# - 시험: 설치한 휠로 C 경로가 쓰이는지 + 골든 시험(tests/test_golden.py, 버섯체·시각계·합성 회로) + 엔진 정리 시험.
+#   FlyWire 데이터는 한 번 받아 npz로 바꾼 뒤 parquet를 지워 (npz만으로 되는지도 확인), scipy·pyarrow 없이 시험
+# - 업로드는 하지 않음: 결과물(wheels-*)을 받아 wheelhouse/에 풀고 python scripts/release.py check --upload
+name: wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: ["src/flydnet/ganglion/_csr.c", "src/flydnet/ganglion/csr.py", "setup.py", "pyproject.toml",
+            ".github/workflows/wheels.yml"]
+
+jobs:
+  data:
+    name: FlyWire 데이터 (npz)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: ci_data
+          key: flywire-783-npz-v1
+      - uses: actions/setup-python@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          python-version: "3.12"
+      - name: 받기 + npz로 바꾸기
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          FLYDNET_PURE: "1"
+        run: |
+          python -m pip install --no-cache-dir numpy pandas pyarrow
+          python -m pip install --no-cache-dir --no-deps .
+          python -c "import flydnet as fd; fd.download('flywire', path='ci_data/flywire')"
+          rm ci_data/flywire/Connectivity_783.parquet
+          FLYDNET_FLYWIRE=ci_data/flywire python -m flydnet verify flywire
+          ls -la ci_data/flywire
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-data
+          path: ci_data
+          retention-days: 3
+
+  build_wheels:
+    name: 휠 ${{ matrix.os }}
+    needs: data
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-latest = Linux x86_64, ubuntu-24.04-arm = Linux aarch64 (에뮬레이션 없이), macos-13 = macOS x86_64,
+        # macos-14 = macOS arm64, windows-latest = Windows x86_64
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-data
+          path: ci_data
+      - uses: pypa/cibuildwheel@v2.23.3
+        env:
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
+          CIBW_ARCHS: native
+          CIBW_ENVIRONMENT_LINUX: FLYDNET_REQUIRE_EXT=1 PYTHONIOENCODING=utf-8 FLYDNET_FLYWIRE=/project/ci_data/flywire
+          CIBW_ENVIRONMENT_MACOS: FLYDNET_REQUIRE_EXT=1 PYTHONIOENCODING=utf-8 FLYDNET_FLYWIRE="$GITHUB_WORKSPACE/ci_data/flywire"
+          CIBW_ENVIRONMENT_WINDOWS: FLYDNET_REQUIRE_EXT=1 PYTHONIOENCODING=utf-8 FLYDNET_FLYWIRE="$GITHUB_WORKSPACE/ci_data/flywire"
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: >-
+            python -c "from flydnet.ganglion import csr; assert csr.backend() == 'c', csr._LIB; print('C kernel', csr._candidates())"
+            && python -m pytest -q {project}/tests/test_golden.py {project}/tests/test_engine_cleanup.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  pure:
+    name: 순수 파이썬 휠 + sdist
+    needs: data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-data
+          path: ci_data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 빌드
+        env:
+          FLYDNET_PURE: "1"
+        run: |
+          python -m pip install --no-cache-dir build
+          python -m build --outdir wheelhouse
+          ls wheelhouse
+          test -f wheelhouse/flydnet-*-py3-none-any.whl
+      - name: 시험 (C 커널 없이, scipy 없이 → numpy 경로)
+        env:
+          FLYDNET_FLYWIRE: ${{ github.workspace }}/ci_data/flywire
+        run: |
+          python -m venv /tmp/pure
+          /tmp/pure/bin/python -m pip install --no-cache-dir wheelhouse/flydnet-*-py3-none-any.whl pytest
+          cd /tmp
+          /tmp/pure/bin/python -c "from flydnet.ganglion import csr; assert not csr.c_available(); print(csr.backend())"
+          /tmp/pure/bin/python -m pytest -q $GITHUB_WORKSPACE/tests/test_golden.py $GITHUB_WORKSPACE/tests/test_engine_cleanup.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-pure
+          path: wheelhouse/*

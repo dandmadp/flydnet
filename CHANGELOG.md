@@ -18,6 +18,10 @@
   8스레드 2.8 ms. 경로 순서: C 커널 → scipy (있으면) → numpy (느림, 한 번 경고). `FLYDNET_SPARSE=c|scipy|numpy`,
   `FLYDNET_THREADS=n`. 세 경로 모두 행마다 연결 순서대로 더해 같은 비트 (골든 시험이 세 경로에서 비트까지 같음).
   역전파용 전치 구조는 배선마다 한 번만 만듦
+- **필수 의존성: numpy, pandas만** (scipy·pyarrow는 선택 설치 `[scipy]`·`[parquet]`, networkx `[graph]`, CuPy `[gpu-*]`,
+  torch `[torch]`). 플랫폼 휠 (Linux x86_64·aarch64, macOS x86_64·arm64, Windows x86_64)에 C 커널이 들어 있음 - 안정 ABI라
+  휠 하나가 Python 3.10 이상 모두에서 동작. 그 밖의 플랫폼은 순수 파이썬 휠 (scipy가 있으면 scipy, 없으면 numpy 경로).
+  소스 설치는 컴파일러가 있으면 C 커널을 빌드하고, 없으면 경고만 하고 계속
 
 ### 버그 수정
 - **`fd.gradcheck`가 학습값 배열을 사본으로 바꿔 끼우던 것**: 되돌릴 때 원래 배열이 아니라 사본을 넣어, 같은 메모리를 쓰던

@@ -1,0 +1,3 @@
+# sdist: C 커널 소스는 넣고, 로컬에서 빌드한 결과는 빼기
+include src/flydnet/ganglion/_csr.c
+global-exclude _csr*.dll _csr*.so _csr*.dylib _csr*.pyd *.lib *.pdb

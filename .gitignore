@@ -5,6 +5,7 @@ build/
 .pytest_cache/
 data/
 dist/
+wheelhouse/
 !tests/data/
 validation/shiu2024/model.py
 validation/shiu2024/brian2_*_*.json
