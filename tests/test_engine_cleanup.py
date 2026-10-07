@@ -304,6 +304,59 @@ def test_sparse_env_validation(monkeypatch):
         S.threads()
 
 
+# ─────────────── 교차 빌드한 C 커널 (_lib/) ───────────────
+LIB_DIR = S.Path(S.__file__).resolve().parent / "_lib"
+
+
+def test_kernels_built_from_current_source():
+    """_lib/SOURCE의 해시 = 지금 _csr.c (소스만 고치고 python scripts/build_csr.py --all을 잊으면 실패)"""
+    import hashlib
+    src = (LIB_DIR.parent / "_csr.c").read_bytes().replace(b"\r\n", b"\n")
+    assert f"sha256 {hashlib.sha256(src).hexdigest()}" in (LIB_DIR / "SOURCE").read_text(encoding="utf-8")
+    names = {p.name for p in LIB_DIR.glob("_csr-*")}
+    assert names == {"_csr-linux-x86_64.so", "_csr-linux-aarch64.so", "_csr-macos-x86_64.dylib", "_csr-macos-arm64.dylib",
+                     "_csr-windows-x86_64.dll", "_csr-windows-arm64.dll"}
+
+
+def test_kernel_for_this_platform_is_used():
+    supported = {"linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-arm64", "windows-x86_64", "windows-arm64"}
+    if S.platform_key() not in supported:
+        pytest.skip(f"C 커널이 없는 플랫폼: {S.platform_key()}")
+    assert S.c_available(), S._LIB[1]
+    assert "_lib" in str(S._LIB[0]._name) and S.platform_key() in str(S._LIB[0]._name)
+
+
+def test_failed_self_test_falls_back(monkeypatch):
+    """교차 빌드한 커널이 이 컴퓨터에서 numpy와 다르게 계산하면 쓰지 않음 (경고 한 번, 계산은 다른 경로로)"""
+    monkeypatch.setattr(S, "_LIB", [])
+    monkeypatch.setattr(S, "_self_test", lambda lib: "시험용 실패")
+    if not S._candidates():
+        pytest.skip("이 플랫폼용 C 커널 없음")
+    with pytest.warns(UserWarning, match="자체 확인 실패"):
+        assert not S.c_available()
+    assert "시험용 실패" in S._LIB[1]
+
+
+def test_bad_structure_is_an_error_not_a_crash():
+    """C 커널은 범위를 확인하지 않으므로 잘못된 구조는 만들 때 오류 (예전: 메모리 밖을 읽을 수 있었음)"""
+    ip = np.array([0, 1, 2], np.int64)
+    with pytest.raises(ValueError, match="열 번호"):
+        S.CSR(np.ones(2, np.float32), np.array([0, 5], np.int32), ip, (2, 3))
+    with pytest.raises(ValueError, match="열 번호"):
+        S.CSR(np.ones(2, np.float32), np.array([-1, 0], np.int32), ip, (2, 3))
+    with pytest.raises(ValueError, match="indptr"):
+        S.CSR(np.ones(2, np.float32), np.array([0, 1], np.int32), np.array([0, 3, 2], np.int64), (2, 3))   # 줄어드는 indptr
+    ok = S.CSR(np.ones(2, np.float32), np.array([0, 2], np.int32), ip, (2, 3))
+    assert (ok @ np.ones((3, 1), np.float32)).ravel().tolist() == [1.0, 1.0]
+
+
+def test_missing_kernel_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "_LIB", [])
+    monkeypatch.setenv("FLYDNET_CSR_LIB", str(tmp_path / "없는파일.dll"))
+    assert not S.c_available()
+    assert "없는파일" in S._LIB[1]
+
+
 # ─────────────── 6단계: 버그 ───────────────
 def _graded_layer(**kw):
     c = fd.graphs.layered([30, 60, 10], 0.2, seed=0)
@@ -333,6 +386,18 @@ def test_graded_calibrate_rejects_unreachable_target():
     with pytest.raises(ValueError, match="relay_hz"):
         layer.calibrate(act, target=3, relay_hz=12)
     assert layer._input_spikes(np.ones((2, layer.circuit.N), np.float32)) is None
+
+
+def test_graded_calibrate_default_relay_follows_r_max():
+    """relay_hz 기본("auto") = r_max의 4분의 1 - 예전 기본 5는 r_max가 5 이하면 기본값만으로 오류였음"""
+    c = fd.graphs.layered([30, 60, 10], 0.2, seed=0)
+    layer = fd.Connectome(c, "in", "out", t_ms=100, dt=1.0, neuron="graded", device="cpu", params={"r_max": 4.0},
+                          bias={"h1": 0.5, "out": 0.5})
+    act = (np.random.default_rng(0).random((4, 20, 30)) * 2).astype(np.float32)
+    t = layer.calibrate(act)
+    assert t[t.group == "out"].target_hz.iloc[0] == 2.0                # r_max 4의 절반
+    if (t.role == "중계").any():
+        assert t[t.role == "중계"].target_hz.iloc[0] == 1.0             # r_max 4의 4분의 1
 
 
 def test_lif_calibrate_still_rejects_quiet_inputs():

@@ -11,8 +11,9 @@ check가 하는 일 (하나라도 실패하면 멈춤):
   3. PyPI에 이 버전이 아직 없고 최신보다 큰지 → 버전 올리기를 잊은 업로드 방지 (같은 번호는 영구히 재사용 불가)
   4. 테스트 전체 통과 (경고도 실패로)
   5. dist/ 를 비우고 새로 빌드 + twine check  → 옛 버전 파일이 같이 올라가는 것 방지
-     여기서 만드는 것은 sdist와 순수 파이썬 휠(py3-none-any, FLYDNET_PURE=1)뿐. C 커널을 넣은 플랫폼 휠은 GitHub Actions
-     (.github/workflows/wheels.yml)가 만듦 → 그 결과물을 wheelhouse/에 풀어 두면 같은 버전의 것을 함께 확인·업로드
+     그 전에 C 커널(src/flydnet/ganglion/_lib/, 6개 플랫폼)이 지금 _csr.c로 빌드된 것인지 확인 (SOURCE의 해시) →
+     소스만 고치고 python scripts/build_csr.py --all을 잊은 채 올리는 것 방지. 휠 하나에 6개가 모두 들어갔는지도 확인
+     (플랫폼 확인은 배포 전에 GitHub Actions → wheels → Run workflow, 5~10분)
   6. 빌드한 wheel을 임시 폴더에 따로 설치해 불러오기·버전·명령줄 확인
   7. git 태그 v<버전>                        → 어떤 커밋을 배포했는지 기록
 """
@@ -36,6 +37,23 @@ INIT = ROOT / "src" / "flydnet" / "__init__.py"
 CHANGELOG = ROOT / "CHANGELOG.md"
 NAME = "flydnet"
 PY = sys.executable
+
+
+KERNEL_LIB = ROOT / "src" / NAME / "ganglion" / "_lib"
+KERNELS = ["_csr-linux-x86_64.so", "_csr-linux-aarch64.so", "_csr-macos-x86_64.dylib", "_csr-macos-arm64.dylib",
+           "_csr-windows-x86_64.dll", "_csr-windows-arm64.dll"]
+
+
+def check_kernels() -> list:
+    """6개 플랫폼 C 커널이 있고, 지금 _csr.c로 빌드한 것인지 (_lib/SOURCE의 해시)"""
+    import hashlib
+    if missing := [k for k in KERNELS if not (KERNEL_LIB / k).exists()]:
+        fail(f"C 커널 파일이 없음: {missing} → python scripts/build_csr.py --all")
+    stamp = (KERNEL_LIB / "SOURCE").read_text(encoding="utf-8") if (KERNEL_LIB / "SOURCE").exists() else ""
+    src = (ROOT / "src" / NAME / "ganglion" / "_csr.c").read_bytes().replace(b"\r\n", b"\n")
+    if f"sha256 {hashlib.sha256(src).hexdigest()}" not in stamp:
+        fail("_csr.c가 바뀌었는데 C 커널을 다시 빌드하지 않음 → python scripts/build_csr.py --all (그리고 커밋)")
+    return KERNELS
 
 
 def version() -> str:
@@ -117,29 +135,27 @@ def check(upload: bool, test: bool):
         fail("테스트 실패")
     ok("테스트 통과")
 
+    kernels = check_kernels()
+    ok(f"C 커널 {len(kernels)}개 플랫폼, _csr.c와 같은 소스로 빌드됨")
+
     for d in ("dist", "build", f"src/{NAME}.egg-info"):
         shutil.rmtree(ROOT / d, ignore_errors=True)
-    env_pure = dict(os.environ, FLYDNET_PURE="1")              # 컴파일러가 없어도 바이너리 없는 '플랫폼 휠'이 나오지 않게
-    if run([PY, "-m", "build"], capture_output=True, env=env_pure).returncode:
-        fail("빌드 실패 → FLYDNET_PURE=1 python -m build 로 직접 확인")
+    if run([PY, "-m", "build"], capture_output=True).returncode:
+        fail("빌드 실패 → python -m build 로 직접 확인")
     files = sorted((ROOT / "dist").iterdir())
-    if not any(f.name.endswith("-py3-none-any.whl") for f in files):
-        fail(f"순수 파이썬 휠이 아님: {[f.name for f in files]}")
-    house = ROOT / "wheelhouse"
-    platform = sorted(house.glob(f"{NAME}-{v}-*.whl")) if house.exists() else []
-    if platform:
-        ok(f"wheelhouse/의 플랫폼 휠 {len(platform)}개도 함께: {', '.join(f.name for f in platform)}")
-    else:
-        print("  (wheelhouse/에 플랫폼 휠 없음 - 순수 파이썬 휠만 올리면 CPU 희소 연산은 scipy·numpy 경로)", flush=True)
-    pure = next(f for f in files if f.name.endswith("-py3-none-any.whl"))
-    files = files + platform
+    whl = next((f for f in files if f.name.endswith("-py3-none-any.whl")), None)
+    if whl is None:
+        fail(f"순수 파이썬 휠(py3-none-any)이 아님: {[f.name for f in files]}")
+    import zipfile
+    inside = {Path(n).name for n in zipfile.ZipFile(whl).namelist()}
+    if missing := [k for k in kernels if k not in inside]:
+        fail(f"휠에 C 커널이 빠짐: {missing}")
     if any(v not in f.name for f in files):
         fail(f"dist/에 다른 버전 파일이 섞임: {[f.name for f in files]}")
     if run([PY, "-m", "twine", "check", *map(str, files)]).returncode:
         fail("twine check 실패 (README 형식 등)")
     ok(f"빌드: {', '.join(f'{f.name} ({f.stat().st_size // 1024} KB)' for f in files)}")
 
-    whl = pure
     with tempfile.TemporaryDirectory() as tmp:
         if run([PY, "-m", "pip", "install", "-q", "--no-deps", "--target", tmp, str(whl)]).returncode:
             fail("wheel 설치 실패")

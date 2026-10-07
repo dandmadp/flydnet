@@ -5,9 +5,10 @@
   A.T                                       전치 (구조는 배선마다 한 번 만들어 둠, 값만 다시 모음)
 
 곱셈 경로 (위에서부터 쓸 수 있는 것):
-  c      직접 작성한 C 커널 (_csr.c, ctypes). 파이썬 스레드가 행을 나눠 부름 (ctypes는 호출 동안 GIL을 놓음)
+  c      직접 작성한 C 커널 (_csr.c → _lib/_csr-<플랫폼>, ctypes). 파이썬 스레드가 행을 나눠 부름 (호출 동안 GIL을 놓음).
+         6개 플랫폼용이 함께 배포되고, 처음 열 때 numpy 경로와 비트까지 같은지 스스로 확인. FLYDNET_CSR_LIB=파일로 다른 빌드
   scipy  scipy.sparse (설치되어 있으면)
-  numpy  numpy reduceat (느림 - 처음 한 번 경고)
+  numpy  numpy (느림 - 처음 한 번 경고)
 환경변수 FLYDNET_SPARSE=c|scipy|numpy로 고름, FLYDNET_THREADS=n으로 C 경로의 스레드 수.
 세 경로 모두 행마다 연결 순서대로 하나씩 더함 → 같은 입력이면 같은 비트 (tests/test_golden.py로 확인).
 GPU는 이 모듈을 쓰지 않음 (cupyx 희소 행렬 + kernels.py의 전용 CUDA 커널).
@@ -29,13 +30,54 @@ _LOCK = threading.Lock()
 
 
 # ─────────────── C 라이브러리 ───────────────
+def platform_key() -> str:
+    """이 컴퓨터의 플랫폼 이름 (scripts/build_csr.py의 TARGETS 이름과 같게): linux-x86_64, macos-arm64, windows-x86_64 등"""
+    import platform
+    import sys
+    m = platform.machine().lower()
+    arch = {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "aarch64",
+            "arm64": "arm64" if sys.platform in ("darwin", "win32") else "aarch64"}.get(m, m)
+    osname = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux" if sys.platform.startswith("linux") else sys.platform)
+    return f"{osname}-{arch}"
+
+
 def _candidates():
-    """이 폴더의 _csr 빌드 결과: 파이썬 확장 모듈(휠·setup.py 빌드)이 먼저, 그다음 scripts/build_csr.py의 공유 라이브러리"""
-    import importlib.machinery
-    here = Path(__file__).resolve().parent
-    out = [here / f"_csr{s}" for s in importlib.machinery.EXTENSION_SUFFIXES]
-    out += [here / n for n in ("_csr.dll", "_csr.so", "_csr.dylib")]
-    return [p for p in out if p.exists()]
+    """C 커널 파일: FLYDNET_CSR_LIB (직접 빌드한 파일 경로)가 있으면 그것, 아니면 _lib/_csr-<플랫폼>
+    (6개 플랫폼용을 한 컴퓨터에서 zig로 교차 빌드해 함께 배포 - scripts/build_csr.py --all)"""
+    import sys
+    env = os.environ.get("FLYDNET_CSR_LIB", "").strip()
+    if env:
+        return [Path(env)]
+    ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
+    p = Path(__file__).resolve().parent / "_lib" / f"_csr-{platform_key()}{ext}"
+    return [p] if p.exists() else []
+
+
+def _self_test(lib):
+    """작은 행렬(빈 행 포함)로 C 커널과 numpy 경로가 비트까지 같은지 (float32·float64 곱, 전치 구조).
+    다른 컴퓨터용으로 교차 빌드한 파일이 이 컴퓨터에서 이상하게 돌면 쓰지 않게. 반환: 문제 설명 또는 None"""
+    rng = np.random.default_rng(12345)
+    D = np.where(rng.random((37, 29)) < 0.3, rng.standard_normal((37, 29)), 0.0)
+    D[[0, 5, 36]] = 0
+    r, c = np.nonzero(D)
+    indptr = np.zeros(38, np.int64)
+    indptr[1:] = np.cumsum(np.bincount(r, minlength=37))
+    indices = c.astype(np.int32)
+    for dt, f in ((np.float32, lib.csr_spmm_f32), (np.float64, lib.csr_spmm_f64)):
+        data = np.ascontiguousarray(D[r, c], dtype=dt)
+        x = np.ascontiguousarray(rng.standard_normal((29, 5)), dtype=dt)
+        got = np.full((37, 5), np.nan, dtype=dt)
+        f(indptr.ctypes.data, indices.ctypes.data, data.ctypes.data, x.ctypes.data, got.ctypes.data, 0, 37, 5)
+        want = _spmm_numpy(indptr, indices, data, x, np.empty((37, 5), dtype=dt))
+        if not np.array_equal(got, want):
+            return f"곱셈 결과가 numpy 경로와 다름 ({np.dtype(dt).name})"
+    t_indptr, t_indices, perm = (np.empty(30, np.int64), np.empty(len(c), np.int32), np.empty(len(c), np.int64))
+    lib.csr_transpose(indptr.ctypes.data, indices.ctypes.data, 37, 29, t_indptr.ctypes.data, t_indices.ctypes.data,
+                      perm.ctypes.data, np.zeros(29, np.int64).ctypes.data)
+    want_perm = np.argsort(indices, kind="stable")
+    if not (np.array_equal(perm, want_perm) and np.array_equal(t_indices, r[want_perm])):
+        return "전치 구조가 numpy와 다름"
+    return None
 
 
 def _load():
@@ -44,7 +86,7 @@ def _load():
     with _LOCK:
         if _LIB:
             return _LIB[0]
-        lib, why = None, "C 커널 빌드 결과(_csr)가 없음"
+        lib, why = None, f"이 플랫폼({platform_key()})용 C 커널이 없음"
         for p in _candidates():
             try:
                 cand = ctypes.CDLL(str(p))
@@ -63,6 +105,12 @@ def _load():
                 f.restype = None
             cand.csr_transpose.argtypes = [P, P, I64, I64, P, P, P, P]
             cand.csr_transpose.restype = None
+            problem = _self_test(cand)
+            if problem:
+                why = f"{p.name} 자체 확인 실패: {problem}"
+                warnings.warn(f"CPU 희소 행렬 C 커널을 쓰지 않음 - {why}. scipy·numpy 경로로 계산함 (결과는 같음). "
+                              "이슈로 알려 주세요: 플랫폼 " + platform_key(), stacklevel=3)
+                continue
             lib, why = cand, None
             break
         _LIB[:] = [lib, why]
@@ -132,8 +180,15 @@ def _pool(n):
     return _POOL[0][1]
 
 
-if hasattr(os, "register_at_fork"):                     # fork한 자식에는 스레드가 없음 → 새로 만들게
-    os.register_at_fork(after_in_child=_POOL.clear)
+def _after_fork():
+    """fork한 자식: 스레드가 없고, 부모의 다른 스레드가 쥐고 있던 잠금은 영원히 풀리지 않음 → 둘 다 새로"""
+    global _LOCK
+    _LOCK = threading.Lock()
+    _POOL.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 PARALLEL_MIN = 1 << 18                                   # 연결 수 x 배치가 이보다 작으면 스레드 하나 (나누는 비용이 더 큼)
 
@@ -189,6 +244,7 @@ def _spmm_scipy(indptr, indices, data, x, shape):
 _CANON = {}
 _ROWS = {}
 _TRANS = {}
+_VALID = {}
 
 
 def _cached(cache, key_arrays, make):
@@ -218,13 +274,27 @@ def _canonical(indptr, indices):
     return _cached(_CANON, (indptr, indices), make)
 
 
+def _check_structure(indptr, indices, n_cols: int):
+    """indptr이 0에서 시작해 줄지 않고, 열 번호가 0 ~ n_cols-1인지 (구조마다 한 번). C 커널은 범위를 확인하지 않아
+    잘못된 구조면 메모리 밖을 읽어 프로세스가 죽으므로 여기서 오류로"""
+    def make():
+        if len(indptr) and (indptr[0] != 0 or (len(indptr) > 1 and bool((np.diff(indptr) < 0).any()))):
+            raise ValueError("CSR indptr은 0에서 시작해 줄지 않아야 함")
+        if len(indices) and (int(indices.min()) < 0 or int(indices.max()) >= n_cols):
+            raise ValueError(f"CSR 열 번호가 0 ~ {n_cols - 1} 밖: {int(indices.min())} ~ {int(indices.max())}")
+        return n_cols
+    if _cached(_VALID, (indptr, indices), make) != n_cols:                # 같은 구조를 다른 열 수로 쓰면 다시 확인
+        _VALID.pop(tuple(id(a) for a in (indptr, indices)), None)
+        _cached(_VALID, (indptr, indices), make)
+
+
 def transpose_structure(indptr, indices, n_cols: int):
     """전치 구조 (t_indptr int64, t_indices int32, perm int64): 전치의 연결 k = 원래 연결 perm[k].
     열마다 원래 행 순서 (안정 정렬) → 전치의 행 안에서 열 번호가 오름차순"""
     def make():
         n_rows = len(indptr) - 1
         nnz = len(indices)
-        lib = _load() if indices.dtype == np.int32 else None
+        lib = _load() if indices.dtype == np.int32 and n_rows < 2 ** 31 else None   # C는 행 번호를 int32로 씀
         if lib is not None and nnz:
             t_indptr = np.empty(n_cols + 1, np.int64)
             t_indices = np.empty(nnz, np.int32)
@@ -259,6 +329,7 @@ class CSR:
                 (len(self.indptr) and int(self.indptr[-1]) != len(self.indices)):
             raise ValueError(f"CSR 모양이 맞지 않음: 행 {self.shape[0]}, indptr {len(self.indptr)}, "
                              f"indices {len(self.indices)}, data {len(self.data)}")
+        _check_structure(self.indptr, self.indices, self.shape[1])
 
     @classmethod
     def from_coo(cls, data, rows, cols, shape):

@@ -32,7 +32,7 @@ gpu-cuda12 = ["cupy-cuda12x[ctk]>=13"]   # GPU (CUDA 12.x 드라이버). [ctk] =
 gpu-cuda13 = ["cupy-cuda13x[ctk]>=14"]   # GPU (CUDA 13.x 드라이버)
 graph = ["networkx>=2.6"]                # Circuit.to_networkx
 examples = ["torch>=2.1", "torchvision"]
-dev = ["pytest", "torch>=2.1", "scipy>=1.9", "pyarrow>=10", "networkx>=2.6"]
+dev = ["pytest", "torch>=2.1", "scipy>=1.9", "pyarrow>=10", "networkx>=2.6", "ziglang==0.16.0"]   # ziglang: C 커널 빌드 (_lib/SOURCE의 버전과 같게 - 같은 바이트)
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -40,8 +40,14 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]                                  # flydnet과 하위 패키지(ganglion, torch)를 모두 포함
 
+[tool.setuptools.package-data]
+# CPU 희소 행렬 C 커널: 6개 플랫폼용을 한 컴퓨터에서 zig로 교차 빌드해 커밋 (scripts/build_csr.py --all) → 휠 하나에 모두
+"flydnet.ganglion" = ["_lib/*.so", "_lib/*.dylib", "_lib/*.dll", "_lib/SOURCE", "_lib/NOTICE"]
+
 [tool.setuptools.dynamic]
 version = { attr = "flydnet.__version__" }      # 버전은 src/flydnet/__init__.py 한 곳에서만
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["lab: lab 실험적 기능(growth·대조 학습) 자체의 시험 - 기본은 건너뜀, scripts/verify.py --lab 또는 pytest -m lab"]
+addopts = "-m 'not lab'"

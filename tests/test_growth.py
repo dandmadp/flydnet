@@ -84,6 +84,7 @@ def test_extra_edges_equal_circuit_with_those_edges(dev, neuron):
     np.testing.assert_allclose(B.numpy(L.growth.log.retro), g_ref, rtol=1e-3, atol=1e-4 * max(1.0, np.abs(g_ref).max()))
 
 
+@pytest.mark.lab
 def test_growth_rules_respect_biology():
     """허용 쌍 안에서만, 고정·추가 연결과 겹치지 않음, 자기 연결 없음, 부호 = 보내는 뉴런 (데일), 상한"""
     c = _rec(feedback_edges=True, strong=True)
@@ -107,6 +108,7 @@ def test_growth_rules_respect_biology():
         _layer(c).growth.grow(5)                                            # Growth를 붙이지 않은 층
 
 
+@pytest.mark.lab
 def test_initial_strength_is_pathway_median():
     """처음 세기 기본 = 그 그룹 쌍 실제 연결의 시냅스 수 중앙값 (회로에서 직접 센 값과 같아야 함 - 같은 (pre, post)는 합침)"""
     c = _rec(feedback_edges=True, strong=True)
@@ -132,6 +134,7 @@ def test_initial_strength_is_pathway_median():
     assert np.allclose(L1.growth.extra_edges().synapses, 1.0)
 
 
+@pytest.mark.lab
 def test_prune_only_extra_edges():
     c = _rec(feedback_edges=True, strong=True)
     L = _layer(c, trainable=True, growth=dict(budget=100, per_neuron=None))
@@ -146,6 +149,7 @@ def test_prune_only_extra_edges():
     assert len(t) == L.growth.n and set(t.columns) >= {"pre", "post", "pathway", "synapses", "sign"}
 
 
+@pytest.mark.lab
 def test_coactive_picks_most_coactive_pairs():
     """헤브 규칙: 함께 많이 발화한 쌍부터 (가장 큰 함께-발화 점수 = 가장 활발한 두 뉴런)"""
     c = _rec(feedback_edges=True, strong=True)
@@ -162,6 +166,7 @@ def test_coactive_picks_most_coactive_pairs():
     assert np.isclose(score.max(), cand[0]) and score.min() >= cand[min(len(cand) - 1, 40)] - 1e-6
 
 
+@pytest.mark.lab
 def test_homeostatic_feeds_silenced_neurons():
     """항상성 규칙 (정답 없이): 입력을 모두 잃어 조용해진 뉴런이 새 입력을 받고, 평균보다 활발한 뉴런은 받지 않음"""
     c = _rec(feedback_edges=True, strong=True)
@@ -188,6 +193,7 @@ def test_homeostatic_feeds_silenced_neurons():
         L.growth.grow(5, rule="homeostatic")
 
 
+@pytest.mark.lab
 def test_info_nce_matches_formula():
     from flydnet.lab import info_nce
     r = np.random.default_rng(0)
@@ -199,6 +205,7 @@ def test_info_nce_matches_formula():
     assert float(info_nce(fd.Signal(a), fd.Signal(b)).data) == pytest.approx(want, rel=1e-5)
 
 
+@pytest.mark.lab
 def test_contrastive_rule_needs_no_labels():
     """lab.grow_contrastive: 라벨 없는 입력만으로 고름 - 고른 연결을 아주 약하게 켜면 대조 손실이 실제로 줄어듦 (무작위보다 더).
     seed가 같으면 같은 연결, encoder를 거친 입력도"""
@@ -229,6 +236,7 @@ def test_contrastive_rule_needs_no_labels():
         L.growth.grow(5, rule="contrastive")
 
 
+@pytest.mark.lab
 def test_gradient_rule_adds_edges_that_reduce_loss():
     """기울기 규칙으로 고른 연결은, 그 부호 방향으로 조금 키우면 손실이 실제로 줄어듦 (무작위로 고른 것보다 더)"""
     c = _rec(feedback_edges=True, strong=True)
@@ -249,6 +257,7 @@ def test_gradient_rule_adds_edges_that_reduce_loss():
     assert gain("gradient") > 0 and gain("gradient") > gain("random")
 
 
+@pytest.mark.lab
 def test_save_load_and_pathway_resize(tmp_path):
     c = _rec(feedback_edges=True, strong=True)
     L = _layer(c, trainable=True, growth=dict(budget=60, per_neuron=None))
@@ -360,6 +369,7 @@ def test_threefactor_warns_about_extra_edges():
         fd.STDP(L)
 
 
+@pytest.mark.lab
 def test_bad_arguments_raise_even_when_nothing_to_do():
     """상한이 찼거나 추가 연결이 없어도 잘못된 인자는 알림 (예전: 0개를 돌려주며 조용히 넘어감)"""
     c = _rec(feedback_edges=True, strong=True)
@@ -375,6 +385,7 @@ def test_bad_arguments_raise_even_when_nothing_to_do():
         L0.growth.prune(below=-1)
 
 
+@pytest.mark.lab
 def test_load_rejects_edges_outside_allowed_pairs():
     """다른 allow로 만든 층의 파일을 불러오면 알림 (예전: 처음 세기를 엉뚱한 그룹 쌍에서 읽어 조용히 다른 세기)"""
     c = _rec(feedback_edges=True, strong=True)
@@ -389,6 +400,7 @@ def test_load_rejects_edges_outside_allowed_pairs():
     assert np.array_equal(same.growth.pre, L.growth.pre)
 
 
+@pytest.mark.lab
 def test_views_keep_negative_values_and_accept_any_input():
     """보기 만들기: 음수 특징을 0으로 자르지 않음, corrupt는 값을 같은 열의 다른 시료 값으로만 바꿈, 리스트·Signal 입력"""
     from flydnet.lab import contrastive_loss, corrupt, views
@@ -410,6 +422,7 @@ def test_views_keep_negative_values_and_accept_any_input():
         assert np.isfinite(v)
 
 
+@pytest.mark.lab
 def test_auto_per_neuron_spreads_extra_edges():
     """per_neuron 기본 "auto" = ceil(budget / 받을 수 있는 뉴런 수): 기울기·헤브 규칙도 소수 뉴런에 몰지 못함. None이면 상한 없음"""
     c = _rec(feedback_edges=True, strong=True)
@@ -444,6 +457,7 @@ def test_engine_has_only_the_extension_slot():
     assert set(L.extensions()) == {"growth", "growth2"}
 
 
+@pytest.mark.lab
 def test_grow_contrastive_checks_arguments_even_when_full():
     """상한이 찼어도 잘못된 인자는 알림 (grow·prune과 같은 패턴 - 예전엔 0개를 돌려주며 넘어감)"""
     from flydnet.lab import grow_contrastive

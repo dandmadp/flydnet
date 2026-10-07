@@ -48,10 +48,11 @@ Colab처럼 CuPy가 이미 깔린 곳에 GPU 옵션을 붙이면 CuPy가 두 개
 ### CPU 희소 연산
 
 CPU에서 커넥톰 전달(희소 행렬 x 배치)은 직접 작성한 C 커널이 한다 (`flydnet/ganglion/csr.py`, `_csr.c`).
-Linux (x86_64·aarch64)·macOS (x86_64·arm64)·Windows (x86_64) 휠에 들어 있고, 파이썬 스레드로 행을 나눠 계산한다
-(OpenMP를 쓰지 않아 런타임 설치가 필요 없고, 스레드 수와 상관없이 결과 비트가 같음). 쓸 수 있는 경로를 이 순서로 고른다:
+Linux (x86_64·aarch64)·macOS (x86_64·arm64)·Windows (x86_64·arm64)용이 설치 파일 하나에 모두 들어 있고, 파이썬 스레드로
+행을 나눠 계산한다 (OpenMP를 쓰지 않아 런타임 설치가 필요 없고, 스레드 수와 상관없이 결과 비트가 같음).
+처음 열 때 작은 행렬로 numpy 결과와 비교해, 다르면 쓰지 않는다. 쓸 수 있는 경로를 이 순서로 고른다:
 
-1. C 커널 (휠에 들어 있거나 소스에서 `python scripts/build_csr.py`로 빌드)
+1. C 커널 (위 6개 플랫폼)
 2. scipy (설치되어 있으면)
 3. numpy (느림 - 처음 한 번 경고)
 
@@ -61,7 +62,8 @@ Linux (x86_64·aarch64)·macOS (x86_64·arm64)·Windows (x86_64) 휠에 들어 �
 |---|---|
 | C 커널, 8 스레드 | 2.8 ms |
 | C 커널, 2 스레드 | 6.6 ms |
-| scipy | 17.5 ms |
+| C 커널, 1 스레드 | 13.0 ms |
+| scipy (1 스레드) | 17.5 ms |
 | numpy | 489 ms |
 
 `FLYDNET_SPARSE=c|scipy|numpy`로 경로를, `FLYDNET_THREADS=n`으로 스레드 수(기본 CPU 수, 최대 8)를 정한다.
@@ -570,14 +572,14 @@ opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch�
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install --no-cache-dir -e ".[examples,dev,gpu-cuda13]"
-.venv\Scripts\python scripts\build_csr.py               # CPU C 커널 (컴파일러: CC, pip install ziglang, gcc·clang)
+.venv\Scripts\python scripts\build_csr.py --all         # _csr.c를 고쳤을 때만: 6개 플랫폼 C 커널 (zig, 몇 초) → 커밋
 .venv\Scripts\python -m pytest -q                       # 테스트 (tests/test_golden.py = 엔진 정리 전 결과와 비교)
 .venv\Scripts\python scripts\release.py bump patch      # 버전 올리기 + CHANGELOG 틀
 .venv\Scripts\python scripts\release.py check --upload  # 커밋·CHANGELOG·PyPI 중복·테스트·빌드·설치 확인 후 업로드
 ```
 
-플랫폼 휠(C 커널 포함)은 GitHub Actions(`.github/workflows/wheels.yml`, cibuildwheel)가 만들고 플랫폼마다 골든 시험을 돌린다.
-결과물을 `wheelhouse/`에 풀어 두면 `release.py check`가 순수 파이썬 휠·sdist와 함께 확인·업로드한다.
+배포는 순수 파이썬 휠 하나 (6개 플랫폼 C 커널 포함). `release.py check`가 커널이 지금 `_csr.c`로 빌드된 것인지 확인한다.
+배포 전 플랫폼 확인: GitHub Actions → wheels → Run workflow (5~10분, Linux·macOS·Windows에서 골든 시험).
 
 데이터 출처: FlyWire v783 연결(Shiu et al. 2024, MIT), 세포 주석(Schlegel et al. 2024), DoOR 2.0(CC BY-SA 4.0).
 MIT 라이선스.

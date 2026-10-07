@@ -21,7 +21,7 @@ ap.add_argument("--model", default="kc", choices=["kc", "lif"])
 ap.add_argument("--seeds", type=int, default=5)
 ap.add_argument("--classes", type=int, default=30)
 ap.add_argument("--noise", type=float, default=0.8)
-ap.add_argument("--timing", default="brian", choices=["brian", "legacy"], help="LIF 한 스텝 (legacy = 0.1.15까지, REPORT ⑫)")
+ap.add_argument("--timing", default="brian", choices=["brian", "legacy"], help="LIF 한 스텝 (legacy = 0.1.15까지)")
 args = ap.parse_args()
 
 mb = fd.Circuit.from_flywire()

@@ -232,6 +232,10 @@ def stage_snapshot(a):
     return good
 
 
+# lab/의 긴 연구 실험: --lab에서도 빼고 직접 돌림 (python lab/<이름>.py). lab.Growth는 growth_odor가 확인
+LAB_MANUAL = {"growth_lesion", "growth_lesion_mnist"}
+
+
 def stage_tests(a):
     files = sorted((ROOT / "tests").glob("test_*.py"), key=lambda p: -p.stat().st_size)
     halves = [[], []]
@@ -242,6 +246,8 @@ def stage_tests(a):
         size[k] += f.stat().st_size
     base = [PY, "-m", "pytest", "-q", "-W", "error::UserWarning", "-p", "no:cacheprovider"]
     jobs = [Job(f"pytest {i + 1}/2", base + h, STATE / f"pytest{i + 1}.log") for i, h in enumerate(halves)]
+    if a.lab:                                                             # lab 기능(growth·대조 학습) 시험: 기본 pytest는 건너뜀
+        jobs += [Job("pytest lab", base + ["-m", "lab", "tests"], STATE / "pytest_lab.log")]
     jobs += [Job("combos", [PY, "tests/combo_check.py", "0", "60"], STATE / "combos.log")]
     jobs += [Job(n, [PY, f"tests/{n}.py"], STATE / f"{n}.log") for n in ("fuzz_ops", "fuzz_layers", "fuzz_sparse")]
     ok = True
@@ -272,7 +278,7 @@ def stage_examples(a):
     ver = versions()
     exs = sorted(p for p in (ROOT / "examples").glob("*.py") if not p.name.startswith("_"))   # _로 시작 = 공용 도우미
     if a.lab:                                                             # lab/: 실험적 기능의 연구 예제 (기본은 빼서 시간 줄임)
-        exs += sorted(p for p in (ROOT / "lab").glob("*.py") if not p.name.startswith("_"))
+        exs += sorted(p for p in (ROOT / "lab").glob("*.py") if not p.name.startswith("_") and p.stem not in LAB_MANUAL)
     tasks = [(p.stem, [str(p)]) for p in exs] + [("shiu_brian2", ["validation/shiu2024/compare.py", "--run"])]
     total, free = gpu_total_free()
     budget = max(free - 0.5 * GB, 0) if total else None

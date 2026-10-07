@@ -890,7 +890,7 @@ class ConnectomeLayer(Tissue):
         return layer
 
     def calibrate(self, rates, target=None, iters: int = 20, tol: float = 0.1, seed: int = 0, step: float = 0.5,
-                  relay_hz: float | None = 5.0, max_gain: float = 1000.0, verbose: bool = False):
+                  relay_hz: float | str | None = "auto", max_gain: float = 1000.0, verbose: bool = False):
         """가중치 자동 보정: 그룹마다 평균 발화율이 target이 되도록 그 그룹으로 들어오는 연결 종류의 배율(gains)을 조정
 
         rates:    대표 입력 (B, n_in) - 실제로 쓸 입력과 비슷하게
@@ -898,6 +898,7 @@ class ConnectomeLayer(Tissue):
                   연속값 뉴런(neuron="graded")은 Hz가 아니라 활동 (0 ~ r_max, 기본 10) - 기본 목표 r_max의 절반,
                   목표·relay_hz는 r_max보다 작아야 함 (예전: 기본 20은 닿을 수 없어 배율만 상한까지 올라갔음)
         relay_hz: 입력 → 목표 그룹의 흥분성 경로 위에 있는 중간 그룹(중계)이 이보다 약하면 이 값까지 올림 (낮추지는 않음).
+                  "auto" (기본) = 스파이킹 뉴런 5 Hz, 연속값 뉴런 r_max의 4분의 1.
                   예전에는 목표 그룹으로 들어오는 연결만 키워서, 중간 층이 꺼져 있으면 배율이 256배가 돼도 출력이 0 Hz인
                   채로 끝났음. None이면 중계 그룹은 건드리지 않음
         max_gain: 그룹마다 이번 보정에서 곱할 수 있는 배율의 상한. 예전에는 상한이 없어, 입력이 거의 발화하지 않을 때
@@ -909,7 +910,8 @@ class ConnectomeLayer(Tissue):
         _C.integer("iters", iters, lo=0)
         _C.pos("step", step)
         _C.pos("tol", tol)
-        _C.optional(_C.pos, "relay_hz", relay_hz)
+        if relay_hz != "auto":
+            _C.optional(_C.pos, "relay_hz", relay_hz)
         _C.pos("max_gain", max_gain)
         self._silent_checked = True                                     # 바로 이것을 고치는 중 - "출력이 모두 0" 경고는 안 냄
         rates = _batched(rates)
@@ -924,6 +926,8 @@ class ConnectomeLayer(Tissue):
             if graded and v >= r_max:
                 raise ValueError(f"연속값 뉴런의 활동은 0 ~ r_max({r_max:g}) - 목표 {g}={v:g}에는 닿을 수 없음. "
                                  f"r_max보다 작은 값으로 (기본: r_max의 절반 {r_max / 2:g})")
+        if relay_hz == "auto":                                          # 예전 기본 5 Hz - graded에서 r_max가 5 이하면 기본값만으로 오류였음
+            relay_hz = r_max / 4 if graded else 5.0
         if graded and relay_hz is not None and relay_hz >= r_max:
             raise ValueError(f"연속값 뉴런의 활동은 0 ~ r_max({r_max:g}) - relay_hz={relay_hz:g}는 r_max보다 작게 (또는 None)")
         for g in tgt:

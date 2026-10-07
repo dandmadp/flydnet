@@ -1,3 +1,3 @@
-# sdist: C 커널 소스는 넣고, 로컬에서 빌드한 결과는 빼기
+# sdist: C 커널 소스, 개발용으로 빌드한 결과는 빼기 (배포용 커널은 src/flydnet/ganglion/_lib/ - 패키지 데이터)
 include src/flydnet/ganglion/_csr.c
-global-exclude _csr*.dll _csr*.so _csr*.dylib _csr*.pyd *.lib *.pdb
+global-exclude *.lib *.pdb
