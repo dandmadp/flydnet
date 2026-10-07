@@ -57,14 +57,14 @@ jobs:
           python scripts/build_csr.py --all
       - name: 다르면 빌드 결과를 올림
         if: always()
-        run: git diff --quiet -- src/flydnet/ganglion/_lib || echo "CHANGED=1" >> "$GITHUB_ENV"
+        run: git -c core.fileMode=false diff --quiet -- src/flydnet/ganglion/_lib || echo "CHANGED=1" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         if: env.CHANGED == '1'
         with:
           name: kernels-linux-build
           path: src/flydnet/ganglion/_lib
       - name: 비교 결과
-        run: git diff --stat --exit-code -- src/flydnet/ganglion/_lib
+        run: git -c core.fileMode=false diff --stat --exit-code -- src/flydnet/ganglion/_lib   # 내용만 (zig가 Linux에서 .so·.dll에 실행 권한을 붙임)
 
   wheel:
     name: 순수 파이썬 휠 빌드 (커밋된 커널로)
