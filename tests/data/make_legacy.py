@@ -1,4 +1,4 @@
-"""0.1.15 저장 형식의 고정 파일 만들기 (한 번만 실행해 저장소에 넣음 - 이후 버전이 계속 읽는지 test_archive.py가 확인)"""
+"""0.1.15 저장 형식의 고정 파일 만들기 (한 번만 실행해 저장소에 넣음 - 이후 버전이 계속 읽는지 test_stability.py가 확인)"""
 import sys
 from pathlib import Path
 

@@ -1,7 +1,7 @@
 """
 추가 연결 (구조적 가소성) 예: 실제 버섯체 배선은 그대로 두고, 학습하며 PN→KC 시냅스를 덧붙이고 없앰
 
-  python lab/growth_odor.py              # 약 20분 (GPU)
+  python lab/growth_odor.py              # 약 5분 (GPU, 단독)
 
 과제: DoOR 2.0 실제 냄새 (어렵게: 냄새 24개, 잡음 큼)
 모델: 사구체 → PN → KC (스파이킹 ConnectomeLayer, 실제 배선 + 추가 연결) → 정규화 → 선형

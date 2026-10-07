@@ -110,12 +110,74 @@ def numpy(a) -> np.ndarray:
 
 
 def scatter_add(target, idx, values):
-    """target[idx] += values (같은 idx가 여러 번이면 모두 더함)"""
+    """target[idx] += values (같은 idx가 여러 번이면 모두 더함). GPU도 결정론적: 같은 입력이면 늘 같은 비트.
+    예전: cupy.add.at (원자적 덧셈, 같은 칸에 더하는 순서가 실행마다 달라 마지막 자리가 달라짐) - share="pair"·세포 유형별
+    매개변수처럼 여러 연결이 값 하나를 함께 쓰면 학습이 실행마다 갈렸음"""
     if device_of(target) == "gpu":
-        sys.modules["cupy"].add.at(target, idx, values)
+        _scatter_add_gpu(target, idx, values)
     else:
         np.add.at(target, idx, values)
     return target
+
+
+_PLANS = {}
+_SEGSUM = []
+
+
+def _scatter_plan(shape, idx):
+    """None (칸이 겹치지 않음 - 그냥 더하면 됨) 또는 (쓸 칸 번호, 정렬 순서 int32, 구간 경계, target[idx]의 모양).
+    같은 idx 배열(객체)이면 다시 만들지 않음 (학습 버퍼 train_which·pair_of·group_idx는 순전파마다 같은 객체).
+    정렬 키 = 칸 번호 x n + 원래 자리 → 겹치는 칸 안의 덧셈 순서가 원래 자리 순서로 정해짐 (정렬 알고리즘과 상관없이)"""
+    cp = sys.modules["cupy"]
+    key = (id(idx), tuple(shape))
+    hit = _PLANS.get(key)
+    if hit is not None and hit[0] is idx:
+        return hit[1]
+    sel = cp.arange(int(np.prod(shape)), dtype=cp.int64).reshape(shape)[idx]
+    pos = sel.reshape(-1)
+    n = len(pos)
+    plan = None
+    if n > 1:
+        order = cp.argsort(pos * n + cp.arange(n, dtype=cp.int64))
+        sp = pos[order]
+        new = cp.concatenate([cp.ones(1, bool), sp[1:] != sp[:-1]])
+        if not bool(new.all()):                                       # 같은 칸이 여러 번
+            starts = cp.nonzero(new)[0]
+            plan = (sp[starts], order.astype(cp.int32 if n < 2 ** 31 else cp.int64),
+                    cp.concatenate([starts, cp.asarray([n])]).astype(cp.int64), sel.shape)
+    if isinstance(idx, cp.ndarray):                                   # 배열 하나일 때만 (튜플·슬라이스는 매번 새로)
+        if len(_PLANS) > 64:
+            _PLANS.clear()
+        _PLANS[key] = (idx, plan)                                     # 객체를 붙잡아 같은 주소의 다른 배열과 섞이지 않게
+    return plan
+
+
+def _scatter_add_gpu(target, idx, values):
+    cp = sys.modules["cupy"]
+    if isinstance(idx, (list, np.ndarray)) or (isinstance(idx, tuple) and any(isinstance(p, (list, np.ndarray)) for p in idx)):
+        idx = tuple(cp.asarray(p) if isinstance(p, (list, np.ndarray)) else p for p in idx) if isinstance(idx, tuple) \
+            else cp.asarray(idx)
+    plan = _scatter_plan(target.shape, idx)
+    if plan is None:                                                  # 칸이 겹치지 않음: 그냥 더하기 (순서 문제 없음)
+        target[idx] += values
+        return
+    pos, order, bounds, sel_shape = plan
+    vals = cp.ascontiguousarray(cp.broadcast_to(cp.asarray(values, dtype=target.dtype), sel_shape).reshape(-1))
+    if not _SEGSUM:                                                   # 칸마다 스레드 하나가 정렬 순서대로 하나씩 더함
+        _SEGSUM.append({})
+    kern = _SEGSUM[0].get(order.dtype.name)
+    if kern is None:
+        it = "int32" if order.dtype == cp.int32 else "int64"
+        kern = _SEGSUM[0][order.dtype.name] = cp.ElementwiseKernel(
+            f"raw T vals, raw {it} order, raw int64 bounds", "T out",
+            "T s = 0; for (long long e = bounds[i]; e < bounds[i + 1]; ++e) s += vals[order[e]]; out = s;",
+            f"flydnet_segment_sum_{it}")
+    sums = cp.empty(len(pos), dtype=target.dtype)
+    kern(vals, order, bounds, sums)
+    flat = target.reshape(-1)                                         # 연속 배열이면 같은 메모리
+    flat[pos] += sums
+    if not target.flags.c_contiguous:                                 # reshape이 사본이었으면 되돌려 씀
+        target[...] = flat.reshape(target.shape)
 
 
 def labels(y) -> np.ndarray:

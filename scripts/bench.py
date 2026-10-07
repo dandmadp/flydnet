@@ -20,7 +20,7 @@ def main():
     ap.add_argument("--batches", default="8,32")
     ap.add_argument("--t-ms", type=float, default=20.0)
     ap.add_argument("--repeat", type=int, default=3)
-    ap.add_argument("--torch", action="store_true", help="연결 장치 대 torch판 복사본 (배치 8)")
+    ap.add_argument("--torch", action="store_true", help="torch 모델 안에서 연결 장치(fd.torch.bridge)로 학습 1스텝 (배치 8)")
     a = ap.parse_args()
     B.limit_gpu_memory(0.75)
     brain = fd.Circuit.whole_brain()

@@ -20,6 +20,6 @@ Xtr, ytr, Xte, yte = fd.door_task(n_odors=12)                       # DoOR 실�
 enc = fd.Glomeruli(mb)                                              # 사구체 → PN 발화율
 layer = fd.Connectome(mb, "PN", args.read, t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC", "KC>MBON"])
 print(layer.calibrate(enc(Xtr[::3]), {"KC": 5, "MBON": 20}).round(2).to_string(index=False))   # 가중치 자동 보정
-model = fd.Pathway(enc, layer, fd.Homeostasis(), fd.Projection(len(mb.groups[args.read]), 12))
+model = fd.Pathway(enc, layer, fd.Homeostasis(), fd.Projection(len(mb.groups[args.read]), 12, seed=0))
 hist = fd.train(model, Xtr, ytr, val=(Xte, yte), epochs=args.epochs)
 print(f"평가 정확도 {hist['val_acc'][-1]:.3f} (찍기 {1 / 12:.3f}), 냄새: {', '.join(fd.door_task.names[:4])} ...")

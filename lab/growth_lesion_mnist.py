@@ -2,7 +2,7 @@
 손상 회복 재현 (MNIST): growth_lesion.py의 냄새 결과가 다른 종류의 데이터에서도 나오는지 - 버섯체 PN→KC 연결 80%를 끊고
 정답 없는 대조 학습(flydnet.lab.grow_contrastive)으로 추가 연결을 고름
 
-  python lab/growth_lesion_mnist.py        # 약 25분 (GPU)
+  python lab/growth_lesion_mnist.py        # 약 27분 (GPU)
 
 과제: MNIST 손글씨 숫자 (seed마다 학습 3,000 / 평가 1,000장을 다르게 뽑음)
 모델: 픽셀 → 무작위 투영으로 PN 344개 (RateEncoder) → KC (스파이킹, 실제 배선) → 정규화 → 선형

@@ -42,7 +42,7 @@ def main():
     ids = pd.read_csv(comp, index_col=0).index.values
     pos = {r: i for i, r in enumerate(ids)}
     sugar = [pos[r] for r in SUGAR if r in pos]
-    bitter = [pos[r] for r in json.load(open(HERE / "bitter_ids.json"))]
+    bitter = [pos[r] for r in json.loads((HERE / "bitter_ids.json").read_text(encoding="utf-8"))]
     kind, hz = a.cond.split("_")[0], float(a.cond.split("_")[1])
     p = dict(model.default_params)
     p["r_poi"] = p["r_poi2"] = hz * Hz
@@ -53,7 +53,7 @@ def main():
         spk = model.run_trial(exc, exc2, [], comp, con, p)
         out.append(len(spk.get(pos[MN9], [])) / float(p["t_run"] / (1000 * ms)))
         print(f"{a.cond} trial {t}: MN9 {out[-1]:.1f} Hz ({time.time() - t0:.0f}s)", flush=True)
-    json.dump(dict(cond=a.cond, rates=out), open(HERE / f"brian2_{a.cond}.json", "w"))
+    (HERE / f"brian2_{a.cond}.json").write_text(json.dumps(dict(cond=a.cond, rates=out)), encoding="utf-8")
     print(np.mean(out))
 
 

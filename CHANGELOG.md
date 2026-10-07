@@ -1,5 +1,23 @@
 # 변경 기록
 
+## [0.1.19] - 미배포
+
+### 버그 수정
+- **GPU 학습이 실행마다 미세하게 달라지던 것** (`share="pair"`, 세포 유형별 매개변수 `bias`·`t_mbr`·`train_neurons`,
+  `Neuropil(train="pair")`, `fd.STDP`): 여러 연결이 값 하나를 함께 쓰면 역전파에서 같은 칸에 기울기를 더하는데, 그 덧셈이
+  `cupy.add.at`(원자적 덧셈)이라 순서가 실행마다 달라 마지막 자리가 달랐고, 학습을 거듭하면 결과가 갈렸음 (시각계 예제).
+  → GPU에서도 정렬해 정해진 순서로 더함 (같은 입력이면 늘 같은 비트). 같은 인덱스 배열이면 정렬은 한 번만 해 두고 다시 씀 -
+  예전보다 빠르거나 비슷 (시각계 크기 2.1 → 0.1 ms, 전체 뇌 연결 1,500만 개 → 칸 120개 18 → 8 ms). 연결마다 배율(`share="edge"`,
+  기본)은 칸이 겹치지 않아 원래 결정론적이었음
+- `layer.calibrate(X, target)`에 numpy 숫자(`np.float32(5)`, `np.int64(10)`)를 주면 알기 어려운 TypeError → 숫자 하나로
+- 예제 `quickstart.py`: 분류 층에 seed가 없어 실행마다 결과가 달랐음 (엔진이 아니라 예제의 무작위 초기값) → seed=0
+
+### 그 밖
+- 테스트: `test_graphs.py`가 scipy 없이도 수집됨 (scipy가 필요한 시험만 건너뜀), `ref_data.py`는 원본 parquet가 없으면 알리고 건너뜀
+- 문서: README의 원본 Brian2 비교 표를 저장된 결과(`validation/shiu2024/`)와 맞춤, lab 예제 실행 시간을 실제 기록으로
+- `validation/shiu2024/`의 `compare.py`·`run_brian2.py`: 파일을 열고 닫지 않던 것 (ResourceWarning 4개) → 읽고 쓰는 즉시 닫음
+  (결과 파일은 같은 바이트)
+
 ## [0.1.18] - 2026-10-07
 
 ### 엔진 정리: scipy·pyarrow 없이 (필수 의존성을 줄임)

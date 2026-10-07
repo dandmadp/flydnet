@@ -919,7 +919,8 @@ class ConnectomeLayer(Tissue):
         r_max = float(self.p.get("r_max", 10.0)) if graded else None
         if target is None:
             target = r_max / 2 if graded else 20.0
-        tgt ={g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
+        import numbers                                                  # numpy 숫자(np.float32 등)도 숫자 하나 (예전: dict로 보다 TypeError)
+        tgt = {g: float(target) for g in self.out_names} if isinstance(target, numbers.Real) else dict(target)
         for g, v in tgt.items():
             if not (v > 0 and np.isfinite(v)):
                 raise ValueError(f"목표 발화율은 양수 (Hz): {g}={v} - 그룹을 끄려면 fd.genetics.silence")

@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "flydnet" / "ganglion" / "_csr.c"
 LIB = SRC.parent / "_lib"
-# 플랫폼 이름 (csr.py의 _platform_key와 같게) → zig 대상, 확장자. linux는 glibc 2.17 (manylinux2014와 같은 기준)
+# 플랫폼 이름 (csr.py의 platform_key와 같게) → zig 대상, 확장자. linux는 glibc 2.17 (manylinux2014와 같은 기준)
 TARGETS = {
     "linux-x86_64": ("x86_64-linux-gnu.2.17", ".so"),
     "linux-aarch64": ("aarch64-linux-gnu.2.17", ".so"),

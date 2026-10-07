@@ -17,7 +17,7 @@ def run_flydnet(trials=30):
     brain = fd.Circuit.whole_brain()
     G = fd.genetics
     sugar = G.driver(brain, root_ids=SUGAR, missing="ignore")
-    bitter = G.driver(brain, root_ids=json.load(open(HERE / "bitter_ids.json")))
+    bitter = G.driver(brain, root_ids=json.loads((HERE / "bitter_ids.json").read_text(encoding="utf-8")))
     mn9 = G.driver(brain, root_ids=[MN9]).idx[0]
     layer = fd.ConnectomeLayer(brain, inputs=None, outputs="motor", t_ms=1000)
     res = {}
@@ -30,7 +30,7 @@ def run_flydnet(trials=30):
         for e in exprs:
             e.remove()
         print(name, np.mean(res[name]), flush=True)
-    json.dump(res, open(HERE / "flydnet_results.json", "w"))
+    (HERE / "flydnet_results.json").write_text(json.dumps(res), encoding="utf-8")
 
 
 def main():
@@ -39,8 +39,8 @@ def main():
     a = ap.parse_args()
     if a.run:
         run_flydnet()
-    br = json.load(open(HERE / "brian2_results.json"))
-    fl = json.load(open(HERE / "flydnet_results.json"))
+    br = json.loads((HERE / "brian2_results.json").read_text(encoding="utf-8"))
+    fl = json.loads((HERE / "flydnet_results.json").read_text(encoding="utf-8"))
     se = lambda x: np.std(x, ddof=1) / np.sqrt(len(x))
     print(f"{'조건':<16}{'Brian2':>14}{'flydnet':>14}{'p (Welch)':>11}")
     for k in CONDS:

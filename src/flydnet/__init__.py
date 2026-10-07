@@ -22,7 +22,7 @@ from .ganglion import (Signal, Synapse, Tissue, Pathway, Projection, Neuropil, L
                        Activation, Homeostasis, MushroomBodyOutput, Plasticity, AdaptivePlasticity, quiescent, surprise,
                        transmit, fire, inhibit, ConnectomeLayer, DEFAULT_PARAMS, checkpoint)
 
-__version__ = "0.1.18"
+__version__ = "0.1.19"
 
 # 0.1 기능의 자체 엔진판 (torch 없음)
 from .encoders import RateEncoder, GlomerularEncoder, to_rates

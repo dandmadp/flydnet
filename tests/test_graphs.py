@@ -2,7 +2,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-import scipy.sparse as sps
 
 import flydnet as fd
 
@@ -36,6 +35,7 @@ def test_from_edges_errors():
 
 
 def test_scipy_roundtrip_and_orientation():
+    sps = pytest.importorskip("scipy.sparse")                            # scipy는 선택 설치 - 없으면 이 시험만 건너뜀
     A = sps.random(30, 30, density=0.1, format="csr", random_state=0, dtype=np.float32)
     A.setdiag(0); A.eliminate_zeros()
     c = fd.Circuit.from_scipy(A)                                          # A[i, j] = i → j

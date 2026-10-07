@@ -28,7 +28,12 @@ if missing("flywire"):
 d = fd.data_dir("flywire")
 ids = pd.read_csv(d / "Completeness_783.csv", index_col=0).index.values.astype(np.int64)
 ann = pd.read_csv(d / "flywire_annotations.tsv", sep="\t", low_memory=False)
-con = pd.read_parquet(d / "Connectivity_783.parquet")
+try:                                                                     # 원본 parquet와 직접 비교 (npz는 flydnet이 만든 것이라 기준이 못 됨)
+    con = pd.read_parquet(d / "Connectivity_783.parquet")
+except (FileNotFoundError, ImportError) as e:
+    print(f"원본 연결 parquet를 읽을 수 없음 ({type(e).__name__}) - 건너뜀. 비교하려면 pip install pyarrow 후 "
+          "python -m flydnet download flywire")
+    sys.exit(0)
 
 # 1) 전체 뇌: 번호 = Completeness 순서, 연결 = 원본 그대로, 세기 = 시냅스 수 x 부호
 br = fd.brain()
