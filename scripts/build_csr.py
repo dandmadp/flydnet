@@ -5,8 +5,8 @@
 
 컴파일러는 zig (pip install ziglang - dev 설치에 포함). zig는 다른 도구 없이 Linux·macOS·Windows용을 모두 만듦.
 결과 파일은 git에 커밋한다 (휠 하나에 모두 들어감 → CI가 시험한 파일 = 배포하는 파일).
-배포용은 GitHub Actions의 Linux에서 빌드한 것 (wheels 워크플로의 재현 빌드와 바이트까지 같아야 함). _csr.c를 고치면
-워크플로를 돌려 결과물 kernels-linux-build를 받아 _lib/에 덮어쓰고 커밋 - 다른 OS의 zig는 바이트가 다를 수 있음.
+_lib/ 안에서 상대 경로로 빌드해 어느 컴퓨터·OS에서나 같은 바이트 (wheels 워크플로가 GitHub의 Linux에서 다시 빌드해 확인).
+_csr.c를 고치면 다시 빌드해 커밋하고 워크플로로 확인.
 _lib/SOURCE에 _csr.c의 SHA-256과 zig 버전을 적음 - release.py가 소스와 빌드가 어긋나면 막음.
 FMA로 합치지 않게 -ffp-contract=off (scipy·numpy 경로와 같은 비트). 파이썬 API를 쓰지 않는 일반 C 라이브러리라
 파이썬 버전과 상관없음 (ctypes로 엶)."""
@@ -52,8 +52,10 @@ def zig():
 def build(key):
     target, ext = TARGETS[key]
     out = LIB / f"_csr-{key}{ext}"
-    cmd = [*zig(), "cc", "-target", target, *FLAGS, *([] if ext == ".dll" else ["-fPIC"]), "-o", str(out), str(SRC)]
-    subprocess.run(cmd, check=True)
+    # _lib/ 안에서 상대 경로로 빌드: macOS 바이너리(코드 서명·UUID)에 출력 경로가 들어가, 절대 경로면 빌드한 폴더
+    # (D:\... 대 /home/runner/...)마다 바이트가 달라졌음. 상대 경로면 어느 컴퓨터·폴더에서나 같은 바이트
+    cmd = [*zig(), "cc", "-target", target, *FLAGS, *([] if ext == ".dll" else ["-fPIC"]), "-o", out.name, "../_csr.c"]
+    subprocess.run(cmd, check=True, cwd=LIB)
     for junk in (out.with_suffix(".lib"), out.with_suffix(".pdb"), LIB / "_csr.lib", LIB / "_csr.pdb"):   # zig가 Windows 대상에서 같이 만드는 파일
         if junk.exists():
             junk.unlink()

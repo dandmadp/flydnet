@@ -1,9 +1,9 @@
 flydnet CPU 희소 행렬 커널 (_csr-*.so / .dylib / .dll)
 
 소스: src/flydnet/ganglion/_csr.c (flydnet, MIT 라이선스)
-빌드: python scripts/build_csr.py --all (zig 교차 빌드, 버전은 SOURCE에). 배포용 파일은 GitHub Actions의 Linux 실행기
-      (ubuntu-latest)에서 빌드한 것 - wheels 워크플로가 소스에서 다시 빌드해 바이트까지 같은지 확인함.
-      같은 zig·같은 OS면 바이트까지 같은 파일이 나옴 (Windows에서 빌드하면 바이트가 다를 수 있음 - 계산 결과는 같음)
+빌드: python scripts/build_csr.py --all (zig 교차 빌드, 버전은 SOURCE에). _lib/ 안에서 상대 경로로 빌드하므로
+      같은 zig 버전이면 어느 컴퓨터·OS에서나 바이트까지 같은 파일이 나옴 - GitHub Actions(wheels 워크플로)가 Linux에서
+      소스로 다시 빌드해 커밋된 파일과 바이트 비교함
 확인: SOURCE의 sha256 = _csr.c의 SHA-256 (줄바꿈 LF 기준)
 
 함께 들어가는 제3자 코드 (zig가 링크하는 런타임 일부):

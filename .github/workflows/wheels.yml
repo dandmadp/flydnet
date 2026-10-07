@@ -40,9 +40,9 @@ jobs:
           retention-days: 3
 
   reproduce:
-    # 커밋된 C 커널 = 이 Linux 실행기에서 소스로 빌드한 것이어야 함 (배포용 커널의 기준 빌드 환경).
-    # 다르면 여기서 빌드한 커널을 결과물 kernels-linux-build로 올리고 실패 → 받아서 src/flydnet/ganglion/_lib/에 덮어쓰고 커밋.
-    # (zig는 빌드하는 OS에 따라 바이트가 달라질 수 있어, Windows에서 빌드한 것은 여기서 다르게 나옴)
+    # 커밋된 C 커널 = 소스에서 다시 빌드한 것과 바이트까지 같아야 함 (바이너리 바꿔치기 방지, 재현 빌드).
+    # build_csr.py는 _lib/ 안에서 상대 경로로 빌드해 컴퓨터·OS와 상관없이 같은 바이트 (절대 경로면 macOS 바이너리에
+    # 경로가 들어가 달라졌음). 다르면 여기서 빌드한 커널을 결과물 kernels-linux-build로 올리고 실패
     name: C 커널 재현 빌드 (바이트 비교)
     runs-on: ubuntu-latest
     steps:
