@@ -39,20 +39,41 @@ jobs:
           path: ci_data
           retention-days: 3
 
-  wheel:
-    name: 순수 파이썬 휠 빌드
+  reproduce:
+    # 커밋된 C 커널 = 이 Linux 실행기에서 소스로 빌드한 것이어야 함 (배포용 커널의 기준 빌드 환경).
+    # 다르면 여기서 빌드한 커널을 결과물 kernels-linux-build로 올리고 실패 → 받아서 src/flydnet/ganglion/_lib/에 덮어쓰고 커밋.
+    # (zig는 빌드하는 OS에 따라 바이트가 달라질 수 있어, Windows에서 빌드한 것은 여기서 다르게 나옴)
+    name: C 커널 재현 빌드 (바이트 비교)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 커밋된 C 커널이 소스에서 그대로 나오는지 (재현 빌드, 바이트 비교)
+      - name: 소스에서 다시 빌드
         run: |
           ZIG=$(awk '/^zig /{print $2}' src/flydnet/ganglion/_lib/SOURCE)
           python -m pip install --no-cache-dir "ziglang==$ZIG"
           python scripts/build_csr.py --all
-          git diff --stat --exit-code -- src/flydnet/ganglion/_lib
+      - name: 다르면 빌드 결과를 올림
+        if: always()
+        run: git diff --quiet -- src/flydnet/ganglion/_lib || echo "CHANGED=1" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        if: env.CHANGED == '1'
+        with:
+          name: kernels-linux-build
+          path: src/flydnet/ganglion/_lib
+      - name: 비교 결과
+        run: git diff --stat --exit-code -- src/flydnet/ganglion/_lib
+
+  wheel:
+    name: 순수 파이썬 휠 빌드 (커밋된 커널로)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: |
           python -m pip install --no-cache-dir build
           python -m build --wheel --outdir dist

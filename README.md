@@ -572,7 +572,7 @@ opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch�
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install --no-cache-dir -e ".[examples,dev,gpu-cuda13]"
-.venv\Scripts\python scripts\build_csr.py --all         # _csr.c를 고쳤을 때만: 6개 플랫폼 C 커널 (zig, 몇 초) → 커밋
+.venv\Scripts\python scripts\build_csr.py --all         # _csr.c를 고쳤을 때만: 6개 플랫폼 C 커널 (zig, 시험용)
 .venv\Scripts\python -m pytest -q                       # 테스트 (tests/test_golden.py = 엔진 정리 전 결과와 비교)
 .venv\Scripts\python scripts\release.py bump patch      # 버전 올리기 + CHANGELOG 틀
 .venv\Scripts\python scripts\release.py check --upload  # 커밋·CHANGELOG·PyPI 중복·테스트·빌드·설치 확인 후 업로드
