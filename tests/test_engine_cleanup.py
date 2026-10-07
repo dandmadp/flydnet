@@ -322,6 +322,8 @@ def test_kernel_for_this_platform_is_used():
     supported = {"linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-arm64", "windows-x86_64", "windows-arm64"}
     if S.platform_key() not in supported:
         pytest.skip(f"C 커널이 없는 플랫폼: {S.platform_key()}")
+    if S._musl():
+        pytest.skip("musl Linux (Alpine 등): glibc용 커널은 열리지 않음 - numpy·scipy 경로가 정상")
     assert S.c_available(), S._LIB[1]
     assert "_lib" in str(S._LIB[0]._name) and S.platform_key() in str(S._LIB[0]._name)
 

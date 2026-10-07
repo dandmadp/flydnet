@@ -48,9 +48,18 @@ def _candidates():
     env = os.environ.get("FLYDNET_CSR_LIB", "").strip()
     if env:
         return [Path(env)]
+    if _musl():                                                          # 배포한 Linux 커널은 glibc용 - 열어 보지도 않음
+        return []
     ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
     p = Path(__file__).resolve().parent / "_lib" / f"_csr-{platform_key()}{ext}"
     return [p] if p.exists() else []
+
+
+def _musl() -> bool:
+    """musl C 라이브러리의 Linux (Alpine 등)"""
+    import platform
+    import sys
+    return sys.platform.startswith("linux") and platform.libc_ver()[0] != "glibc"
 
 
 def _self_test(lib):
@@ -86,7 +95,8 @@ def _load():
     with _LOCK:
         if _LIB:
             return _LIB[0]
-        lib, why = None, f"이 플랫폼({platform_key()})용 C 커널이 없음"
+        lib, why = None, ("musl Linux (Alpine 등) - 배포한 C 커널은 glibc용" if _musl() and not os.environ.get("FLYDNET_CSR_LIB")
+                          else f"이 플랫폼({platform_key()})용 C 커널이 없음")
         for p in _candidates():
             try:
                 cand = ctypes.CDLL(str(p))
