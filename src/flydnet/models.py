@@ -36,7 +36,8 @@ class ConnectomeModel(Pathway):
     target_hz:  보정할 출력 그룹 평균 발화율 (Hz). "auto" = 시행당 출력 스파이크가 약 100개가 되게 5~30 Hz
                 (KC 2,597개면 5 Hz로 희소하게, 출력 뉴런이 적으면 높게 - 10개에 5 Hz면 50 ms에 스파이크 몇 개뿐이라
                 정보가 남지 않음)
-    trainable:  "path" (입력 → 출력 흥분성 경로 위의 연결 종류, 기본: 출력이 KC면 PN>KC, MBON이면 PN>KC·KC>MBON 등) /
+    trainable:  "path" (입력 → 출력 흥분성 경로 위의 연결 종류, 기본: 출력이 KC면 PN>KC·KC>KC, MBON이면 여기에 PN>MBON·KC>MBON.
+                입력으로 되돌아가거나 출력을 지나 도는 고리는 경로가 아님) /
                 "input" (입력 그룹에서 나가는 연결 종류) / True (모든 연결) / False (커넥톰 고정, 분류 층만) / 목록
     calibrate:  True면 처음 본 데이터로 자동 보정 (calibrate_samples개까지)
     나머지 (t_ms, dt, input_mode, seed, device, 그 밖의 ConnectomeLayer 인자)는 커넥톰 층으로
@@ -65,7 +66,8 @@ class ConnectomeModel(Pathway):
         super().__init__(*([enc] if enc is not None else []), layer, Homeostasis(),
                          Projection(layer.n_out, n_classes, seed=seed, device=dev))
         if target_hz == "auto":
-            target_hz = float(np.clip(100.0 / (layer.n_out * layer.t_ms / 1000.0), 5.0, 30.0))
+            span = layer.t_ms - layer.count_from_ms                         # 스파이크를 세는 시간 (예전: t_ms 전체로 계산해
+            target_hz = float(np.clip(100.0 / (layer.n_out * span / 1000.0), 5.0, 30.0))   # count_from_ms를 쓰면 스파이크가 적었음)
         self.n_in, self.n_classes, self.target_hz = n_in, n_classes, float(target_hz)
         self.calibrate_samples, self.auto_calibrate = calibrate_samples, calibrate
         self.buffer("calibrated", np.array(False), optional=True)          # 저장됨 → 불러온 뒤 다시 보정하지 않음
@@ -86,21 +88,22 @@ class ConnectomeModel(Pathway):
     @staticmethod
     def _path_pairs(circuit, ins, outs) -> list:
         """입력 → 출력 흥분성 경로 위의 연결 종류: 보내는 그룹은 입력에서 (흥분성으로) 닿고, 받는 그룹은 출력에 닿는 쌍.
-        억제를 내보내는 그룹(APL 등)의 연결은 빠짐"""
+        억제를 내보내는 그룹(APL 등)의 연결은 빠짐. 입력으로 되돌아가는 우회나 출력을 지나 도는 고리는 경로가 아님 -
+        예전에는 버섯체 PN → KC 모델이 PN → MBON → PN 고리 때문에 출력과 상관없는 PN>MBON·KC>MBON까지 학습했음"""
+        from .ganglion.circuitry import bfs
         g = circuit.group_of()
         pre, post = g[circuit.pre], g[circuit.post]
         import pandas as pd
         net = pd.Series(circuit.weight.astype(np.float64)).groupby([pre, post]).sum()
         exc = [(a, b) for (a, b), w in net.items() if w > 0 and a != "?" and b != "?"]
-        fwd, frontier = set(ins), list(ins)
-        while frontier:
-            frontier = [b for a, b in exc if a in frontier and b not in fwd]
-            fwd.update(frontier)
-        bwd, frontier = set(outs), list(outs)
-        while frontier:
-            frontier = [a for a, b in exc if b in frontier and a not in bwd]
-            bwd.update(frontier)
-        return sorted(f"{a}>{b}" for a, b in exc if a in fwd and b in bwd and b not in ins)
+        nxt, prv = {}, {}
+        for a, b in exc:
+            nxt.setdefault(a, set()).add(b)
+            prv.setdefault(b, set()).add(a)
+        fwd = bfs(nxt, ins, stop=outs)
+        bwd = bfs(prv, outs, stop=ins)
+        return sorted(f"{a}>{b}" for a, b in exc
+                      if a in fwd and b in bwd and b not in ins and (a not in outs or b in outs))
 
     @staticmethod
     def _input_pairs(circuit, ins) -> list:
@@ -176,8 +179,10 @@ class ConnectomeModel(Pathway):
         return train(self, X, y, **train_kw)
 
     def predict(self, X, batch: int = 256) -> np.ndarray:
-        """예측 클래스 (numpy)"""
+        """예측 클래스 (numpy). 시료 하나 (n_in,)면 클래스 번호 하나"""
         _C.integer("batch", batch)
+        if (X.ndim if hasattr(X, "ndim") else np.ndim(X)) == 1:           # 예전: 특징을 시료로 세다 concatenate에서 죽음
+            return self.predict(X[None] if hasattr(X, "shape") and not hasattr(X, "iloc") else [list(X)], batch)[0]
         out = []
         with quiescent():
             for i in range(0, len(X), batch):

@@ -95,8 +95,9 @@ def gradcheck(score, layer, eps: float = 0.05, seed: int = 0, min_edges: int = 1
 
     def mean_score():
         return float(np.mean([float(score(layer, sd).data.reshape(-1)[0]) for sd in seed_list]))
-    base = layer.log_scale.data.copy()
-    rows = []
+    orig = layer.log_scale.data                                     # 제자리로 바꿨다 되돌림 - 같은 배열을 쓰는 torch 연결 장치
+    base = orig.copy()                                              # (fd.torch.bridge)가 계속 이 값을 보게 (예전: 끝에 사본으로
+    rows = []                                                       # 바꿔 끼워, 그 뒤 torch가 바꾼 값이 층에 반영되지 않았음)
     try:
         with quiescent(), training():                       # 역전파 쪽과 같은 mosaic 마스크로 비교
             for k, sl in enumerate(slots):
@@ -106,16 +107,17 @@ def gradcheck(score, layer, eps: float = 0.05, seed: int = 0, min_edges: int = 1
                 for e in (eps, eps / 2):                             # 기준 신뢰도: 변화 폭을 절반으로
                     out = []
                     for sgn in (1.0, -1.0):
-                        b = base.copy()
-                        b[B.to(sl, dev)] += sgn * e
-                        layer.log_scale.data = b
+                        orig[...] = base
+                        orig[B.to(sl, dev)] += sgn * e
                         out.append(mean_score())
                     diff.append((out[0] - out[1]) / (2 * e))
                 rows.append(dict(pathway=kinds[k], slots=len(sl), bptt=float(g_all[sl].sum()),
                                  finite_diff=diff[0], finite_diff_half=diff[1]))
     finally:
-        layer.log_scale.data = base
-    t = pd.DataFrame(rows)
+        orig[...] = base
+    t = pd.DataFrame(rows, columns=["pathway", "slots", "bptt", "finite_diff", "finite_diff_half"])
+    if t.empty:
+        raise ValueError(f"비교할 연결 종류가 없음 (min_edges={min_edges}보다 칸이 많은 종류가 없음)")
     a, b_ = t.finite_diff.to_numpy(), t.finite_diff_half.to_numpy()
     cons = float(a @ b_ / (np.linalg.norm(a) * np.linalg.norm(b_) + 1e-30)) if len(t) else 0.0
     damp = layer.surrogate_damp

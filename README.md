@@ -14,10 +14,24 @@ Own autograd engine on NumPy (CPU) / CuPy (GPU); PyTorch optional. Docs in Korea
 ## 설치
 
 ```bash
-pip install flydnet                  # CPU (NumPy·SciPy). torch 없음. CuPy가 이미 있으면(Colab 등) GPU도 자동으로 씀
+pip install flydnet                  # CPU. 필요한 것은 numpy·pandas뿐 (scipy·pyarrow·torch 없음). CuPy가 이미 있으면 GPU도 자동
 python -m flydnet doctor             # 설치 진단: GPU 드라이버 CUDA·CuPy·torch, 어떤 옵션을 쓸지 알려 줌
 python -m flydnet download           # FlyWire v783 연결·주석 + DoOR 냄새 데이터 (약 130 MB, 버전 고정·SHA-256 확인)
 ```
+
+FlyWire 연결 파일(parquet)은 받은 뒤 한 번 numpy 형식(`Connectivity_783.npz`)으로 바꿔 두고 그것을 읽는다.
+바꾸는 데만 pyarrow가 필요하다: `pip install "flydnet[parquet]"` 후 `python -m flydnet download flywire` (그 뒤에는 필요 없음,
+다른 컴퓨터에서 만든 npz를 같은 폴더에 복사해도 됨). 이미 받아 두었고 pyarrow가 있으면 처음 회로를 만들 때 자동으로 바뀐다.
+
+선택 설치 (필요한 기능만):
+
+| 옵션 | 무엇 | 언제 |
+|---|---|---|
+| `[parquet]` | pyarrow | 연결 parquet → npz 변환 (한 번) |
+| `[scipy]` | scipy | `Circuit.from_scipy`·`to_scipy`, C 커널이 없는 플랫폼의 CPU 희소 연산 |
+| `[graph]` | networkx | `Circuit.to_networkx` |
+| `[torch]` | torch | `fd.torch` 연동 |
+| `[gpu-cuda13]`·`[gpu-cuda12]` | CuPy + CUDA 런타임 | GPU (아래) |
 
 GPU: **CuPy가 없을 때만** 드라이버 CUDA 버전(`nvidia-smi` 오른쪽 위)에 맞는 옵션 하나를 쓴다.
 
@@ -30,6 +44,30 @@ Colab처럼 CuPy가 이미 깔린 곳에 GPU 옵션을 붙이면 CuPy가 두 개
 망가질 수 있다 (`doctor`가 잡아 줌. Colab이면 런타임을 삭제하고 옵션 없이 다시 설치).
 드라이버를 업데이트해도 설치한 CuPy는 그대로 돈다 (드라이버는 하위 호환). CUDA·CuPy를 바꾼 뒤에는 `doctor`를 한 번 돌릴 것.
 데이터 위치는 `~/.flydnet/data` (`fd.set_data_dir(...)`로 바꿈). `FLYDNET_DEVICE=cpu`로 CPU를 강제할 수 있다.
+
+### CPU 희소 연산
+
+CPU에서 커넥톰 전달(희소 행렬 x 배치)은 직접 작성한 C 커널이 한다 (`flydnet/ganglion/csr.py`, `_csr.c`).
+Linux (x86_64·aarch64)·macOS (x86_64·arm64)·Windows (x86_64·arm64)용이 설치 파일 하나에 모두 들어 있고, 파이썬 스레드로
+행을 나눠 계산한다 (OpenMP를 쓰지 않아 런타임 설치가 필요 없고, 스레드 수와 상관없이 결과 비트가 같음).
+처음 열 때 작은 행렬로 numpy 결과와 비교해, 다르면 쓰지 않는다. 쓸 수 있는 경로를 이 순서로 고른다:
+
+1. C 커널 (위 6개 플랫폼)
+2. scipy (설치되어 있으면)
+3. numpy (느림 - 처음 한 번 경고)
+
+세 경로 모두 행마다 연결 순서대로 더해 **같은 입력이면 같은 비트**를 낸다 (`tests/test_golden.py`가 세 경로에서 확인).
+
+| 시각계 전체 (연결 429만, 배치 32, float32) | 시간 |
+|---|---|
+| C 커널, 8 스레드 | 2.8 ms |
+| C 커널, 2 스레드 | 6.6 ms |
+| C 커널, 1 스레드 | 13.0 ms |
+| scipy (1 스레드) | 17.5 ms |
+| numpy | 489 ms |
+
+`FLYDNET_SPARSE=c|scipy|numpy`로 경로를, `FLYDNET_THREADS=n`으로 스레드 수(기본 CPU 수, 최대 8)를 정한다.
+비교: `python scripts/bench_sparse.py`. GPU는 이 경로를 쓰지 않는다 (전용 CUDA 커널).
 
 ## 빠른 시작
 
@@ -97,6 +135,54 @@ layer.calibrate(R, {"MBON": 20})           # 출력만 목표로 줘도 경로 �
 | KC에서 읽기, 자동 보정, 학습률 3e-3 (`fd.train` 기본) | **0.962 ± 0.004** |
 
 MBON은 48개뿐이라 병목. 자동 보정의 정확도 이득은 잡음 안 (+0.8%p) - 이점은 배율을 손으로 맞출 필요가 없다는 것.
+
+## 한 줄 학습기: fd.Learner
+
+커넥톰은 고정하고, 데이터는 한 번 훑어 배우고, 새 데이터는 이어서 배운다. 입력 변환·연결 세기 보정은 처음 데이터로 자동.
+학습률·에폭을 고를 필요가 없고, 새 클래스를 배워도 앞에서 배운 것은 그대로다.
+
+```python
+learner = fd.Learner()                              # 오른쪽 버섯체 PN → KC (fd.Learner(circuit, "in", "out")도)
+learner.learn(X_a, y_a)                             # 처음: 입력 변환·보정 자동, 한 번 훑기
+learner.learn(X_b, y_b)                             # 새 클래스 이어서 - 앞의 클래스 평균은 그대로
+learner.learn(X_img, y_img, source="image")         # 다른 종류(특징 수가 다른) 데이터: 입력 변환만 새로, 기억은 공유
+learner.predict(X), learner.score(X, y)             # 라벨은 문자열 등 아무 값이나
+learner.save("me.npz"); fd.Learner.load("me.npz")   # 불러온 뒤에도 계속 배움
+```
+
+| rule | 방식 | 냄새 24개, 6개씩 4번 차례로 | 한 번에 전부 |
+|---|---|---|---|
+| `"lda"` (기본) | 흐름 선형 판별 (Hayes & Kanan 2020): 클래스 평균 + 공유 공분산을 누적, 한 번 훑기 | **0.859** | **0.865** |
+| `"assoc"` | 도파민 연합 학습: 정답 클래스 원형만 강화, 한 번 훑기 (생물에 가장 가까운 국소 규칙) | 0.744 | 0.712 |
+| `"backprop"` | 망각을 줄인 역전파 (아래), 기본 5에폭 | 0.708 | 0.841 |
+
+DoOR 냄새 24개 (잡음 1.2, 찍기 4.2%), seed 3개 평균. 커넥톰까지 학습하는 `fd.MushroomBody`·`fd.train`(0.89 수준)에 가깝고,
+차례로 배워도 한 번에 배운 것과 거의 같다 (잊지 않음). `lda`는 KC끼리 겹치는 반응을 공분산으로 걸러 (백색화 - 측면 억제의
+탈상관과 같은 효과) 평균만 쓰는 것보다 훨씬 잘 구별한다. 공분산 축소는 자동 (`shrink="auto"` = max(OAS 추정, 특징 수 / 본 시료 수)).
+같은 특징에서 class-incremental, 재생 없음:
+
+| 특징 | lda | assoc | 망각을 줄인 역전파 | 역전파 그대로 |
+|---|---|---|---|---|
+| MNIST KC (5과제) | **0.896** | 0.728 | 0.656 | 0.419 |
+| CIFAR-100 resnet18 (10과제) | **0.640** | 0.539 | 0.585 | 0.247 |
+
+CIFAR의 0.640은 한 번에 전부 학습한 선형 분류(0.658)에 가깝다. 단 `lda`는 출력 뉴런 수의 제곱만큼 메모리를 쓴다
+(KC 2,597개 → 54 MB, 12,000개 넘으면 오류 - `rule="assoc"`).
+
+**역전파의 망각 줄이기** (`rule="backprop"`): 세 가지를 함께 쓴다.
+1. 새 클래스 가중치를 그 클래스 평균 특징으로 시작한다 (연합 규칙으로 초기화한 뒤 역전파로 다듬기).
+2. 이번 `learn()`에 나온 클래스끼리만 경쟁한다 (도파민이 그 출력에만 오는 것과 같음 - 다른 클래스 가중치는 안 바뀜).
+3. 코사인 점수를 쓴다 (특징·가중치 크기 정규화). 특징 중심은 처음 데이터로 정해 고정한다.
+
+class-incremental, 과제당 1에폭, 재생 버퍼 없음, 본 클래스 전체 정확도 (seed 3개):
+
+| 특징 | 역전파 그대로 | ②만 | ②+③ | ①+②+③ | 연합 (k=1) |
+|---|---|---|---|---|---|
+| CIFAR-100 resnet18 (10과제) | 24.7% | 47.0% | 54.7% | **58.5%** | 53.9% |
+| MNIST 픽셀 (5과제) | 41.1% | 53.4% | 64.3% | 72.9% | **82.2%** |
+| MNIST KC (5과제) | 41.9% | 56.9% | 63.7% | 65.6% | **72.8%** |
+
+특징 중심을 빼면 효과가 사라진다 (①+②+③, CIFAR 26.3%). 중심을 첫 과제 데이터로만 정해도 거의 같다 (57.4%).
 
 ## 대조 실험: fd.compare
 
@@ -250,7 +336,7 @@ c = fd.Circuit.from_networkx(G)                  # 노드 속성 → 주석, "gr
 worm = fd.worm()                     # 예쁜꼬마선충 (Cook et al. 2019), python -m flydnet download worm
 g = fd.graphs.watts_strogatz(400, 12, 0.1, groups={"in": range(20), "out": range(360, 400)})
 #   erdos_renyi / watts_strogatz / barabasi_albert / stochastic_block / layered (억제 비율·데일의 법칙)
-c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
+c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()   # scipy·networkx는 선택 설치 ([scipy]·[graph])
 ```
 
 - 주석이 없는 그래프에서는 `explain`·`mosaic`·`genetics.lines`가 그룹 단위로 동작한다 (주석이 있으면 `cell_type`).
@@ -261,8 +347,9 @@ c.to_scipy(), c.to_networkx(), c.regroup({...}), c.check()
     시냅스 세기만 섞은 대조군이 오히려 좋음 (+9.7%p, 6/6, p = 0.031). 임의의 패턴 구분은 이 회로가 하는 일이 아니므로
     흔한 결과
   - 그래프 종류 비교 (노드 400, 연결 약 4,700, 그래프마다 세기를 골라 **출력 그룹** 발화율 약 18 Hz로 맞춤 - 예전엔 전체 평균으로
-    맞춰 블록 구조의 출력이 꺼진 채로 비교됐음): 무작위 0.64 > 척도 없음 0.53 > 작은 세상 0.37 > 블록 0.20
-    (모두 6/6, p = 0.031). 단 입력·출력 노드의 위치
+    맞춰 블록 구조의 출력이 꺼진 채로 비교됐음): 무작위 0.64 > 척도 없음 0.60 > 작은 세상 0.37 > 블록 0.20
+    (작은 세상·블록은 6/6, p = 0.031. 척도 없음은 무작위와 차이 없음 - 0.1.18에서 척도 없음 그래프 생성기가 대상 m개를
+    서로 다르게 고르도록 고친 뒤, 예전 0.53). 단 입력·출력 노드의 위치
     (고리 위 거리, 다른 모듈)에 크게 좌우되므로, 그래프 구조 자체의 결론이 아니라 이런 질문을 하는 방법의 예
 
 ## 플러그인: 뉴런 모델·학습 규칙을 직접
@@ -323,6 +410,89 @@ fd.tune(score, layer)              # 후보 중 자기 손실에 가장 잘 맞�
   1차 예측이 방향까지 틀린 유형(되먹임 억제 뉴런 APL 등)은 확인 결과에 표시된다
 - 표와 재현: `validation/gradients/`
 
+## 실험적 기능: 추가 연결 (구조적 가소성, growth)
+
+> **실험적 기능 (0.1.18)** - 인터페이스·기본값이 바뀌거나 없어질 수 있음. 효과는 조건부: 손상된 회로의 회복에서는 뚜렷하지만,
+> 멀쩡한 회로와 MNIST에서는 이득이 없거나 무작위 연결보다 못한 경우가 있음 (아래 결과). 연구 용도로 쓰고, 결과는 늘
+> 무작위 연결(`rule="random"`)과 짝지어 비교할 것
+
+실제 배선은 그대로 두고, 학습으로 생기고 없어지는 시냅스를 따로 얹는다 (타고난 회로 + 경험으로 덧붙는 시냅스).
+커넥톰 층의 "연결이 정해져 있다"는 한계를 풀면서, 실제 배선은 늘 기준으로 남는다.
+
+```python
+from flydnet import lab                           # 실험실 - 엔진에는 없고, 층에 붙는 부품 (layer.attach)
+layer = fd.Connectome(mb, "PN", "KC", trainable=["PN>KC"])
+g = lab.Growth(layer, allow=["PN>KC"], budget=5000)   # 층에 붙음 (layer.growth로도), 저장·불러오기 때 같이
+g.grow(2000)                                      # 무작위 (허용된 그룹 쌍 안에서)
+g.grow(2000, rule="coactive", rates=R)            # 헤브: 함께 많이 발화한 PN·KC 쌍
+g.grow(2000, rule="gradient", loss=lambda L: fd.surprise(head(L(x)), y))   # 손실이 가장 줄 자리
+lab.grow_contrastive(g, 2000, inputs=X, encoder=enc)                           # 정답 없이: 시료끼리 구별되게 (대조 학습)
+g.prune(0.2)                                      # 추가 연결 중 약한 20% (실제 배선은 절대 안 건드림)
+g.extra_edges()                                   # 표: pre, post, 경로, 세기(시냅스 수), 부호
+```
+
+- 생물학적 제약: 허용된 그룹 쌍 안에서만, 부호는 보내는 뉴런의 실제 부호 (데일의 법칙), 상한 `budget`·`per_neuron`
+- **받는 뉴런마다 상한 `per_neuron`** (기본 `"auto"` = 올림(budget ÷ 받을 수 있는 뉴런 수), 버섯체 KC 2,597개에 5,400개면
+  3개): 기울기·대조 학습 규칙이 효과가 커 보이는 소수 뉴런에 연결을 몰아, 그 뉴런들이 반응을 독차지하는 것을 막음
+  (MNIST에서 상한이 없으면 KC 상위 10%가 새 연결의 51%를 가져감). 실제 KC마다 PN 입력 수가 비슷한 것, SRigL(뉴런마다
+  입력 수 일정)과 같은 생각
+  - **최고 성능이 필요하고 데이터가 고르게 퍼진다면 `per_neuron=None`**: 냄새처럼 상한이 없어도 연결이 여러 뉴런에 퍼지는
+    데이터에서는 상한이 약간 손해 (냄새 손상 회복 5,400개: 상한 0.894, 없음 0.901). 퍼지는지는
+    `np.bincount(g.extra_edges().post)`로 볼 수 있음 - 소수 뉴런에 몰려 있으면 상한을 켤 것
+- 새 연결은 그 경로 실제 연결 하나 크기(시냅스 수 중앙값, 버섯체 PN→KC 10개, `init_syn`)로 생겨 역전파로 커지거나 작아짐
+  (그 경로의 배율 `gains`도 같이). prune·grow 뒤에도 살아남은 연결의 학습 상태(Adam 관성)는 유지
+- 추가 연결이 없으면 계산이 전과 같다. 같은 지연·효과기(genetics)·저장·GPU. 예: `lab/growth_odor.py`
+### 결과 (0.1.18 기본값: 받는 뉴런 상한 auto, 처음 세기 = 경로 중앙값, seed 6개, 짝지은 부호 뒤집기 검정)
+
+**멀쩡한 회로에서는 이득 없음** (`lab/growth_odor.py`: 냄새 24개, PN→KC 4,000개 추가 = 실제의 30%, 추가 뒤 KC 5 Hz로
+다시 보정): 실제 배선만 0.881, 무작위 0.883, 헤브 0.874, 기울기 0.890, 대조 학습 0.884 - 모두 차이 없음 (p ≥ 0.16).
+상한이 없을 때 헤브 규칙은 해로웠음 (0.803, 6/6, p = 0.031 - 활발한 쌍만 이어 소수 KC가 반응을 독차지) → 상한으로 사라짐.
+
+**손상 회복 - 냄새에서는 정답 없이도 됨** (`lab/growth_lesion.py`): PN→KC 연결 13,485개 중 80%(10,788개)를 끊고, 남은
+회로에 추가 연결을 얹음. 냄새 48개를 번갈아 두 묶음으로 나눠 B(24개)로 학습·평가. 모든 조건은 연결을 정한 뒤 KC 5 Hz로 보정
+
+| 조건 (추가 연결 수) | 고르는 기준 | 정확도 | 회복 | 무작위 대비 |
+|---|---|---|---|---|
+| 손상 없음 | | 0.877 | 100% | |
+| 80% 손상 | | 0.823 | 0% | |
+| 무작위 1,350 / 5,400 | 없음 | 0.841 / 0.856 | 33% / 61% | |
+| 항상성 1,350 / 5,400 | 활동 (정답 없음) | 0.833 / 0.853 | 17% / 55% | 못함 |
+| 기울기 1,350 | 과제 B 정답 | 0.865 | 76% | |
+| 기울기 1,350 / 5,400 | 다른 과제 A 정답 | 0.870 / 0.891 | 86% / 126% | |
+| **대조 학습 1,350 / 5,400** | **정답 없음** | **0.873 / 0.894** | **91% / 130%** | **+0.032 / +0.037 (6/6, p = 0.031)** |
+| 대조 학습, SCARF 보기 1,350 / 5,400 | 정답 없음 | 0.867 / 0.893 | 81% / 128% | +0.026 (6/6, p = 0.031) / +0.036 |
+| 대조 학습, 상한 없음 5,400 | 정답 없음 | 0.901 | 144% | |
+
+대조 학습 = 같은 시료에 잡음을 두 번 따로 넣어 KC 반응 두 벌을 만들고, 각 시료가 자기 짝을 다른 시료들 사이에서 찾도록
+하는 목표(InfoNCE, SimCLR과 같은 생각)의 기울기로 연결 자리를 고름. 라벨을 전혀 쓰지 않음.
+`lab.grow_contrastive(g, n, inputs=X, encoder=enc, augment=0.3)` - `augment`는 곱 잡음 세기(숫자) 또는 함수
+(`lab.corrupt(0.3)` = SCARF: 특징 30%를 다른 시료의 값으로). 효과가 조건부라 핵심 엔진이 아니라 `flydnet.lab`에 둠
+
+- **정답 없이 회복**: 대조 학습 1,350개(잃은 연결의 1/8)로 손상 전과 차이 없음 (−0.005, p = 0.47)
+- **순환 아님**: 데이터를 만든 잡음(곱 로그 정규)과 같은 보기 만들기를 쓰면 '답을 아는' 셈이 될 수 있어, 무관한 SCARF로도
+  확인 - 같은 결과
+- 손상 없는 회로에 대조 학습 5,400개를 얹으면 0.899 - 손상 회로 + 5,400 (PN→KC 8,097개)이 손상 없는 회로 + 5,400 (18,885개)과
+  비슷 (0.894 대 0.899)
+- 정답 없이 활동만 보는 항상성 규칙(조용해진 KC에 입력)은 무작위보다 못함 - 희소 부호에서는 대부분의 KC가 원래 조용해서,
+  조용함이 입력 부족을 뜻하지 않음
+
+**MNIST에서는 대조 학습의 이득 없음** (`lab/growth_lesion_mnist.py`, 픽셀 → 무작위 투영 → PN → KC, 학습 3,000장,
+보기 만들기 = 최대 2픽셀 이동 + 밝기 잡음): 손상 없음 0.862, 80% 손상 0.812
+
+| 조건 | 1,350 | 5,400 |
+|---|---|---|
+| 무작위 | 0.847 | **0.862** (회복 100%) |
+| 대조 학습 (상한 auto) | 0.849 | 0.851 (무작위 대비 −0.011, 1/6, p = 0.062) |
+| 대조 학습, SCARF 보기 | | 0.853 |
+| 대조 학습, 상한 없음 | | 0.825 (무작위보다 확실히 못함, 0/6, p = 0.031) |
+| 손상 없는 회로 + 대조 학습 | | 0.871 |
+
+여기서는 무작위 연결만으로 회복되고 (배선이 병목이 아님), 대조 학습은 무작위를 넘지 못함. 상한이 없으면 대조 학습이 KC
+상위 10%에 새 연결의 51%를 몰아 크게 나빠졌는데, 자동 상한으로 그 손해는 사라짐. 진단 (`--conds`): 이동을 빼고 밝기 잡음만,
+온도 0.5, 시료 256개, 숫자마다 한 장(같은 숫자끼리 밀어내지 않게)은 모두 몰림을 고치지 못했고, 받는 뉴런 상한만 효과가 있었음.
+→ **대조 학습 규칙은 입력 채널에 뜻이 있는 데이터(냄새의 사구체)에서 통했고, 무작위로 섞인 입력(MNIST 픽셀 → 무작위 투영)
+에서는 통하지 않음**. 80% 손상 회로는 반응이 가팔라 보정이 진동하기 쉬움 → `calibrate`가 진동하는 그룹의 보폭을 줄여 맞춤
+
 ## 짧은 이름
 
 긴 이름도 그대로 동작한다.
@@ -346,7 +516,7 @@ fd.tune(score, layer)              # 후보 중 자기 손실에 가장 잘 맞�
 | 데이터 | `synthetic_odors`, `door_odors` (DoOR 2.0), `biconditional_mixtures` |
 | 시각계 | `visual_circuit`, `column_map`, `drifting_grating`, `direction_offsets`, `MOTION_PATHWAY` |
 | 대조 실험 | `compare`, `controls.Shuffled / Randomized / ShuffledWeights / Local / Custom` |
-| torch 연동 | `flydnet.torch.*` — 0.1의 torch판 전부 (같은 이름), `torch.nn`용 구조물 |
+| torch 연동 | `fd.torch.bridge` — 자체 엔진 구조물을 `torch.nn` 모델 안에서 (계산은 자체 엔진) |
 
 전체 뇌(13.9만 뉴런, 연결 1,509만)도 일반 GPU에서 학습된다. `scripts/bench.py` (RTX 5070 12 GB, 감각 → 하행 뉴런,
 연결 1,509만 개 모두 학습, 20 ms = 200스텝): 학습 1스텝 배치 8에 1.1초 (GPU 3.3 GB), 배치 32에 2.6초 (8.6 GB).
@@ -364,7 +534,9 @@ fd.tune(score, layer)              # 후보 중 자기 손실에 가장 잘 맞�
 | `utils.checkpoint` | `checkpoint` | | `"cuda"` | `"gpu"` |
 
 이름은 같은 일을 하는 생물 구조에서 땄다 (역행성 신호, 시냅스, 조직, 신경 경로, 가소성…).
-엔진 검증: 연산마다 수치 미분, torch와 출력·기울기·옵티마이저 비교, CPU↔GPU 비교 (`tests/`).
+엔진 검증 (`python scripts/verify.py`): 연산 55종의 값·기울기를 torch autograd와 (꺾이는 점·동점 포함), 최적화기를
+torch.optim과 한 스텝씩, 직접 작성한 LIF CUDA 커널을 일반 연산으로 짠 LIF와 (스파이크 같음, 기울기 float64 1e-7),
+원본 Brian2와, CPU↔GPU를 비교 (`tests/ref_*.py`, 약 1분) + 테스트·예제 전체.
 
 ### torch 연동: fd.torch.bridge
 
@@ -377,23 +549,22 @@ model = torch.nn.Sequential(encoder, fd.torch.bridge(layer, seed=0), torch.nn.Li
 opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch가 갱신 (자체 엔진과 같은 메모리)
 ```
 
-- 자체 엔진만 쓸 때와 출력·기울기가 같다 (테스트). 연결 장치 자체의 비용은 거의 없음
-- 전체 뇌 학습 1스텝 (배치 8): 연결 장치 1.1초 대 0.1 torch판 복사본 4.7초. 뉴런 수천 개인 작은 회로에서는
-  torch판이 조금 빠름 (버섯체 118 ms 대 164 ms)
-- `examples/torch_bridge.py`
+- 자체 엔진만 쓸 때와 출력·기울기가 같다 (테스트). 연결 장치 자체의 비용은 거의 없음 (전체 뇌 학습 1스텝 배치 8에 1.1초)
+- `examples/torch_bridge.py`, 시각계 예제 (`examples/visual_motion.py`: torch 학습 루프 + 자체 엔진 층)
 
-0.1 코드는 `fd.이름`을 `fd.torch.이름`으로 바꾸면 그대로 돈다 (0.1의 torch판 복사본, 예전 계산 = `timing="legacy"`).
-새 기능(`genetics`, `explain`, `ThreeFactor`, 원본 모델과 같은 계산)은 연결 장치로 쓸 것.
+0.1.17까지 있던 0.1의 torch판 복사본(`fd.torch.ConnectomeLayer` 등)은 0.1.18에서 뺐다. 같은 이름이 `fd.`에 있다
+(`fd.torch.RateEncoder` → `fd.RateEncoder`). torch 학습 루프를 그대로 쓰려면 층을 연결 장치로 감쌀 것.
 
 ## 결과 요약
 
-12개 실험 (자세한 방법·수치·한계는 소스 저장소의 `REPORT.md`):
+12개 실험 (재현: `examples/`의 각 스크립트):
 
 | 질문 | 답 |
 |---|---|
 | 실제 배선이 정확도를 높이나 | 대체로 아니다. 차수와 큰 구조(위치 대응)를 유지한 무작위 배선과는 MNIST·냄새·시각 과제에서 차이 없음 |
 | 그럼 배선의 무엇이 중요했나 | 큰 구조: 시각계의 위치 대응(없으면 학습 불가), 스파이킹 버섯체의 KC 연결 수 분포(무작위면 −13%p) |
-| 도파민 연합 학습은 | 연속 학습에서 쓸모 있음: CIFAR-100 10과제 57.7% (재생 버퍼 역전파 51.6%), 역전파 없이 한 번 보기 |
+| 도파민 연합 학습은 | 연속 학습에서 쓸모 있음: CIFAR-100 10과제 57.5% (재생 버퍼 역전파 51.4%), 역전파 없이 한 번 보기. 이득은 KC 배선이 아니라 학습 규칙에서 나옴 (같은 규칙을 원래 특징에 쓰면 57.5%, KC 실제 배선 위에서는 48.9%) |
+| 역전파도 덜 잊게 할 수 있나 | 연합 규칙의 생각 세 가지(새 클래스는 평균에서 시작, 나온 클래스끼리만 경쟁, 코사인 점수)로 CIFAR-100 24.7% → 58.5% (재생 없음). `fd.Learner(rule="backprop")` |
 | KC 확장 층은 | 선형 리드아웃일 때만 도움 (XOR형 과제 +19%p) |
 
 ## 개발
@@ -401,10 +572,14 @@ opt = torch.optim.Adam(model.parameters())      # 커넥톰 학습 값도 torch�
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install --no-cache-dir -e ".[examples,dev,gpu-cuda13]"
-.venv\Scripts\python -m pytest -q                       # 테스트
+.venv\Scripts\python scripts\build_csr.py --all         # _csr.c를 고쳤을 때만: 6개 플랫폼 C 커널 (zig, 몇 초) → 커밋
+.venv\Scripts\python -m pytest -q                       # 테스트 (tests/test_golden.py = 엔진 정리 전 결과와 비교)
 .venv\Scripts\python scripts\release.py bump patch      # 버전 올리기 + CHANGELOG 틀
 .venv\Scripts\python scripts\release.py check --upload  # 커밋·CHANGELOG·PyPI 중복·테스트·빌드·설치 확인 후 업로드
 ```
+
+배포는 순수 파이썬 휠 하나 (6개 플랫폼 C 커널 포함). `release.py check`가 커널이 지금 `_csr.c`로 빌드된 것인지 확인한다.
+배포 전 플랫폼 확인: GitHub Actions → wheels → Run workflow (5~10분, Linux·macOS·Windows에서 골든 시험).
 
 데이터 출처: FlyWire v783 연결(Shiu et al. 2024, MIT), 세포 주석(Schlegel et al. 2024), DoOR 2.0(CC BY-SA 4.0).
 MIT 라이선스.

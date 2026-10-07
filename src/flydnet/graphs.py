@@ -62,7 +62,21 @@ def watts_strogatz(n: int, k: int, beta: float, weight: float = 10.0, inhibitory
     off = np.tile(np.concatenate([np.arange(1, k // 2 + 1), -np.arange(1, k // 2 + 1)]), n)
     dst = (src + off) % n
     re = rng.random(len(dst)) < beta
-    dst[re] = rng.integers(0, n, re.sum())
+    have = {}                                                       # 다시 이을 때 자기 자신·이미 있는 상대는 피함 (networkx와 같음)
+    for a, d in zip(src[~re], dst[~re]):                            # - 예전에는 아무 노드나 뽑아, 겹친 것을 나중에 버려
+        have.setdefault(int(a), set()).add(int(d))                  #   연결이 n·k개보다 적었음
+    for i in np.nonzero(re)[0]:
+        a = int(src[i])
+        taken = have.setdefault(a, set())
+        if len(taken) >= n - 1:                                     # 더 이을 곳이 없음 (k가 n에 가까울 때)
+            dst[i] = a                                              # 자기 연결 → _finish가 버림
+            continue
+        while True:
+            d = int(rng.integers(0, n))
+            if d != a and d not in taken:
+                break
+        dst[i] = d
+        taken.add(d)
     return _finish(n, src, dst, weight, inhibitory, groups, seed, f"Watts-Strogatz (n {n}, k {k}, beta {beta})")
 
 
@@ -82,12 +96,15 @@ def barabasi_albert(n: int, m: int, weight: float = 10.0, inhibitory: float = 0.
     targets = list(range(m))
     pool = []
     for v in range(m, n):
-        for t in set(targets):
+        for t in targets:
             pre.append(v); post.append(t)
             if reciprocal and rng.random() < reciprocal:
                 pre.append(t); post.append(v)
         pool.extend(targets); pool.extend([v] * m)
-        targets = [pool[i] for i in rng.integers(0, len(pool), m)]
+        pick = set()                                                # 서로 다른 m개 (networkx와 같음) - 예전에는 중복을
+        while len(pick) < m:                                        # 버려 허브 근처에서 연결이 m개보다 적었음 (약 3% 적음)
+            pick.add(pool[int(rng.integers(0, len(pool)))])
+        targets = sorted(pick)
     return _finish(n, pre, post, weight, inhibitory, groups, seed, f"Barabasi-Albert (n {n}, m {m})")
 
 
@@ -96,6 +113,8 @@ def stochastic_block(sizes: dict, p, weight: float = 10.0, inhibitory: float = 0
     {("A", "B"): 확률} (없는 쌍은 0). 그룹 = 블록"""
     _C.unit('inhibitory', inhibitory)
     _C.finite('weight', weight)
+    if not isinstance(sizes, dict):
+        raise TypeError(f"sizes는 {{그룹 이름: 노드 수}} 사전: {type(sizes).__name__}")
     names = list(sizes)
     if not names:
         raise ValueError("sizes가 비어 있음")

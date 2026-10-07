@@ -1,0 +1,4 @@
+# 미리 빌드한 C 커널 (줄바꿈 변환 금지)
+src/flydnet/ganglion/_lib/*.so binary
+src/flydnet/ganglion/_lib/*.dylib binary
+src/flydnet/ganglion/_lib/*.dll binary

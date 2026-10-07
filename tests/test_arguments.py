@@ -61,7 +61,7 @@ TABLE = [
     ("train clip", lambda v: fd.train(fd.Pathway(P()), X, [0, 1, 0, 1], clip=v, epochs=1, verbose=False), "pos"),
     ("train_linear epochs", lambda v: fd.train_linear(X, [0, 1, 0, 1], X, [0, 1, 0, 1], epochs=v), "int_nonneg"),
     ("train_linear lr", lambda v: fd.train_linear(X, [0, 1, 0, 1], X, [0, 1, 0, 1], lr=v, epochs=1), "nonneg"),
-    ("extract batch", lambda v: fd.extract(L(), None, X, batch=v), "int_pos"),
+    ("extract batch", lambda v: fd.extract(L(), X, batch=v), "int_pos"),
     ("explain verify", lambda v: fd.explain(lambda l, s: l(X, seed=s).sum(), L(), verify=v), "int_nonneg"),
     ("compare ceiling", lambda v: fd.compare(lambda cc, s: 0.5 + s * 0.01, c, seeds=3, ceiling=v, verbose=False), "unit"),
     ("screen hz", lambda v: fd.genetics.screen(lambda l, s: 1.0, L0(), fd.genetics.lines(c), effector="activate", hz=v, seeds=2, verbose=False), "pos"),
@@ -183,7 +183,7 @@ TABLE2 = [
     ("Connectome forward seed 음수", lambda v: L()(X, seed=v), [-1]),
     ("Connectome record 실수", lambda v: L()(X, record=v), [[0.5], ["a"]]),
     ("Connectome input_mode", lambda v: L(input_mode=v), ["foo", 3]),
-    ("Connectome trainable 문자열 하나", lambda v: L(trainable=v), ["IN>H"]),
+    ("Connectome trainable 없는 연결 종류", lambda v: L(trainable=v), ["foo", "IN>NOPE", ["IN>H", "X>Y"]]),   # "IN>H" 하나는 됨 (0.1.18)
     ("Connectome timing", lambda v: L(timing=v), ["foo", 3]),
     ("Connectome v_init", lambda v: L(v_init=v), ["foo", 3]),
     ("Connectome neuron", lambda v: L(neuron=v), ["foo", 3]),

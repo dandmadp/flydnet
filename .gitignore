@@ -5,6 +5,11 @@ build/
 .pytest_cache/
 data/
 dist/
+wheelhouse/
 !tests/data/
 validation/shiu2024/model.py
 validation/shiu2024/brian2_*_*.json
+.verify/
+# 공개하지 않는 문서 (로컬에만)
+CLAUDE.md
+REPORT.md

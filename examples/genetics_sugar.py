@@ -89,8 +89,10 @@ def main():
         with G.activate(L, sugar, hz=100):
             return float(mn9_hz(rates(seed, max(5, a.trials // 3))).mean())
     df = G.screen(measure, layer, cands, effector="silence", seeds=a.seeds)
-    df["rate_100Hz"] = [float(r[cands[n].idx[0]]) for n in df.line]
-    print(df[["line", "baseline", "manipulated", "change", "rel_change", "p", "rate_100Hz"]].to_string(
+    on = results["당 100 Hz"].mean(0)                                 # r은 위에서 증가량으로 바뀜 - 발화율은 따로
+    df["rate_100Hz"] = [float(on[cands[n].idx[0]]) for n in df.line]   # 당 100 Hz 때 그 뉴런의 발화율 (예전: 증가량이 들어갔음)
+    df["rise_100Hz"] = [float(r[cands[n].idx[0]]) for n in df.line]   # 무자극 대비 증가량
+    print(df[["line", "baseline", "manipulated", "change", "rel_change", "p", "rate_100Hz", "rise_100Hz"]].to_string(
         index=False, float_format=lambda v: f"{v:.3g}"))
     print(f"\n총 {time.time() - t0:.0f}초")
 

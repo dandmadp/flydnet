@@ -10,7 +10,7 @@
 
 모든 기능이 자체 엔진 (torch 없음): 시간 시뮬레이션 fd.ConnectomeLayer, 인코더, 리드아웃, 도파민 학습,
 KC 확장, 데이터셋, 시각계 도구.
-torch 연동 (pip install flydnet[torch]): flydnet.torch - 0.1의 torch판 전부 (같은 이름), torch.nn용 구조물.
+torch 연동 (pip install flydnet[torch]): fd.torch.bridge - 자체 엔진 구조물을 torch 모델 안에서 (계산은 자체 엔진).
 """
 import importlib as _importlib
 
@@ -22,9 +22,9 @@ from .ganglion import (Signal, Synapse, Tissue, Pathway, Projection, Neuropil, L
                        Activation, Homeostasis, MushroomBodyOutput, Plasticity, AdaptivePlasticity, quiescent, surprise,
                        transmit, fire, inhibit, ConnectomeLayer, DEFAULT_PARAMS, checkpoint)
 
-__version__ = "0.1.17"
+__version__ = "0.1.18"
 
-# 0.1 기능의 자체 엔진판 (torch 없음). torch판은 flydnet.torch에 같은 이름으로
+# 0.1 기능의 자체 엔진판 (torch 없음)
 from .encoders import RateEncoder, GlomerularEncoder, to_rates
 from .readout import extract, train_linear
 from .plasticity import DopamineReadout, AssocReadout
@@ -34,6 +34,7 @@ from . import graphs                       # fd.graphs.erdos_renyi / watts_strog
 from . import genetics                     # fd.genetics.driver / silence / block / activate / ablate / screen
 from .training import train, evaluate, door_task  # 학습 루프 한 줄, 정확도, 실제 냄새 분류 과제
 from .models import ConnectomeModel, MushroomBody  # 한 줄 모델: 입력 Hz 변환·자동 보정·분류 층까지
+from .learner import Learner                # 한 줄 학습기: 커넥톰 고정 + 연합 학습(기본)·망각을 줄인 역전파
 from . import neurons                      # 사용자 정의 뉴런 모델: fd.neurons.NeuronModel, register, LIF, Izhikevich
 from .stdp import STDP, Monitor                 # 관찰자 규격과 STDP (사용자 정의 학습 규칙의 틀)
 from .gradcheck import gradcheck, tune_surrogate, GradCheck   # 스파이킹 역전파 기울기 확인·감쇠 고르기

@@ -8,7 +8,8 @@
    fd.compare로 실제 배선 대 대조군 - 초파리용 도구가 다른 동물에서 그대로 동작
 2) 그래프 종류 비교 (AI 연구 예): 노드 수·평균 연결 수를 맞춘 무작위망 / 작은 세상망 / 척도 없는 망 / 블록 구조를
    같은 과제의 스파이킹 저장소(reservoir)로 - 어떤 구조가 정보를 잘 전달하는가.
-   공정하게: 그래프마다 연결 세기를 골라 전체 평균 발화율을 같게 (약 20 Hz) 맞춘 뒤 비교
+   공정하게: 그래프마다 연결 세기를 골라 출력 그룹 평균 발화율을 같게 (약 20 Hz) 맞춘 뒤 비교
+   (전체 평균으로 맞추면 출력까지 경로가 약한 그래프는 출력이 꺼진 채 비교됨)
 """
 import argparse
 import sys
@@ -45,7 +46,7 @@ def task(n_in, seed, n=30):
 def score(circuit, seed, inp, out, **kw):
     (Xtr, ytr), (Xte, yte) = task(len(circuit.groups[inp]), seed)
     layer = fd.ConnectomeLayer(circuit, inp, out, t_ms=200, **kw)
-    f = lambda X: fd.extract(layer, None, X, batch=256, seed=seed)
+    f = lambda X: fd.extract(layer, X, batch=256, seed=seed)
     return fd.train_linear(f(Xtr), ytr, f(Xte), yte, epochs=60, seed=seed)["test_acc"]
 
 

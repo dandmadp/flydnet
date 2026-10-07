@@ -19,7 +19,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 없이 실행
 import flydnet as fd
@@ -32,23 +31,23 @@ ap.add_argument("--shuffles", type=int, default=5)
 ap.add_argument("--noise", type=float, default=0.5)
 ap.add_argument("--add-noise", type=float, default=0.05)
 ap.add_argument("--sat", type=float, default=0.3, help="포화 상수 c")
-ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="실제 냄새에서 KC 약 6%% 활성")
+ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="실제 냄새에서 KC 약 8%% 활성")
 ap.add_argument("--n-train", type=int, default=10, help="묶음마다 혼합물 4종 각 n개")
 ap.add_argument("--n-test", type=int, default=20)
 args = ap.parse_args()
 
 mb = fd.Circuit.from_flywire()
-enc = fd.torch.GlomerularEncoder(mb)
-X0 = fd.torch.door_odors(enc.glomeruli, args.data)["X"]
-ok = np.nonzero(((X0 > 0.05).sum(1) >= 3).numpy())[0]             # 사구체 3개 이상 켜는 냄새만
-mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
+enc = fd.GlomerularEncoder(mb)
+X0 = fd.door_odors(enc.glomeruli, args.data)["X"]
+ok = np.nonzero((X0 > 0.05).sum(1) >= 3)[0]             # 사구체 3개 이상 켜는 냄새만
+mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", gains={"PN>KC": args.pn_kc_gain}, input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
 print(f"{mb}")
 print(f"후보 냄새 {len(ok)}개, 냄새 4개 묶음 {args.sets}개 × seed {args.seeds}개, 무작위 배선 {args.shuffles}개\n")
 
 
 def make(sets, n, g):
-    return fd.torch.biconditional_mixtures(X0, sets, n, args.noise, args.add_noise, args.sat, g)
+    return fd.biconditional_mixtures(X0, sets, n, args.noise, args.add_noise, args.sat, rng=g)
 
 
 res = {k: [] for k in ["glomeruli"] + list(layers)}
@@ -56,20 +55,20 @@ for s in range(args.seeds):
     t = time.time()
     rng = np.random.default_rng(s)
     sets = [tuple(rng.choice(ok, 4, replace=False)) for _ in range(args.sets)]
-    g = torch.Generator().manual_seed(s)
+    g = np.random.default_rng(10_000 + s)
     (xtr, ytr, ptr), (xte, yte, pte) = make(sets, args.n_train, g), make(sets, args.n_test, g)
-    F = {"glomeruli": (xtr, xte)} | {k: (fd.torch.extract(L, enc, xtr), fd.torch.extract(L, enc, xte)) for k, L in layers.items()}
+    F = {"glomeruli": (xtr, xte)} | {k: (fd.extract(L, xtr, enc), fd.extract(L, xte, enc)) for k, L in layers.items()}
     for k, (Ftr, Fte) in F.items():
         for p in range(args.sets):                               # 묶음마다 따로 학습 (한 마리가 한 과제를 배우듯)
             a, b = ptr == p, pte == p
-            res[k].append(fd.torch.train_linear(Ftr[a], ytr[a], Fte[b], yte[b], n_classes=2)["test_acc"] * 100)
+            res[k].append(fd.train_linear(Ftr[a], ytr[a], Fte[b], yte[b], n_classes=2)["test_acc"] * 100)
     print(f"seed {s}: {time.time() - t:.0f}s", flush=True)
 
-glo, real = torch.tensor(res["glomeruli"]), torch.tensor(res["real"])
-shuf = torch.tensor([res[f"shuffled{k}"] for k in range(args.shuffles)]).T     # (묶음×seed, 무작위)
+glo, real = np.array(res["glomeruli"]), np.array(res["real"])
+shuf = np.array([res[f"shuffled{k}"] for k in range(args.shuffles)]).T     # (묶음×seed, 무작위)
 diff = real - shuf.mean(1)
 print(f"\n조건부 구별 정확도 (찍기 50%, 묶음 {len(real)}개 평균)")
 print(f"  glomeruli {glo.mean():5.1f} | KC real {real.mean():5.1f} | KC shuffled {shuf.mean():5.1f} "
       f"(무작위끼리 범위 {shuf.mean(0).min():.1f}~{shuf.mean(0).max():.1f})")
-print(f"  실제 - 무작위: {diff.mean():+.2f} ± {diff.std() / len(diff) ** 0.5:.2f} (표준오차) | "
+print(f"  실제 - 무작위: {diff.mean():+.2f} ± {diff.std(ddof=1) / len(diff) ** 0.5:.2f} (표준오차) | "
       f"실제가 나은 묶음 {int((diff > 0).sum())}, 같은 묶음 {int((diff == 0).sum())}, 못한 묶음 {int((diff < 0).sum())}")

@@ -122,6 +122,12 @@ def _as_control(c) -> Control:
 def sign_flip_p(d: np.ndarray, n_perm: int = 20000, seed: int = 0) -> float:
     """짝 차이 d의 평균이 0인지 부호 뒤집기 순열 검정 (양측). n ≤ 14면 모든 경우를 셈 (정확한 p)"""
     d = np.asarray(d, float)
+    if d.ndim == 2 and d.shape[1] == 1:                                  # (n, 1) 열 벡터
+        d = d[:, 0]
+    if d.ndim != 1:
+        raise ValueError(f"짝 차이 d는 1차원 (seed마다 하나): 모양 {d.shape}")
+    if not np.isfinite(d).all():                                         # 예전: NaN이 있으면 평균이 NaN → 비교가 모두 거짓 →
+        raise ValueError(f"짝 차이에 NaN·무한대: {d[~np.isfinite(d)][:5].tolist()} - 실패한 seed를 확인할 것")   # p = 0 (유의)
     n = len(d)
     if n == 0 or not np.any(d):                                     # 단위와 상관없이 (allclose는 1e-8보다 작은 점수를 0으로 봄)
         return 1.0
@@ -131,7 +137,26 @@ def sign_flip_p(d: np.ndarray, n_perm: int = 20000, seed: int = 0) -> float:
     else:
         signs = np.random.default_rng(seed).choice([-1, 1], size=(n_perm, n))
     null = np.abs((signs * d).mean(1))
-    return float(((null >= obs * (1 - 1e-9)).sum()) / len(null))        # 같은 값의 반올림 차이만 허용 (상대)
+    hits = int((null >= obs * (1 - 1e-9)).sum())                         # 같은 값의 반올림 차이만 허용 (상대)
+    if n <= 14:                                                          # 모든 경우 (관측한 부호 그대로도 포함) → 정확한 p
+        return hits / len(null)
+    return (hits + 1) / (len(null) + 1)                                  # 표본: 관측값도 한 경우로 셈 - 예전에는 p = 0이 나올 수 있었음
+
+
+# t 분포 97.5% 분위수: 자유도 1 ~ 30은 표 (소수 여섯째 자리 - 셋째 자리 표는 차이가 최대 5e-4라 신뢰구간의 셋째 자리가
+# 반올림 경계에서 바뀌었음), 30 넘으면 Cornish-Fisher 전개 (scipy.stats.t.ppf와 차이 2e-6 이하)
+_T975 = [12.706205, 4.302653, 3.182446, 2.776445, 2.570582, 2.446912, 2.364624, 2.306004, 2.262157, 2.228139,
+         2.200985, 2.178813, 2.160369, 2.144787, 2.131450, 2.119905, 2.109816, 2.100922, 2.093024, 2.085963,
+         2.079614, 2.073873, 2.068658, 2.063899, 2.059539, 2.055529, 2.051831, 2.048407, 2.045230, 2.042272]
+
+
+def t975(df: int) -> float:
+    """t 분포의 97.5% 분위수 (scipy.stats.t.ppf(0.975, df) 대신 - scipy 없이)"""
+    if df <= 30:
+        return _T975[df - 1]
+    z = 1.959963984540054
+    return (z + (z ** 3 + z) / (4 * df) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * df ** 2)
+            + (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / (384 * df ** 3))
 
 
 def _ci95(x: np.ndarray):
@@ -139,8 +164,7 @@ def _ci95(x: np.ndarray):
     x = np.asarray(x, float)
     if len(x) < 2:
         return (math.nan, math.nan)
-    from scipy import stats
-    h = stats.t.ppf(0.975, len(x) - 1) * x.std(ddof=1) / math.sqrt(len(x))
+    h = t975(len(x) - 1) * x.std(ddof=1) / math.sqrt(len(x))
     return (x.mean() - h, x.mean() + h)
 
 
@@ -183,14 +207,17 @@ class CompareReport:
             return "대조군이 더 좋음"
         return "차이를 확인하지 못함"
 
-    # 대조군 사다리: (종류, 이 대조군이 바로 아래 단계보다 더 유지하는 구조)
+    # 대조군 사다리: (종류, 이 단계가 바로 아래 단계보다 더 유지하는 구조)
     _LADDER = (("randomized", "그룹 쌍별 연결 수"),
                ("shuffled", "뉴런별 연결 수 분포 (차수·허브)"),
-               ("local", "시야 위치 대응 같은 큰 공간 구조"))
+               ("local", "시야 위치 대응 같은 큰 공간 구조"),
+               ("real", "세부 배선 (위치 안에서 누가 정확히 누구와)"))
 
     def interpret(self, alpha: float = 0.05) -> list:
         """대조군의 포함 관계로 원인 좁히기: randomized ⊂ shuffled ⊂ local ⊂ 실제 배선.
-        실제 배선이 아래 단계는 이기고 바로 위 단계와는 차이가 없으면, 그 위 단계가 더한 구조가 원인"""
+        실제 배선이 아래 단계는 이기고 위 단계와는 차이가 없으면, 그 사이 단계들이 더한 구조가 원인.
+        비교하지 않은 단계가 사이에 있으면 그 구조들도 후보 - 예전에는 바로 위 단계의 구조만 말해서, shuffled만
+        비교하고 이기면 위치 구조일 수도 있는데 '세부 배선'이 원인이라고 단정했음"""
         t = self.table()
         kind = {Randomized: "randomized", Local: "local"}
         present = {}
@@ -198,22 +225,26 @@ class CompareReport:
             k = "shuffled" if (type(c) is Shuffled and c.pairs is None and c.exclude is None) else kind.get(type(c))
             if k and k not in present:
                 present[k] = c.name
-        steps = [(present[k], adds) for k, adds in self._LADDER if k in present]
-        steps.append(("실제 배선", "세부 배선 (위치 안에서 누가 정확히 누구와)"))
-        lose = lambda n: n != "실제 배선" and t.loc[n].p < alpha and t.loc[n]["diff"] > 0
+        present["real"] = "실제 배선"
+        level = [k for k, _ in self._LADDER]
+        adds = dict(self._LADDER)
+        steps = [k for k in level if k in present]
+        lose = lambda k: k != "real" and t.loc[present[k]].p < alpha and t.loc[present[k]]["diff"] > 0
         out = []
-        for (lo_name, _), (hi_name, hi_adds) in zip(steps, steps[1:]):
-            if not lose(lo_name) or lose(hi_name):
+        for lo, hi in zip(steps, steps[1:]):
+            if not lose(lo) or lose(hi):
                 continue
-            if hi_name == "실제 배선":                                       # 가장 많이 유지한 대조군도 짐
-                out.append(f"실제 배선이 {lo_name}도 이김 → 중요한 구조: {hi_adds}")
+            between = [adds[k] for k in level[level.index(lo) + 1:level.index(hi) + 1]]
+            what = between[0] if len(between) == 1 else "다음 중 하나 이상 - " + " / ".join(between)
+            if hi == "real":                                                 # 가장 많이 유지한 대조군도 짐
+                out.append(f"실제 배선이 {present[lo]}도 이김 → 중요한 구조: {what}")
             else:
-                out.append(f"실제 배선이 {lo_name}는 이기고 {hi_name}와는 차이가 없음 → 중요한 구조: {hi_adds}")
+                out.append(f"실제 배선이 {present[lo]}는 이기고 {present[hi]}와는 차이가 없음 → 중요한 구조: {what}")
         win = [c for c in self.controls if t.loc[c.name].p < alpha and t.loc[c.name]["diff"] < 0]
         for c in win:                                                      # 대조군이 실제 배선보다 좋음
             out.append(f"{c.name}가 실제 배선보다 좋음 → 실제 배선의 이 구조({c.question})가 이 과제에는 오히려 불리 "
                        "(과제가 그 회로가 실제로 하는 일과 다르면 흔함)")
-        if len(steps) > 1 and not any(lose(n) for n, _ in steps) and not win:
+        if len(steps) > 1 and not any(lose(k) for k in steps) and not win:
             out.append("어느 대조군과도 차이를 확인하지 못함 → 이 과제에서 배선 구조의 이점은 보이지 않음")
         return out
 
@@ -260,6 +291,8 @@ def _diagnose(rep: CompareReport, check_repeat, ceiling, floor_margin):
     all_scores = np.concatenate(list(rep.scores.values()))
     if not rep.higher_is_better:                                         # 손실처럼 낮을수록 좋은 점수: 상한·찍기 경고 안 함
         ceiling = None
+    if ceiling is not None and ((all_scores < 0) | (all_scores > 1)).any():   # 정확도(0~1)가 아닌 점수 (발화율 Hz·보상 등):
+        ceiling = None                                                   # 0.99 상한이 늘 넘어 '너무 쉬움'으로 잘못 경고했음
     if ceiling is not None and (all_scores >= ceiling).all():
         w.append(f"실제·대조군 모두 {ceiling:g} 이상 - 과제가 너무 쉬워 배선 차이가 드러나지 않음 "
                  "(예: 수천 뉴런 평균 같은 지름길). 더 어려운·국소적인 과제로")
@@ -318,6 +351,8 @@ def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None 
     if len(set(names)) != len(names):
         raise ValueError(f"대조군 이름이 겹침: {names} (name=으로 구분)")
     seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    if len(set(seeds)) != len(seeds):                               # 같은 seed = 같은 짝을 두 번 세어 p가 작아짐 (유사 반복)
+        raise ValueError(f"seeds에 같은 값이 있음: {seeds} - 짝마다 다른 seed")
     if len(seeds) < 2:
         raise ValueError(f"seeds는 2개 이상 (짝지은 검정) - p < 0.05가 가능하려면 6개 이상: {len(seeds)}")
     t0 = time.time()

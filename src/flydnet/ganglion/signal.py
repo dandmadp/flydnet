@@ -207,11 +207,16 @@ class Signal:
             return other
         xp = self.xp
         if isinstance(other, (bool, int, float)) and not isinstance(other, np.ndarray):
-            # 파이썬 숫자: 실수 신호면 그 자료형 그대로 (float32 유지), 정수 신호에 실수를 곱하면 float32로 (잘림 방지)
-            if self.data.dtype.kind == "f":
+            # 파이썬 숫자: 실수 신호면 그 자료형 그대로 (float32 유지). 정수 신호와 실수는 실수 (결과는 numpy 규칙대로).
+            # 불리언 신호는 숫자를 불리언으로 바꾸지 않음 - 예전: Signal([True, False]) + 1 이 1 → True로 바뀌어
+            # 논리합 [True, True]가 됨 (numpy는 [2, 1]). 비교 결과(s > 0)를 세거나 더할 때 조용히 틀렸음
+            kind = self.data.dtype.kind
+            if kind == "f":
                 dt = self.data.dtype
             elif isinstance(other, float):
                 dt = xp.float32
+            elif kind == "b" and not isinstance(other, bool):
+                dt = xp.int64
             else:
                 dt = self.data.dtype
             return Signal(xp.asarray(other, dtype=dt), device=self.device)
@@ -653,6 +658,7 @@ def where(cond, a, b) -> Signal:
     cast = lambda v: v if isinstance(v, Signal) else Signal(ref.xp.asarray(v, dtype=ref.dtype))
     a, b = cast(a), cast(b)
     xp = ref.xp
-    c = B.to(xp.asarray(c) if ref.device == "cpu" else c, ref.device) if hasattr(c, "shape") else c   # numpy 조건 + GPU 신호
+    c = B.to(c, ref.device) if hasattr(c, "shape") else c                 # 조건을 신호의 장치로 (numpy 조건 + GPU 신호, GPU 조건 +
+    #                                                                       CPU 신호 - 예전: 후자는 numpy로 바로 바꾸다 TypeError)
     return Signal(xp.where(c, a.data, b.data))._link(
         (a, b), lambda g: (_unbroadcast(xp.where(c, g, 0), a.shape), _unbroadcast(xp.where(c, 0, g), b.shape)))

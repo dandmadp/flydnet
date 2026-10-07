@@ -16,17 +16,17 @@ import sys
 import time
 from pathlib import Path
 
-import torch
-from torchvision import datasets
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 없이 실행
 import flydnet as fd
+from _mnist import mnist
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--n-train", type=int, default=60000)
 ap.add_argument("--n-test", type=int, default=10000)
 ap.add_argument("--t-ms", type=float, default=100)
-ap.add_argument("--pn-kc-gain", type=float, default=2.0, help="PN→KC 시냅스 배율 (2.0 ~ KC 7%% 활성)")
+ap.add_argument("--pn-kc-gain", type=float, default=2.0, help="PN→KC 시냅스 배율")
 ap.add_argument("--max-rate", type=float, default=100)
 ap.add_argument("--input-mode", choices=["regular", "poisson"], default="regular")
 ap.add_argument("--n-shuffles", type=int, default=3, help="무작위 배선 대조군 개수")
@@ -34,37 +34,36 @@ ap.add_argument("--batch", type=int, default=256)
 ap.add_argument("--data", default=str(Path(__file__).resolve().parents[1] / "data"))
 args = ap.parse_args()
 
-tr = datasets.MNIST(args.data, train=True, download=True)
-te = datasets.MNIST(args.data, train=False, download=True)
-Xtr, ytr = tr.data[:args.n_train].float() / 255, tr.targets[:args.n_train]
-Xte, yte = te.data[:args.n_test].float() / 255, te.targets[:args.n_test]
+Xtr, ytr, Xte, yte = mnist(args.data)
+Xtr, ytr, Xte, yte = Xtr[:args.n_train], ytr[:args.n_train], Xte[:args.n_test], yte[:args.n_test]
 
 mb = fd.Circuit.from_flywire()
 print(mb)
-enc = fd.torch.RateEncoder(784, len(mb.groups["PN"]), max_rate=args.max_rate)
+enc = fd.RateEncoder(784, len(mb.groups["PN"]), max_rate=args.max_rate)
 n_kc = len(mb.groups["KC"])
 
-feats = {"pixels": (Xtr.flatten(1), Xte.flatten(1)), "PN": (enc(Xtr), enc(Xte))}
+feats = {"pixels": (Xtr, Xte), "PN": (fd.extract(enc, Xtr), fd.extract(enc, Xte))}
 circuits = [("real", mb)] + [(f"shuffled {k}", mb.shuffled(seed=k)) for k in range(args.n_shuffles)]
-tag = f"{args.n_train}_{args.n_test}_{args.t_ms:g}ms_g{args.pn_kc_gain:g}_r{args.max_rate:g}_{args.input_mode}"
+tag = f"{args.n_train}_{args.n_test}_{args.t_ms:g}ms_g{args.pn_kc_gain:g}_r{args.max_rate:g}_{args.input_mode}_brian"
 for name, circ in circuits:
-    cache = Path(args.data) / f"feat_{tag}_{name.replace(' ', '')}.pt"
+    cache = Path(args.data) / f"feat_{tag}_{name.replace(' ', '')}.npz"      # 자체 엔진(timing="brian") 특징
     if cache.exists():
-        Ftr, Fte = torch.load(cache)
+        with np.load(cache) as z:
+            Ftr, Fte = z["Ftr"], z["Fte"]
     else:
-        layer = fd.torch.ConnectomeLayer(circ, "PN", ("KC", "MBON"), t_ms=args.t_ms,
+        layer = fd.ConnectomeLayer(circ, "PN", ("KC", "MBON"), t_ms=args.t_ms,
                                    gains={"PN>KC": args.pn_kc_gain}, input_mode=args.input_mode)
         t = time.time()
-        Ftr = fd.torch.extract(layer, enc, Xtr, batch=args.batch, seed=0)
-        Fte = fd.torch.extract(layer, enc, Xte, batch=args.batch, seed=10**6)
-        torch.save((Ftr, Fte), cache)
+        Ftr = fd.extract(layer, Xtr, enc, batch=args.batch, seed=0)
+        Fte = fd.extract(layer, Xte, enc, batch=args.batch, seed=10**6)
+        np.savez(cache, Ftr=Ftr, Fte=Fte)
         print(f"  {name}: 시뮬레이션 {time.time() - t:.0f}s", flush=True)
-    print(f"  {name}: KC 활성 {(Ftr[:, :n_kc] > 0).float().mean() * 100:.1f}%", flush=True)
+    print(f"  {name}: KC 활성 {(Ftr[:, :n_kc] > 0).mean() * 100:.1f}%", flush=True)
     feats[f"KC {name}"] = (Ftr[:, :n_kc], Fte[:, :n_kc])
     feats[f"MBON {name}"] = (Ftr[:, n_kc:], Fte[:, n_kc:])
 
 print(f"\n{'특징':<16}{'차원':>6}{'train':>9}{'test':>9}")
 for name in ["pixels", "PN"] + [f"{g} {c}" for g in ("KC", "MBON") for c, _ in circuits]:
     Ftr, Fte = feats[name]
-    r = fd.torch.train_linear(Ftr, ytr, Fte, yte)
+    r = fd.train_linear(Ftr, ytr, Fte, yte)
     print(f"{name:<16}{Ftr.shape[1]:>6}{r['train_acc'] * 100:>8.2f}%{r['test_acc'] * 100:>8.2f}%", flush=True)

@@ -1,0 +1,128 @@
+# 배포 전 플랫폼 확인 (수동 실행: Actions → wheels → Run workflow, 5~10분)
+#
+# flydnet은 순수 파이썬 휠 하나에 6개 플랫폼용 C 커널(src/flydnet/ganglion/_lib/, 한 컴퓨터에서 zig로 교차 빌드해
+# git에 커밋한 것)을 모두 넣어 배포한다. 여기서는 그 휠을 실제 OS 5종에 설치해
+#   - 그 플랫폼의 C 커널이 열리고 쓰이는지
+#   - 골든 시험 (tests/test_golden.py: 버섯체·시각계·합성 회로, 엔진 정리 전 결과와 비교) + 엔진 정리 시험
+# 을 확인한다. scipy·pyarrow 없이 (FlyWire 데이터는 npz로 바꿔 parquet를 지운 것). 빌드·업로드는 하지 않음.
+name: wheels
+
+on:
+  workflow_dispatch:
+
+jobs:
+  data:
+    name: FlyWire 데이터 (npz)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: ci_data
+          key: flywire-783-npz-v1
+      - uses: actions/setup-python@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          python-version: "3.12"
+      - name: 받기 + npz로 바꾸기
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install --no-cache-dir numpy pandas pyarrow
+          python -m pip install --no-cache-dir --no-deps .
+          python -c "import flydnet as fd; fd.download('flywire', path='ci_data/flywire')"
+          rm ci_data/flywire/Connectivity_783.parquet
+          FLYDNET_FLYWIRE=ci_data/flywire python -m flydnet verify flywire
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-data
+          path: ci_data
+          retention-days: 3
+
+  wheel:
+    name: 순수 파이썬 휠 빌드
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 커밋된 C 커널이 소스에서 그대로 나오는지 (재현 빌드, 바이트 비교)
+        run: |
+          ZIG=$(awk '/^zig /{print $2}' src/flydnet/ganglion/_lib/SOURCE)
+          python -m pip install --no-cache-dir "ziglang==$ZIG"
+          python scripts/build_csr.py --all
+          git diff --stat --exit-code -- src/flydnet/ganglion/_lib
+      - run: |
+          python -m pip install --no-cache-dir build
+          python -m build --wheel --outdir dist
+          ls -la dist
+          python -c "import zipfile, glob; n = zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); k = [x for x in n if '/_lib/' in x]; print(k); assert len([x for x in k if '_csr-' in x]) == 6"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  test:
+    name: 시험 ${{ matrix.os }} / Python ${{ matrix.python }}
+    needs: [data, wheel]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux x86_64·aarch64, macOS arm64·x86_64, Windows x86_64. 가장 낮은·높은 지원 Python
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
+        python: ["3.10", "3.13"]
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-data
+          path: ci_data
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 설치 (scipy·pyarrow 없이)
+        shell: bash
+        run: python -m pip install --no-cache-dir dist/*.whl pytest
+      - name: C 커널 확인
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: python -c "from flydnet.ganglion import csr; assert csr.backend() == 'c', csr._LIB; print('C kernel', csr._LIB[0])"
+      - name: 골든·엔진 정리 시험
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          FLYDNET_FLYWIRE: ${{ github.workspace }}/ci_data/flywire
+        run: python -m pytest -q "$GITHUB_WORKSPACE/tests/test_golden.py" "$GITHUB_WORKSPACE/tests/test_engine_cleanup.py"
+
+  musl:
+    name: 시험 Alpine (musl - C 커널을 못 열어 numpy 경로로)
+    needs: [data, wheel]
+    runs-on: ubuntu-latest
+    container: python:3.12-alpine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-data
+          path: ci_data
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - name: 설치·시험
+        env:
+          PYTHONIOENCODING: utf-8
+          FLYDNET_FLYWIRE: ${{ github.workspace }}/ci_data/flywire
+        run: |
+          python -m pip install --no-cache-dir dist/*.whl pytest
+          cd /tmp
+          python -c "from flydnet.ganglion import csr; assert not csr.c_available(), csr._LIB; print(csr._LIB[1]); print(csr.backend())"
+          python -m pytest -q "$GITHUB_WORKSPACE/tests/test_golden.py" "$GITHUB_WORKSPACE/tests/test_engine_cleanup.py"

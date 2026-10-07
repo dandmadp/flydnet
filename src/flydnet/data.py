@@ -15,10 +15,13 @@
     fd.download()                                   # 없는 파일만 받음 (약 140 MB)
     fd.set_data_dir(flywire=r"D:\\my\\flywire")      # 이미 받아 둔 곳을 쓰려면
     fd.data_status()                                # 어디서 무엇을 찾았는지
+
+연결 parquet는 받은 뒤 Connectivity_783.npz로 한 번 바꿔 두고 그것을 읽음 (pyarrow 필요 없음, read_connectivity)
 """
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import urllib.request
@@ -59,6 +62,13 @@ SOURCES = {
                                    "142693f17556148d7f962835b18ac6dd5af18b7467eef61815ebc1dd5474c0ca"),
     },
 }
+# Connectivity_783.parquet를 numpy 형식(pre, post, weight)으로 한 번 바꿔 둔 파일 → pyarrow 없이 읽음.
+# download가 만들고, parquet를 처음 읽을 때도 만들어 둠. 압축된 파일 바이트는 zlib 버전마다 다를 수 있으므로
+# 배열 내용(pre, post, weight를 차례로 int32 리틀 엔디언으로 이은 것)의 SHA-256으로 확인
+CONNECTIVITY = "Connectivity_783.parquet"
+CONNECTIVITY_NPZ = "Connectivity_783.npz"
+_NPZ_EDGES = 15091983
+_NPZ_SHA256 = "31150327a1370ae516441aebf83a7e87fc7cb4ec48e31f71f3878361f2ce0d89"
 CITATIONS = {
     "flywire": "FlyWire: Dorkenwald et al. 2024, Schlegel et al. 2024 (Nature); "
                "연결 파일: Shiu et al. 2024 (Nature), github.com/philshiu/Drosophila_brain_model (MIT)",
@@ -103,7 +113,12 @@ def set_data_dir(flywire: str | Path | None = None, door: str | Path | None = No
 
 def missing(kind: str = "flywire", path=None) -> list[str]:
     d = data_dir(kind, path)
-    return [f for f in SOURCES[kind] if not (d / f).exists()]
+    return [f for f in SOURCES[kind] if not (d / f).exists() and not _npz_instead(kind, f, d)]
+
+
+def _npz_instead(kind: str, name: str, d: Path) -> bool:
+    """연결 parquet가 없어도 바꿔 둔 npz가 있으면 됨 (npz만 복사해 온 컴퓨터 등)"""
+    return kind == "flywire" and name == CONNECTIVITY and (d / CONNECTIVITY_NPZ).exists()
 
 
 def require(kind: str = "flywire", path=None) -> Path:
@@ -112,7 +127,7 @@ def require(kind: str = "flywire", path=None) -> Path:
     lack = missing(kind, path)
     if not lack:                                       # 크기 확인 (해시보다 싸고, 받다 끊기거나 다른 버전인 파일을 잡음)
         bad = [f"{n} ({(d / n).stat().st_size:,} B, 기대 {size:,} B)" for n, (_, size, _) in SOURCES[kind].items()
-               if (d / n).stat().st_size != size]
+               if (d / n).exists() and (d / n).stat().st_size != size]
         if bad:
             raise ValueError(f"{kind} 데이터 파일 크기가 다름: {bad}\n  찾은 위치: {d}\n  받다가 끊겼거나 다른 버전 - "
                              f"다시 받기: python -m flydnet download {kind}  (내용 확인: python -m flydnet verify)")
@@ -133,13 +148,112 @@ def _sha256(path: Path) -> str:
 
 
 def verify(kind: str = "flywire", path=None) -> dict:
-    """파일마다 'ok' / 'missing' / 'size' (크기 다름) / 'sha256' (내용 다름)"""
+    """파일마다 'ok' / 'missing' / 'size' (크기 다름) / 'sha256' (내용 다름) / 'not_needed' (연결 parquet가 없지만
+    npz가 있음). flywire는 바꿔 둔 연결 npz도 (배열 내용의 SHA-256)"""
     d = data_dir(kind, path)
     out = {}
     for name, (_, size, sha) in SOURCES[kind].items():
         f = d / name
-        out[name] = ("missing" if not f.exists() else "size" if f.stat().st_size != size else
+        out[name] = ("not_needed" if not f.exists() and _npz_instead(kind, name, d) else
+                     "missing" if not f.exists() else "size" if f.stat().st_size != size else
                      "sha256" if _sha256(f) != sha else "ok")
+    if kind == "flywire":
+        out[CONNECTIVITY_NPZ] = _verify_npz(d / CONNECTIVITY_NPZ)
+    return out
+
+
+def _npz_digest(pre, post, weight) -> str:
+    import numpy as np
+    h = hashlib.sha256()
+    for a in (pre, post, weight):
+        h.update(np.ascontiguousarray(a, dtype="<i4").tobytes())
+    return h.hexdigest()
+
+
+def _load_npz(f: Path):
+    """(pre, post, weight) 배열 - 형식이 다르면 ValueError"""
+    import numpy as np
+    try:
+        with np.load(f, allow_pickle=False) as z:
+            arrs = [z[k] for k in ("pre", "post", "weight")]
+    except (OSError, KeyError, ValueError, EOFError) as e:
+        raise ValueError(f"{f.name}을 읽을 수 없음 ({type(e).__name__}: {e})") from e
+    if len({len(a) for a in arrs}) != 1 or any(a.ndim != 1 or a.dtype.kind not in "iu" for a in arrs):
+        raise ValueError(f"{f.name}: pre·post·weight가 같은 길이의 1차원 정수 배열이 아님")
+    return arrs
+
+
+def _verify_npz(f: Path) -> str:
+    if not f.exists():
+        return "missing"
+    try:
+        arrs = _load_npz(f)
+    except ValueError:
+        return "sha256"
+    return "size" if len(arrs[0]) != _NPZ_EDGES else "sha256" if _npz_digest(*arrs) != _NPZ_SHA256 else "ok"
+
+
+def _read_parquet(f: Path):
+    """연결 parquet → (pre, post, weight) int64. weight = 시냅스 수 x 부호 (흥분 +1 / 억제 -1)"""
+    import pandas as pd
+    try:
+        df = pd.read_parquet(f, columns=["Presynaptic_Index", "Postsynaptic_Index", "Connectivity", "Excitatory"])
+    except ImportError as e:
+        raise ImportError(
+            f"{f.name}를 읽으려면 pyarrow가 필요함 (연결을 numpy 형식으로 바꿔 둔 {CONNECTIVITY_NPZ}가 없음).\n"
+            "  한 번만: pip install pyarrow  →  python -m flydnet download flywire  (npz로 바꿔 둠, 그 뒤에는 pyarrow 필요 없음)\n"
+            f"  또는 다른 컴퓨터에서 만든 {CONNECTIVITY_NPZ}를 같은 폴더({f.parent})에 복사") from e
+    return (df.Presynaptic_Index.to_numpy(), df.Postsynaptic_Index.to_numpy(),
+            df.Connectivity.to_numpy() * df.Excitatory.to_numpy())
+
+
+def convert_connectivity(path=None, quiet: bool = False) -> Path:
+    """FlyWire 연결 parquet → npz (한 번만, pyarrow 필요). 내용 해시를 확인한 뒤에만 저장. 반환: npz 경로"""
+    import numpy as np
+    d = data_dir("flywire", path)
+    pre, post, w = _read_parquet(d / CONNECTIVITY)
+    if len(pre) != _NPZ_EDGES or _npz_digest(pre, post, w) != _NPZ_SHA256:
+        raise ValueError(f"{CONNECTIVITY}의 내용이 기대한 버전과 다름 - 다시 받기: python -m flydnet download flywire")
+    if not quiet:
+        say(f"  {CONNECTIVITY} → {CONNECTIVITY_NPZ} (한 번만, 약 10초)", flush=True)
+    dest = d / CONNECTIVITY_NPZ
+    tmp = d / f"{CONNECTIVITY_NPZ}.{os.getpid()}.part.npz"           # 여러 프로세스가 동시에 바꿔도 반쯤 쓴 파일을 읽지 않게
+    try:
+        np.savez_compressed(tmp, pre=pre.astype(np.int32), post=post.astype(np.int32), weight=w.astype(np.int32))
+        tmp.replace(dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return dest
+
+
+def read_connectivity(path=None, name: str = CONNECTIVITY):
+    """FlyWire 연결 (pre, post, weight) int64 배열 (pre·post = 전체 뇌 번호, weight = 시냅스 수 x 부호).
+    바꿔 둔 npz가 있으면 그것 (pyarrow 필요 없음), 없으면 parquet를 읽고 npz도 만들어 둠.
+    name: 다른 연결 파일 (.parquet 또는 pre·post·weight가 든 .npz)"""
+    import numpy as np
+    d = data_dir("flywire", path)
+    if name.endswith(".npz"):
+        return tuple(a.astype(np.int64) for a in _load_npz(d / name))
+    if name != CONNECTIVITY:
+        return _read_parquet(d / name)
+    f = d / CONNECTIVITY_NPZ
+    if f.exists():
+        try:
+            arrs = _load_npz(f)
+            if len(arrs[0]) != _NPZ_EDGES:
+                raise ValueError(f"{f.name}: 연결 {len(arrs[0]):,}개 (기대 {_NPZ_EDGES:,}개)")
+            return tuple(a.astype(np.int64) for a in arrs)
+        except ValueError as e:
+            if not (d / CONNECTIVITY).exists():
+                raise ValueError(f"{e} - 다시 만들기: python -m flydnet download flywire") from e
+            import warnings
+            warnings.warn(f"{e} - parquet에서 다시 만듦", stacklevel=2)
+    out = _read_parquet(d / CONNECTIVITY)
+    try:
+        convert_connectivity(d)                                         # 다음부터는 pyarrow 없이 (실패해도 읽기는 됨)
+    except (OSError, ValueError):
+        pass
     return out
 
 
@@ -157,7 +271,7 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
         state = verify(kind, d)
         for name, (url, size, sha) in SOURCES[kind].items():
             f = d / name
-            if state[name] == "ok" and not overwrite:
+            if state[name] == "not_needed" or state[name] == "ok" and not overwrite:
                 if not quiet:
                     say(f"  있음  {f}")
                 continue
@@ -168,7 +282,8 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
                 say(f"  받는 중 {name}", flush=True)
             try:
                 _fetch(url, tmp, quiet)
-            except (OSError, ValueError) as e:                 # URLError·시간 초과·연결 끊김
+            except (OSError, ValueError, http.client.HTTPException) as e:   # URLError·시간 초과·연결 끊김 (받는 도중
+                #                                                         끊기면 IncompleteRead - OSError가 아니라 예전엔 안 잡힘)
                 if tmp.exists():
                     tmp.unlink()
                 raise IOError(f"{name} 받기 실패 ({type(e).__name__}: {e}) - 인터넷 연결을 확인하고 다시: "
@@ -179,6 +294,13 @@ def download(kinds=("flywire", "door"), path=None, overwrite: bool = False, quie
                 raise IOError(f"{name}: 받은 파일이 기대와 다름 (크기 {got:,} B, 기대 {size:,} B). "
                               f"네트워크 문제일 수 있으니 다시 시도. 계속되면 원본 주소 확인: {url}")
             tmp.replace(f)
+        if kind == "flywire" and (overwrite or verify(kind, d)[CONNECTIVITY_NPZ] != "ok"):
+            try:
+                convert_connectivity(d, quiet)
+            except ImportError:
+                if not quiet:
+                    say(f"  pyarrow가 없어 {CONNECTIVITY_NPZ}로 바꾸지 못함 - 회로를 만들려면 한 번만: pip install pyarrow → "
+                        "python -m flydnet download flywire (그 뒤에는 pyarrow 필요 없음)")
         if not quiet:
             say(f"[{kind}] {d}\n  출처: {CITATIONS[kind]}")
             if path is not None and d.resolve() != data_dir(kind).resolve():

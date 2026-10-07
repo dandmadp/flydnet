@@ -65,22 +65,23 @@ if dev == "cuda":
     torch.cuda.set_per_process_memory_fraction(0.75)            # 넘치면 오류 (Windows 가상 메모리로 C: 채우지 않게)
 
 vc = fd.visual_circuit()
-xy = fd.torch.column_map(vc)                                          # 지도는 실제 배선으로 만들고 두 조건에 똑같이 씀
+xy = fd.column_map(vc)                                                # 지도는 실제 배선으로 만들고 두 조건에 똑같이 씀
 circ = vc if args.circuit == "real" else vc.shuffled(seed=args.shuffle_seed)
 if G:
     circ = circ.normalized()
 OUT = [f"T{k}{d}" for k in "45" for d in "abcd"] if args.readout == "t4t5" else [g for g in fd.LPTC if g in vc.groups]
-layer = fd.torch.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, input_mode="regular",
-                           neuron=args.neuron,
+engine = fd.ConnectomeLayer(circ, fd.PHOTORECEPTORS, OUT, t_ms=args.t_ms, dt=args.dt, input_mode="regular",
+                           neuron=args.neuron, device="gpu" if dev == "cuda" else "cpu",
                            params={"w_syn": args.w_syn} if G else {"w_syn": args.w_syn, "f_poi": 250 * 0.275 / args.w_syn},
                            bias={g: (0.0 if g in fd.PHOTORECEPTORS else args.bias) for g in circ.groups},
                            v_init="random", count_from_ms=args.count_from, trainable=True, share="pair",
                            train_neurons=True, checkpoint_every=args.checkpoint_every)
-print(layer, flush=True)
-pr_xy = xy[layer.in_idx.cpu().numpy()]
+layer = fd.torch.bridge(engine, seed=0)                         # 계산은 자체 엔진, 학습 루프는 torch
+print(engine, flush=True)
+pr_xy = xy[fd.ganglion.backend.numpy(engine.in_idx)]
 # 출력 뉴런 → 그룹 평균 (T4/T5는 아형별 평균, LPTC는 뉴런이 적어 그룹 평균도 같은 방식)
 sizes = [len(circ.groups[g]) for g in OUT]
-pool = torch.zeros(len(OUT), layer.n_out, device=dev)
+pool = torch.zeros(len(OUT), engine.n_out, device=dev)
 o = 0
 for i, n in enumerate(sizes):
     pool[i, o:o + n] = 1.0 / n; o += n
@@ -93,10 +94,10 @@ norm = lambda f: (f - f.mean(0)) / f.std(0).clamp_min(1e-6)
 def batch(n, gen):
     y = torch.randint(0, args.dirs, (n,), generator=gen)
     ph = torch.rand(n, generator=gen) * 2 * np.pi
-    lum = fd.torch.drifting_grating(pr_xy, y.numpy() * 360.0 / args.dirs, args.t_ms, int(args.t_ms / 2),
-                              wavelength=args.wavelength, temporal_hz=args.hz, phase=ph)
+    lum = torch.from_numpy(fd.drifting_grating(pr_xy, y.numpy() * 360.0 / args.dirs, args.t_ms, int(args.t_ms / 2),
+                                               wavelength=args.wavelength, temporal_hz=args.hz, phase=ph.numpy()))
     lum = (lum + args.noise * torch.randn(lum.shape, generator=gen)).clamp(-1, 1)
-    return (0.5 if G else 100.0) * (1 + lum), y
+    return ((0.5 if G else 100.0) * (1 + lum)).to(dev), y
 
 
 def forward(x):
@@ -126,7 +127,7 @@ def evaluate(n=64):
 
 
 opt = torch.optim.Adam([
-    {"params": [layer.log_scale, layer.log_t_mbr], "lr": args.lr},
+    {"params": [layer.log_scale, layer.log_t_mbr], "lr": args.lr},    # bridge의 Parameter = 엔진 값과 같은 메모리
     {"params": [layer.bias], "lr": args.lr_bias},
     {"params": readout.parameters(), "lr": args.lr_readout},
 ])
@@ -166,12 +167,13 @@ def neuron_dsi(reps=4):
     실제 T4/T5는 대략 0.3~0.8. agree = 같은 아형 뉴런들의 선호 방향이 얼마나 일치하는지 (0~1)"""
     g = torch.Generator().manual_seed(999)
     th = np.arange(args.dirs) * 360.0 / args.dirs
-    R = torch.zeros(args.dirs, layer.n_out)
+    R = torch.zeros(args.dirs, engine.n_out)
     with torch.no_grad():
         for _ in range(reps):
-            lum = fd.torch.drifting_grating(pr_xy, th, args.t_ms, int(args.t_ms / 2), wavelength=args.wavelength,
-                                      temporal_hz=args.hz, phase=torch.rand(args.dirs, generator=g) * 2 * np.pi)
-            R += layer((0.5 if G else 100.0) * (1 + lum)).cpu() / reps
+            lum = torch.from_numpy(fd.drifting_grating(pr_xy, th, args.t_ms, int(args.t_ms / 2), wavelength=args.wavelength,
+                                                       temporal_hz=args.hz,
+                                                       phase=(torch.rand(args.dirs, generator=g) * 2 * np.pi).numpy()))
+            R += layer(((0.5 if G else 100.0) * (1 + lum)).to(dev)).cpu() / reps
     v = (R * torch.exp(1j * torch.tensor(np.radians(th), dtype=torch.float32))[:, None]).sum(0)
     d = (v.abs() / R.sum(0).clamp_min(1e-9)).numpy()
     u = np.exp(1j * np.angle(v.numpy()))
@@ -186,7 +188,8 @@ def neuron_dsi(reps=4):
 nd = neuron_dsi()
 print("뉴런별 방향 선택 지수 (중앙값/상위10%/선호방향 일치):",
       " ".join(f"{k}:{v['median']:.3f}/{v['p90']:.3f}/{v['agree']:.2f}" for k, v in nd.items()), flush=True)
-json.dump(dict(args=vars(args), hist=hist, final=dict(acc=acc, opp=opp, dsi=dsi, neuron_dsi=nd)),
-          open(out / f"{tag}.json", "w"), ensure_ascii=False, indent=1)
-layer.save(out / f"{tag}_layer.pt")
+(out / f"{tag}.json").write_text(json.dumps(dict(args=vars(args), hist=hist, final=dict(acc=acc, opp=opp, dsi=dsi,
+                                                                                       neuron_dsi=nd)),
+                                           ensure_ascii=False, indent=1), encoding="utf-8")
+engine.save(out / f"{tag}_layer")                                 # 자체 엔진 저장 (.npz)
 torch.save(readout.state_dict(), out / f"{tag}_readout.pt")

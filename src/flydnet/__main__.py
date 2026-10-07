@@ -3,7 +3,7 @@
   python -m flydnet                    # 데이터 상태 (어디서 무엇을 찾았는지)
   python -m flydnet download           # FlyWire v783 + DoOR 데이터 받기 (없는 파일만, 약 130 MB)
   python -m flydnet download flywire   # 한 묶음만
-  python -m flydnet verify             # 받은 파일이 기대한 버전인지 (크기 + SHA-256)
+  python -m flydnet verify             # 받은 파일이 기대한 버전인지 (크기 + SHA-256, 연결 npz는 내용 해시)
   python -m flydnet doctor             # 설치 진단: GPU·CUDA·CuPy·torch, 어떤 설치 옵션을 쓸지
 """
 import re
@@ -44,7 +44,6 @@ def _kernel_check() -> int:
     """전용 CUDA 커널을 실제로 컴파일·실행해 CuPy 기본 연산과 비교. 문제면 1"""
     import warnings
     import numpy as np
-    import scipy.sparse as sps
     from .ganglion import backend as B, kernels as K
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -54,12 +53,15 @@ def _kernel_check() -> int:
     if not ok:
         return 1
     rng = np.random.default_rng(0)
-    M = sps.random(50, 40, density=0.2, format="csr", dtype=np.float32, random_state=0)
+    D = np.where(rng.random((50, 40)) < 0.2, rng.random((50, 40)), 0).astype(np.float32)   # 밀도 0.2 무작위 희소 행렬
+    r, c = np.nonzero(D)                                                                  # 행 순 (CSR)
+    indptr = np.concatenate([[0], np.cumsum(np.bincount(r, minlength=50))])
     x = rng.standard_normal((40, 8)).astype(np.float32)
-    Mg = B.sparse("gpu").csr_matrix(M)
+    Mg = B.sparse("gpu").csr_matrix((B.to(D[r, c], "gpu"), B.to(c.astype(np.int32), "gpu"), B.to(indptr, "gpu")),
+                                    shape=D.shape)
     Mg.indices = Mg.indices.astype(np.int32)
     got = B.numpy(K.spmm(Mg, B.to(x, "gpu")))
-    if not np.allclose(got, M @ x, atol=1e-4):
+    if not np.allclose(got, D @ x, atol=1e-4):
         say("  ! 전용 GPU 커널 결과가 다름 - FLYDNET_DEVICE=cpu로 쓰고 이슈로 알려 주세요")
         return 1
     say("전용 GPU 커널: 컴파일·실행·결과 확인됨")
@@ -133,15 +135,26 @@ def main(argv=None):
         if unknown:
             say(f"모르는 데이터 묶음: {unknown} (있는 것: {list(SOURCES)})")
             return 1
+        from .data import data_dir
         bad = 0
-        for kind in argv or SOURCES:
+        # 묶음을 안 주면 기본 다운로드(flywire·door) + 받아 둔 다른 묶음만 - 예전에는 기본으로 받지 않는 worm까지 확인해
+        # 정상 설치에서도 missing·종료 코드 1이 나왔음
+        default = [k for k in SOURCES if k in ("flywire", "door") or any((data_dir(k) / f).exists() for f in SOURCES[k])]
+        from .data import CONNECTIVITY_NPZ
+        for kind in argv or default:
             for name, st in verify(kind).items():
+                if name == CONNECTIVITY_NPZ and st == "missing":            # parquet만 있음 (pyarrow로 읽음): 실패는 아님
+                    say(f"  {kind:<8} {name:<28} 아직 없음 - 만들기: python -m flydnet download flywire (pyarrow 없이 읽게)")
+                    continue
                 say(f"  {kind:<8} {name:<28} {st}")
-                bad += st != "ok"
+                bad += st not in ("ok", "not_needed")
         return 1 if bad else 0
     elif cmd == "doctor":
         return doctor()
+    elif cmd in ("-h", "--help", "help"):                               # 도움말 요청은 성공 (예전: 모르는 명령처럼 1)
+        say(__doc__)
     else:
+        say(f"모르는 명령: {cmd!r}")
         say(__doc__)
         return 1
     return 0

@@ -44,6 +44,27 @@ def _json_value(v):
     return str(v)
 
 
+def _scipy_sparse():
+    """scipy.sparse (from_scipy·to_scipy에서만 - 없으면 설치 안내)"""
+    try:
+        import scipy.sparse as sps
+    except ImportError as e:
+        raise ImportError("scipy가 필요한 기능 - pip install scipy") from e
+    return sps
+
+
+def require_disjoint_groups(circuit, who: str):
+    """그룹끼리 뉴런이 겹치면 오류 - 층·Neuropil이 그룹마다 뉴런을 한 자리에 두는 계산 (입력 자리, 연결 종류 번호)이
+    겹친 뉴런에서 조용히 틀어지므로 (예전: 겹친 입력 뉴런이 두 번 들어가 한쪽 값만 쓰이거나 기울기가 두 번)"""
+    if not circuit.groups:
+        return
+    ids = np.concatenate([np.asarray(v, np.int64).reshape(-1) for v in circuit.groups.values()])
+    if len(np.unique(ids)) != len(ids):
+        u, n = np.unique(ids, return_counts=True)
+        raise ValueError(f"{who}: 회로의 그룹끼리 뉴런이 겹침 ({int((n > 1).sum())}개, 예: {u[n > 1][:5].tolist()}) - "
+                         f"그룹마다 다른 뉴런이어야 함: circuit.regroup({{이름: 번호}})로 다시 나눌 것")
+
+
 class Circuit:
     """뉴런 N개와 부호 있는 시냅스 목록 (pre → post, weight = ±시냅스 수)
 
@@ -94,14 +115,17 @@ class Circuit:
         group_by: 주석 열 이름 (예: "cell_type")이면 각 그룹을 그 값마다 다시 나눔 → 그룹 이름 = 값
                   (값이 없는 뉴런은 "<그룹 이름>?"). 무작위 대조군(shuffled)도 이 단위로 섞임
         data_dir: None이면 flydnet.data_dir("flywire") (환경변수 → ~/.flydnet/config.json → ~/.flydnet/data)"""
-        from .data import require
+        from .data import read_connectivity, require
         d = require("flywire", data_dir)
         all_ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
         ann = pd.read_csv(d / annotations, sep="\t", low_memory=False,
                           usecols=["root_id", "super_class", "cell_class", "cell_sub_class", "cell_type", "side",
                                    "pos_x", "pos_y", "pos_z"])
-        ann = ann[ann.root_id.isin(all_ids)]
-        if side:
+        ann = ann[ann.root_id.isin(all_ids)].drop_duplicates("root_id")    # whole_brain과 같게 (주석 파일 버전에 따라 같은
+        if side:                                                          # 뉴런이 두 번이면 meta·pos 행이 뉴런 수와 어긋남)
+            sides = sorted(ann.side.dropna().astype(str).unique())
+            if side not in sides:                                       # 예전: side="both" 등이 그룹이 모두 비었다는 오류로 보였음
+                raise ValueError(f"side는 {sides} 중 하나 또는 None (양쪽): {side!r}")
             ann = ann[ann.side == side]
 
         picked, gidx = [], {}
@@ -133,11 +157,10 @@ class Circuit:
         glob = pd.Series(np.arange(len(all_ids)), index=all_ids)[ids].values
         local = np.full(len(all_ids), -1, np.int64); local[glob] = np.arange(len(ids))
 
-        df = pd.read_parquet(d / connectivity, columns=["Presynaptic_Index", "Postsynaptic_Index",
-                                                         "Connectivity", "Excitatory"])
-        pre, post = local[df.Presynaptic_Index.values], local[df.Postsynaptic_Index.values]
+        P, Q, W = read_connectivity(d, connectivity)                  # 바꿔 둔 npz (pyarrow 필요 없음) 또는 parquet
+        pre, post = local[P], local[Q]
         keep = (pre >= 0) & (post >= 0)
-        w = (df.Connectivity.values * df.Excitatory.values)[keep]
+        w = W[keep]
         a = ann.set_index("root_id").loc[ids]
         meta = a[["super_class", "cell_class", "cell_sub_class", "cell_type", "side"]].reset_index()
         return cls(ids, gidx, pre[keep], post[keep], w, name=f"FlyWire {'/'.join(groups)} ({side or 'both'})",
@@ -149,7 +172,7 @@ class Circuit:
                     completeness: str = "Completeness_783.csv") -> "Circuit":
         """전체 뇌 (FlyWire v783 138,639개 뉴런, Shiu et al. 2024 모델과 같은 뉴런·순서). 그룹 = 주석 group_by 값
         (주석이 없는 뉴런은 "unannotated"). fd.genetics.driver로 주석 조건이나 뉴런 ID로 집단을 고름"""
-        from .data import require
+        from .data import read_connectivity, require
         d = require("flywire", data_dir)
         ids = pd.read_csv(d / completeness, index_col=0).index.values.astype(np.int64)
         cols = ["super_class", "cell_class", "cell_sub_class", "cell_type", "side"]
@@ -158,11 +181,10 @@ class Circuit:
         key = a[group_by].astype("string").fillna("unannotated").to_numpy()
         names, inv = np.unique(key, return_inverse=True)
         groups = {str(n): np.nonzero(inv == i)[0] for i, n in enumerate(names)}
-        df = pd.read_parquet(d / connectivity, columns=["Presynaptic_Index", "Postsynaptic_Index",
-                                                         "Connectivity", "Excitatory"])
-        w = (df.Connectivity.values * df.Excitatory.values).astype(np.float32)
+        P, Q, W = read_connectivity(d, connectivity)
+        w = W.astype(np.float32)
         meta = a[cols].reset_index().rename(columns={"index": "root_id"})
-        return cls(ids, groups, df.Presynaptic_Index.values, df.Postsynaptic_Index.values, w,
+        return cls(ids, groups, P, Q, w,
                    name="FlyWire 전체 뇌", meta=meta, pos=a[["pos_x", "pos_y", "pos_z"]].to_numpy(np.float32))
 
     # ─────────────── 어떤 그래프든 ───────────────
@@ -230,7 +252,7 @@ class Circuit:
     def from_scipy(cls, matrix, orientation: str = "pre_post", **kw) -> "Circuit":
         """연결 행렬 (scipy 희소 또는 numpy). orientation="pre_post"면 A[i, j] = i → j (networkx와 같음),
         "post_pre"면 A[j, i] = i → j. 0이 아닌 칸이 연결, 값이 세기"""
-        import scipy.sparse as sps
+        sps = _scipy_sparse()
         if orientation not in ("pre_post", "post_pre"):
             raise ValueError("orientation은 'pre_post' 또는 'post_pre'")
         A = sps.coo_matrix(matrix)
@@ -271,13 +293,16 @@ class Circuit:
 
     def to_scipy(self, orientation: str = "pre_post"):
         """연결 행렬 (scipy CSR). 같은 쌍의 연결은 더함"""
-        import scipy.sparse as sps
+        sps = _scipy_sparse()
         r, c = (self.pre, self.post) if orientation == "pre_post" else (self.post, self.pre)
         return sps.csr_matrix((self.weight, (r, c)), shape=(self.N, self.N))
 
     def to_networkx(self):
         """networkx.DiGraph (노드 = 회로 번호, 속성 group·meta 열, 연결 속성 weight)"""
-        import networkx as nx
+        try:
+            import networkx as nx
+        except ImportError as e:
+            raise ImportError('networkx가 필요한 기능 - pip install "flydnet[graph]" (또는 pip install networkx)') from e
         G = nx.DiGraph()
         g = self.group_of()
         for i in range(self.N):
@@ -291,6 +316,10 @@ class Circuit:
 
     def regroup(self, groups: dict, rest: str = "rest") -> "Circuit":
         """그룹을 새로 정함 ({이름: 노드 번호}, 나머지는 rest). 연결·주석은 그대로"""
+        for k, v in groups.items():
+            a = np.asarray(v)
+            if a.ndim != 1 or (a.size and (a.dtype.kind not in "iu" or a.min() < 0 or a.max() >= self.N)):
+                raise ValueError(f"regroup: 그룹 {k!r}의 값은 노드 번호 배열 (0 ~ {self.N - 1}): {v!r}"[:200])
         return Circuit.from_edges(self.pre, self.post, self.weight, groups={k: np.asarray(v) for k, v in groups.items()},
                                   meta=self.meta if self.meta is not None else pd.DataFrame(index=range(self.N)),
                                   pos=self.pos, name=self.name, rest=rest)._with_ids(self.root_ids)
@@ -537,21 +566,3 @@ class Circuit:
         return cls(np.asarray(d[prefix + "root_ids"]), groups, np.asarray(d[prefix + "pre"]),
                    np.asarray(d[prefix + "post"]), np.asarray(d[prefix + "weight"]), name=info["name"],
                    meta=meta, pos=pos)
-
-    # 저장: 텐서·문자열·리스트만 써서 torch.load(weights_only=True)로 안전하게 읽힘
-    def to_dict(self) -> dict:
-        import torch
-        meta = None
-        if self.meta is not None:
-            meta = {c: [None if pd.isna(v) else str(v) for v in self.meta[c]] for c in self.meta.columns}
-        return dict(root_ids=torch.from_numpy(self.root_ids), pre=torch.from_numpy(self.pre),
-                    post=torch.from_numpy(self.post), weight=torch.from_numpy(self.weight),
-                    groups={k: torch.from_numpy(v) for k, v in self.groups.items()}, name=self.name, meta=meta,
-                    pos=torch.from_numpy(self.pos) if self.pos is not None else None)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Circuit":
-        meta = pd.DataFrame(d["meta"]) if d.get("meta") is not None else None
-        return cls(d["root_ids"].numpy(), {k: v.numpy() for k, v in d["groups"].items()}, d["pre"].numpy(),
-                   d["post"].numpy(), d["weight"].numpy(), name=d["name"], meta=meta,
-                   pos=d["pos"].numpy() if d.get("pos") is not None else None)

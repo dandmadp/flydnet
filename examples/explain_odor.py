@@ -45,7 +45,7 @@ def make(n):
 Xtr, ytr = make(args.samples)
 Xte, yte = make(args.samples)
 layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, gains={"PN>KC": 3.0}, input_mode="regular")
-Ftr, Fte = fd.extract(layer, enc, Xtr, batch=200), fd.extract(layer, enc, Xte, batch=200)
+Ftr, Fte = fd.extract(layer, Xtr, enc, batch=200), fd.extract(layer, Xte, enc, batch=200)
 mu, sd = Ftr.mean(0), max(float((Ftr - Ftr.mean(0)).std()), 1e-6)
 res = fd.train_linear(Ftr, ytr, Fte, yte, epochs=60, seed=args.seed)
 readout = res["model"]

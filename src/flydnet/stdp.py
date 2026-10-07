@@ -27,6 +27,8 @@ class Monitor:
     def __init__(self, layer):
         if not hasattr(layer, "_observer"):
             raise TypeError("ConnectomeLayer에서만")
+        if layer.neuron == "graded":                                     # 연속값 뉴런 순전파는 관찰자를 부르지 않음 (스파이크가
+            raise ValueError("관찰자(STDP 등)는 스파이킹 뉴런 층에서만 - neuron='graded'는 스파이크가 없어 관찰자를 부르지 않음")   # 없음)
         self.layer = layer
 
     def run(self, rates=None, seed: int | None = None, batch: int = 1):
@@ -66,6 +68,10 @@ class STDP(Monitor):
         super().__init__(layer)
         if not getattr(layer, "trainable", False):
             raise ValueError("학습하는 연결이 있는 ConnectomeLayer에서만 (trainable=...)")
+        if getattr(layer, "_extensions", None):
+            import warnings
+            warnings.warn(f"STDP는 고정 배선의 학습 연결만 바꿈 - 붙은 확장({', '.join(layer._extensions)})의 추가 경로는 "
+                          "학습되지 않음", stacklevel=2)
         self.a_plus, self.a_minus, self.tau_plus, self.tau_minus = a_plus, a_minus, tau_plus, tau_minus
         self.delta = None
 

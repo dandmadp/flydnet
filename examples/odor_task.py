@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-import torch
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # 설치 없이 실행
 import flydnet as fd
@@ -26,7 +26,7 @@ import flydnet as fd
 ap = argparse.ArgumentParser()
 ap.add_argument("--task-seeds", type=int, default=5)
 ap.add_argument("--shuffles", type=int, default=5)
-ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="3.0 ~ KC 6%% 활성")
+ap.add_argument("--pn-kc-gain", type=float, default=3.0, help="3.0 ~ KC 약 8%% 활성")
 ap.add_argument("--t-ms", type=float, default=100)
 args = ap.parse_args()
 
@@ -35,36 +35,36 @@ CONFIGS = [(20, 5, 0.5, 20), (20, 10, 0.5, 20), (10, 20, 0.5, 40), (50, 5, 0.8, 
 N_TEST = 50
 
 mb = fd.Circuit.from_flywire()
-enc = fd.torch.GlomerularEncoder(mb)
+enc = fd.GlomerularEncoder(mb)
 G = enc.n_glomeruli
-mk = lambda c: fd.torch.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
+mk = lambda c: fd.ConnectomeLayer(c, "PN", "KC", t_ms=args.t_ms, gains={"PN>KC": args.pn_kc_gain},
                                   input_mode="regular")
 layers = {"real": mk(mb)} | {f"shuffled{k}": mk(mb.shuffled(seed=k)) for k in range(args.shuffles)}
 print(f"{mb}\n사구체 {G}개 | 무작위 배선 {args.shuffles}개 | 과제 seed {args.task_seeds}개\n")
 
-acc = lambda Ftr, ytr, Fte, yte: fd.torch.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
+acc = lambda Ftr, ytr, Fte, yte: fd.train_linear(Ftr, ytr, Fte, yte)["test_acc"] * 100
 summary = []
 for C, K, noise, ntr in CONFIGS:
     t = time.time()
     rows = []
     for s in range(args.task_seeds):
-        Xtr, ytr, Xte, yte = fd.torch.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
+        Xtr, ytr, Xte, yte = fd.synthetic_odors(C, G, ntr, N_TEST, protos_per_class=K, noise=noise, seed=s)
         r = {"glomeruli": acc(Xtr, ytr, Xte, yte)}
         for name, L in layers.items():
-            r[name] = acc(fd.torch.extract(L, enc, Xtr), ytr, fd.torch.extract(L, enc, Xte), yte)
+            r[name] = acc(fd.extract(L, Xtr, enc), ytr, fd.extract(L, Xte, enc), yte)
         rows.append(r)
-    glo = torch.tensor([r["glomeruli"] for r in rows])
-    real = torch.tensor([r["real"] for r in rows])
-    shuf = torch.tensor([[r[f"shuffled{k}"] for k in range(args.shuffles)] for r in rows])  # (seeds, shuffles)
+    glo = np.array([r["glomeruli"] for r in rows])
+    real = np.array([r["real"] for r in rows])
+    shuf = np.array([[r[f"shuffled{k}"] for k in range(args.shuffles)] for r in rows])  # (seeds, shuffles)
     diff = real - shuf.mean(1)
-    wins = (real[:, None] > shuf).float().mean() * 100
+    wins = (real[:, None] > shuf).mean() * 100
     print(f"클래스 {C} × 원형 {K}, 잡음 {noise}, 학습 {ntr}/클래스  ({time.time() - t:.0f}s)")
     print(f"  glomeruli {glo.mean():5.1f} | KC real {real.mean():5.1f} | KC shuffled {shuf.mean():5.1f} "
           f"(무작위끼리 범위 {shuf.mean(0).min():.1f}~{shuf.mean(0).max():.1f})")
     print(f"  실제 - 무작위: seed별 " + " ".join(f"{d:+.1f}" for d in diff)
-          + f" | 평균 {diff.mean():+.2f} ± {diff.std():.2f} | 실제가 이긴 비율 {wins:.0f}%", flush=True)
+          + f" | 평균 {diff.mean():+.2f} ± {diff.std(ddof=1):.2f} | 실제가 이긴 비율 {wins:.0f}%", flush=True)
     summary.append(diff)
 
-all_diff = torch.cat(summary)
+all_diff = np.concatenate(summary)
 print(f"\n전체 {len(all_diff)}개 (설정×seed): 실제 - 무작위 평균 {all_diff.mean():+.2f}%p, "
       f"양수 {int((all_diff > 0).sum())}/{len(all_diff)}")

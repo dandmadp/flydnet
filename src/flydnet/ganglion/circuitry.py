@@ -1,9 +1,6 @@
-"""ConnectomeLayer: 회로 전체를 시간에 따라 시뮬레이션하는 층 (자체 엔진판, torch 없음)
+"""ConnectomeLayer: 회로 전체를 시간에 따라 시뮬레이션하는 층 (자체 엔진, torch 없음)
 
-flydnet 0.1의 torch판(flydnet.layers.ConnectomeLayer)과 같은 모델·같은 인자. 차이:
-- 신호 배치가 (B, N) (torch판은 (N, B))
 - 포아송 입력 난수는 (시드, 스텝, 칸)으로 정해지는 해시 난수 → 체크포인팅으로 다시 계산해도 같고 CPU·GPU 결과도 같음
-  (torch판과 같은 시드여도 난수 자체는 다름)
 - 저장은 np.savez 한 파일 (회로 배선 포함, FlyWire 데이터 없이 다시 만들 수 있음)
 
   LIF:    스파이킹 뉴런 (Shiu et al. 2024 매개변수), 대리 기울기로 역전파
@@ -59,6 +56,36 @@ def genetics_mosaic(layer, seed, batch):
     from ..genetics import mosaic_mask
     return mosaic_mask(layer, seed, batch)
 
+
+def _batched(rates):
+    """시료 하나 (n_in,) → (1, n_in). calibrate·reach가 그룹 평균을 (시료, 뉴런)으로 재므로 (예전: 1차원이면 IndexError)"""
+    if rates is None:
+        return rates
+    if isinstance(rates, Signal):
+        return rates.reshape(1, -1) if rates.ndim == 1 else rates
+    if not hasattr(rates, "shape") or hasattr(rates, "iloc"):            # 리스트·pandas
+        rates = np.asarray(rates, np.float32)
+    return rates[None] if rates.ndim == 1 else rates
+
+
+def bfs(graph: dict, start, stop=()) -> dict:
+    """그래프 {노드: {다음 노드, ...}}에서 노드 → start에서의 홉 수.
+    stop에 있는 노드는 닿기만 하고 그 너머로는 퍼지지 않음 (start는 늘 퍼짐). 입력 → 출력 경로를 찾을 때
+    입력으로 되돌아가거나 출력을 지나 도는 고리를 경로로 세지 않게"""
+    stop = set(stop) - set(start)
+    dist = {s: 0 for s in start}
+    frontier = list(start)
+    while frontier:
+        nxt = []
+        for a in frontier:
+            for b in graph.get(a, ()):
+                if b not in dist:
+                    dist[b] = dist[a] + 1
+                    if b not in stop:
+                        nxt.append(b)
+        frontier = nxt
+    return dist
+
 DEFAULT_PARAMS = dict(
     v_0=-52.0, v_rst=-52.0, v_th=-45.0,   # mV
     t_mbr=20.0, tau=5.0,                  # ms
@@ -95,7 +122,7 @@ class ConnectomeLayer(Tissue):
                 → 각 스텝의 기울기가 최대 n스텝 과거까지만. 긴 시뮬레이션에서 기울기가 부푸는 것을 막음
     timing:     "brian" (기본, 0.1.16~) = Shiu et al. 2024 Brian2 모델과 같은 한 스텝 (정확한 선형 적분, 불응기 중 도착한
                 시냅스 입력은 버림, 입력 스파이크는 발화 판정 뒤, 불응기 2.2 ms = 22스텝). 같은 입력이면 스파이크 시각까지 같음
-                "legacy" = 0.1.15까지 (오일러 적분, 불응기 중 입력을 쌓아 둠, torch판과 같음). 0.1.15 저장 파일은 legacy로 읽힘
+                "legacy" = 0.1.15까지 (오일러 적분, 불응기 중 입력을 쌓아 둠, 0.1의 torch판과 같은 계산). 0.1.15 저장 파일은 legacy로 읽힘
     """
 
     FORMAT = "flydnet.ganglion.ConnectomeLayer/1"
@@ -115,6 +142,7 @@ class ConnectomeLayer(Tissue):
         _C.lif_params(params, DEFAULT_PARAMS)
         _C.finite('t_ms', t_ms) if not isinstance(t_ms, bool) else None
         super().__init__()
+        self._extensions = []                                         # attach로 붙은 확장 이름 (flydnet.lab 등)
         if damp is not None:                                     # 짧은 이름: damp = surrogate_damp, ckpt = checkpoint_every
             if surrogate_damp is not None:
                 raise TypeError("damp와 surrogate_damp는 같은 것 - 하나만")
@@ -123,6 +151,8 @@ class ConnectomeLayer(Tissue):
             if checkpoint_every is not None:
                 raise TypeError("ckpt와 checkpoint_every는 같은 것 - 하나만")
             checkpoint_every = ckpt
+        if isinstance(trainable, str):                                   # 연결 종류 하나 ("PN>KC") - 예전: 글자마다 연결 종류로 봐서
+            trainable = [trainable]                                      # "회로에 없는 연결 종류: ['>', 'C', 'K', 'N', 'P']"
         listify = lambda x: x if (x is None or isinstance(x, str)) else list(x)
         self.config = dict(inputs=listify(inputs), outputs=listify(outputs), t_ms=t_ms, params=dict(params or {}),
                            input_mode=input_mode,
@@ -190,6 +220,8 @@ class ConnectomeLayer(Tissue):
             gl = [gs] if isinstance(gs, str) else list(gs or [])
             if len(set(gl)) != len(gl):
                 raise ValueError(f"{role} 그룹에 같은 이름이 여러 번: {gl} - 뉴런이 중복되어 자극·출력이 틀어짐")
+        from ..circuit import require_disjoint_groups
+        require_disjoint_groups(circuit, "ConnectomeLayer")
         _ins = set([inputs] if isinstance(inputs, str) else list(inputs or []))
         _outs = set([outputs] if isinstance(outputs, str) else list(outputs))
         if _ins & _outs:
@@ -210,7 +242,7 @@ class ConnectomeLayer(Tissue):
         out_idx = np.concatenate([circuit.groups[o] for o in outputs])
         self.n_in, self.n_out = len(in_idx), len(out_idx)
 
-        # 연결: (post, pre) 정렬, 같은 연결은 시냅스 수 합치기 (torch판과 같은 순서)
+        # 연결: (post, pre) 정렬, 같은 연결은 시냅스 수 합치기
         key = circuit.post.astype(np.int64) * N + circuit.pre
         uniq, inv = np.unique(key, return_inverse=True)
         w = np.bincount(inv, weights=circuit.weight.astype(np.float64), minlength=len(uniq))
@@ -236,7 +268,7 @@ class ConnectomeLayer(Tissue):
         if share == "pair":
             pair_codes, which = np.unique(code[pos], return_inverse=True)
             names_ = np.array(self._edge_names(pair_codes), dtype=object)
-            order = np.argsort(names_, kind="stable")              # 이름순 (torch판·저장 파일과 같은 순서)
+            order = np.argsort(names_, kind="stable")              # 이름순 (저장 파일과 같은 순서)
             rank = np.empty_like(order); rank[order] = np.arange(len(order))
             which = rank[which]
             self.train_pairs = list(names_[order])
@@ -274,6 +306,41 @@ class ConnectomeLayer(Tissue):
         self._build()
         self._silent_checked = False                                # 처음 순전파에서 출력이 모두 0인지 한 번 확인
         self._check_paths()
+
+    # ─────────────── 확장 자리 (flydnet.lab 등이 붙는 곳) ───────────────
+    def attach(self, name: str, ext):
+        """확장 부품 ext (Tissue)를 이름 name으로 붙임 - 자식 조직이 되어 학습값·저장·장치 이동을 같이 함. 엔진이 부르는 것:
+          ext.paths()            순전파마다 [(배선, 값 Signal, M, MT)] - 고정 배선과 같은 지연·효과기로 함께 전달
+          ext.on_build()         배율(gains)이 바뀔 때
+          ext.needs_retro()      학습 신호(역행성)를 만들어야 하는지
+          ext.describe()         표시 문구
+          ext.extension_config() 저장할 인자 - save/load가 같은 클래스·인자로 다시 만들어 붙임 (ext(층, name=..., **인자))
+        예: flydnet.lab.Growth (추가 연결). 엔진 자체에는 확장 기능이 들어 있지 않음 - 붙인 것이 없으면 전과 같은 계산"""
+        if not isinstance(ext, Tissue):
+            raise TypeError(f"확장은 Tissue: {type(ext).__name__}")
+        if not name.isidentifier() or name in self.__dict__ or hasattr(type(self), name):
+            raise ValueError(f"확장 이름 {name!r}은 쓸 수 없음 (이미 있거나 이름 규칙에 맞지 않음)")
+        setattr(self, name, ext)
+        self._extensions.append(name)
+        return ext
+
+    def extensions(self) -> dict:
+        """붙은 확장 {이름: 부품}"""
+        return {n: getattr(self, n) for n in self._extensions}
+
+    def _extra_paths(self) -> list:
+        """순전파마다: 붙은 확장들의 추가 경로 [(배선, 값 Signal, M, MT)]. 없으면 []"""
+        out = []
+        for n in self._extensions:
+            out += getattr(self, n).paths()
+        return out
+
+    def _send(self, sent, values, M, MT, extra, binary):
+        """고정 배선 전달 + 추가 경로 전달 (추가 경로가 없으면 고정 배선만 - 전과 같은 계산)"""
+        out = K.propagate(sent, values, M, MT, self.wiring, binary=binary)
+        for wx, vx, Mx, MTx in extra:
+            out = out + K.propagate(sent, vx, Mx, MTx, wx, binary=binary)
+        return out
 
     # ─────────────── 연결 종류 ───────────────
     def _pair_code(self, name: str):
@@ -316,6 +383,8 @@ class ConnectomeLayer(Tissue):
         self.buffer("gain_code", np.array(codes, np.int64), optional=True)
         self.buffer("gain_value", np.array(list(self.gains.values()), np.float64), optional=True)
         self.config["gains"] = dict(self.gains)
+        for n in getattr(self, "_extensions", ()):                       # 확장의 배율도 (만들 때는 아직 없음)
+            getattr(self, n).on_build()
 
     def _loaded(self):
         """불러온 gain_code·gain_value로 배율을 다시 세움. 0.1.16 이전 파일(Pathway 등에 넣어 저장)은 배율이 저장되지 않았으므로,
@@ -340,8 +409,9 @@ class ConnectomeLayer(Tissue):
 
     def values(self) -> Signal:
         """현재 연결별 세기 (mV/스파이크, 부호 포함), 연결 순서"""
-        if self.p["w_syn"] != self._w_syn_built:                        # layer.p["w_syn"]을 바꿨으면 연결 세기에도 반영
-            self._build()                                                # (예전: 입력 자극에만 반영되고 연결은 그대로)
+        if self.p["w_syn"] != self._w_syn_built or self.gains != self.config.get("gains"):
+            self._build()          # layer.p["w_syn"]·layer.gains[...]를 직접 바꿨으면 연결 세기에도 반영 (예전: w_syn은 입력
+                                   # 자극에만, gains는 저장 파일에만 반영되어 저장 전후 동작이 달랐음)
         base = Signal(self.w_base)
         if not self.trainable:
             return base
@@ -376,6 +446,7 @@ class ConnectomeLayer(Tissue):
 
     def _needs_retro(self, x: Signal) -> bool:
         return learning_enabled() and (self.trainable or x.plastic or bool(self._probe)
+                                       or any(getattr(self, n).needs_retro() for n in self._extensions)
                                        or (self.neuron_params and isinstance(self.bias, Synapse)))
 
     @staticmethod
@@ -475,6 +546,7 @@ class ConnectomeLayer(Tissue):
             values = values * self._probe["edge"]
         probe_n = self._probe.get("neuron")
         M, MT = K.matrices(self.wiring, values.data)                       # 순전파당 한 번만
+        extra = self._extra_paths()                                          # 추가 연결 (없으면 [])
         if seed is None:
             seed = int(np.random.SeedSequence().generate_state(1)[0])
         in_idx, regular = self.in_idx, self.input_mode == "regular"
@@ -571,7 +643,7 @@ class ConnectomeLayer(Tissue):
                 else:
                     refr = Signal(xp.where(spk.data > 0, rfc_set, refr.data - 1))   # 효과기가 바꾼 발화로
                 sent = spk if blocked is None else scaled(spk, blocked)    # Shibire: 발화는 하지만 전달 없음
-                buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring, binary=binary)
+                buf[(s + dly) % R] = self._send(sent, values, M, MT, extra, binary)
                 if obs is not None:
                     obs.step(s, sent.data, u=uu[0], act=act, fired=spk.data)     # fired: Shibire로 막혀도 실제 발화
                 release(spk, sent, spk_raw)
@@ -627,6 +699,7 @@ class ConnectomeLayer(Tissue):
             values = values * self._probe["edge"]
         probe_n = self._probe.get("neuron")
         M, MT = K.matrices(self.wiring, values.data)
+        extra = self._extra_paths()
         if seed is None:
             seed = int(np.random.SeedSequence().generate_state(1)[0])
         in_idx, regular = self.in_idx, self.input_mode == "regular"
@@ -688,7 +761,7 @@ class ConnectomeLayer(Tissue):
                 if rec is not None:
                     rec.append(spk.data[rec_idx].T.copy())
                 sent = spk if blocked is None else spk * blocked
-                buf[(s + dly) % R] = K.propagate(sent, values, M, MT, self.wiring)
+                buf[(s + dly) % R] = self._send(sent, values, M, MT, extra, False)
                 if obs is not None:
                     obs.step(s, sent.data, fired=spk.data)
             return (counts, phase, *[st[k] for k in names], *buf)
@@ -720,6 +793,7 @@ class ConnectomeLayer(Tissue):
             values = values * self._probe["edge"]
         probe_n = self._probe.get("neuron")
         M, MT = K.matrices(self.wiring, values.data)
+        extra = self._extra_paths()
         in_idx = self.in_idx
         rec = [] if record is not None else None
         rec_idx = B.to(np.asarray(record), self.device) if record is not None else None
@@ -738,7 +812,7 @@ class ConnectomeLayer(Tissue):
             for s in range(s0, s1):
                 if trunc and s and s % trunc == 0:
                     V, r = _cut(V), _cut(r)
-                I = K.propagate(r if blocked is None else r * blocked, values, M, MT, self.wiring)
+                I = self._send(r if blocked is None else r * blocked, values, M, MT, extra, False)
                 x_in = frame(s, steps)
                 if act_idx is not None:
                     x_in = concat([x_in, level])
@@ -768,6 +842,8 @@ class ConnectomeLayer(Tissue):
         if not isinstance(self.neuron, str) and self.config.get("neuron") is None:
             raise ValueError(f"{type(self.neuron).__name__}이 등록되지 않아 저장할 수 없음 - @fd.neurons.register")
         cfg = dict(self.config, gains=dict(self.gains), **self._current_config())
+        cfg["extensions"] = [dict(name=n, module=type(e).__module__, cls=type(e).__name__, kwargs=e.extension_config())
+                             for n, e in self.extensions().items()]
         arrays = {"format": np.array(self.FORMAT), "version": np.array(__version__),
                   "config": np.array(json.dumps(cfg, ensure_ascii=False))}
         arrays.update(self.circuit.to_arrays("circuit."))
@@ -794,19 +870,35 @@ class ConnectomeLayer(Tissue):
         cfg = json.loads(str(d["config"]))
         cfg.setdefault("timing", "legacy")                                 # 0.1.15 이전 파일은 그때 방식으로
         cfg.setdefault("surrogate_damp", 1.0)
+        exts = cfg.pop("extensions", [])
         layer = cls(Circuit.from_arrays(d, "circuit."), device=device, **cfg)
+        for e in exts:                                                     # 붙어 있던 확장을 같은 인자로 다시 붙임
+            import importlib
+            mod, cname = str(e.get("module", "")), str(e.get("cls", ""))
+            if not (mod == "flydnet" or mod.startswith("flydnet.")) or not cname.isidentifier():
+                # 파일에 적힌 아무 모듈·클래스나 불러 실행하면 남이 만든 파일로 코드가 돌 수 있음 (pickle과 같은 위험) →
+                # flydnet 안의 확장만. 직접 만든 확장은 같은 층을 만들어 붙인 뒤 layer.load_state로
+                raise ValueError(f"저장 파일의 확장 {mod}.{cname}은 flydnet 밖이라 자동으로 붙이지 않음 - 층을 만들고 그 확장을 "
+                                 "붙인 뒤 load_state로 불러올 것")
+            ext_cls = getattr(importlib.import_module(mod), cname, None)
+            if not (isinstance(ext_cls, type) and issubclass(ext_cls, Tissue) and hasattr(ext_cls, "extension_config")):
+                raise ValueError(f"저장 파일의 확장 {mod}.{cname}이 확장 규격(Tissue + extension_config)이 아님")
+            ext_cls(layer, name=e["name"], **e["kwargs"])
         layer._gains_in_config = True                                      # 이 형식은 배율을 config에 늘 담았음 (빠진 게 아님)
         layer.load_state({k[6:]: v for k, v in d.items() if k.startswith("state.")})
         layer._build()
         return layer
 
-    def calibrate(self, rates, target=20.0, iters: int = 20, tol: float = 0.1, seed: int = 0, step: float = 0.5,
-                  relay_hz: float | None = 5.0, max_gain: float = 1000.0, verbose: bool = False):
+    def calibrate(self, rates, target=None, iters: int = 20, tol: float = 0.1, seed: int = 0, step: float = 0.5,
+                  relay_hz: float | str | None = "auto", max_gain: float = 1000.0, verbose: bool = False):
         """가중치 자동 보정: 그룹마다 평균 발화율이 target이 되도록 그 그룹으로 들어오는 연결 종류의 배율(gains)을 조정
 
         rates:    대표 입력 (B, n_in) - 실제로 쓸 입력과 비슷하게
-        target:   {그룹: Hz} 또는 숫자 (출력 그룹 모두에, 기본 20 Hz). 예: {"KC": 5, "MBON": 20}
+        target:   {그룹: Hz} 또는 숫자 (출력 그룹 모두에). 기본 20 Hz. 예: {"KC": 5, "MBON": 20}
+                  연속값 뉴런(neuron="graded")은 Hz가 아니라 활동 (0 ~ r_max, 기본 10) - 기본 목표 r_max의 절반,
+                  목표·relay_hz는 r_max보다 작아야 함 (예전: 기본 20은 닿을 수 없어 배율만 상한까지 올라갔음)
         relay_hz: 입력 → 목표 그룹의 흥분성 경로 위에 있는 중간 그룹(중계)이 이보다 약하면 이 값까지 올림 (낮추지는 않음).
+                  "auto" (기본) = 스파이킹 뉴런 5 Hz, 연속값 뉴런 r_max의 4분의 1.
                   예전에는 목표 그룹으로 들어오는 연결만 키워서, 중간 층이 꺼져 있으면 배율이 256배가 돼도 출력이 0 Hz인
                   채로 끝났음. None이면 중계 그룹은 건드리지 않음
         max_gain: 그룹마다 이번 보정에서 곱할 수 있는 배율의 상한. 예전에는 상한이 없어, 입력이 거의 발화하지 않을 때
@@ -818,13 +910,26 @@ class ConnectomeLayer(Tissue):
         _C.integer("iters", iters, lo=0)
         _C.pos("step", step)
         _C.pos("tol", tol)
-        _C.optional(_C.pos, "relay_hz", relay_hz)
+        if relay_hz != "auto":
+            _C.optional(_C.pos, "relay_hz", relay_hz)
         _C.pos("max_gain", max_gain)
         self._silent_checked = True                                     # 바로 이것을 고치는 중 - "출력이 모두 0" 경고는 안 냄
-        tgt = {g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
+        rates = _batched(rates)
+        graded = self.neuron == "graded"
+        r_max = float(self.p.get("r_max", 10.0)) if graded else None
+        if target is None:
+            target = r_max / 2 if graded else 20.0
+        tgt ={g: float(target) for g in self.out_names} if isinstance(target, (int, float)) else dict(target)
         for g, v in tgt.items():
             if not (v > 0 and np.isfinite(v)):
                 raise ValueError(f"목표 발화율은 양수 (Hz): {g}={v} - 그룹을 끄려면 fd.genetics.silence")
+            if graded and v >= r_max:
+                raise ValueError(f"연속값 뉴런의 활동은 0 ~ r_max({r_max:g}) - 목표 {g}={v:g}에는 닿을 수 없음. "
+                                 f"r_max보다 작은 값으로 (기본: r_max의 절반 {r_max / 2:g})")
+        if relay_hz == "auto":                                          # 예전 기본 5 Hz - graded에서 r_max가 5 이하면 기본값만으로 오류였음
+            relay_hz = r_max / 4 if graded else 5.0
+        if graded and relay_hz is not None and relay_hz >= r_max:
+            raise ValueError(f"연속값 뉴런의 활동은 0 ~ r_max({r_max:g}) - relay_hz={relay_hz:g}는 r_max보다 작게 (또는 None)")
         for g in tgt:
             if g not in self.circuit.groups:
                 raise KeyError(f"회로에 없는 그룹: {g}")
@@ -881,13 +986,29 @@ class ConnectomeLayer(Tissue):
 
     def _calibrate_loop(self, iters, groups, tgt, relay, relay_hz, tol, step, max_gain, factor, capped, incoming, now,
                         measure, done, verbose):
-        """calibrate의 반복 (배율을 바꾸며 다시 잼). 마지막 측정값을 돌려줌"""
+        """calibrate의 반복 (배율을 바꾸며 다시 잼). 마지막 측정값을 돌려줌.
+        진동 막기: 목표 그룹이 목표를 넘었다 못 미쳤다를 연속 두 번 오가면 그 그룹의 보폭을 반으로 (한 번 넘었다 돌아오는
+        보통의 수렴은 그대로 - 예전과 같은 배율). 끝까지 못 닿으면 반복 중 목표에 가장 가까웠던 배율로 되돌림.
+        예전: 80% 손상 버섯체처럼 반응이 가파른 회로에서 같은 두 배율 사이를 오가다 (8 Hz ↔ 3 Hz) 끝난 값(목표 5 Hz의 1.6배)이 남음"""
+        st = {g: step for g in tgt}
+        side = {g: 0 for g in tgt}
+        flips = {g: 0 for g in tgt}
+
+        def err(m):
+            return max((abs(np.log(m[g] / tgt[g])) if m[g] > 0 else np.inf) for g in tgt)
+        best = (err(now), dict(self.gains), dict(factor), dict(now))
         for it in range(iters):
             if done(now):
                 break
             for g in groups:
                 if g in tgt:
-                    f = 2.0 if now[g] <= 0 else float(np.clip((tgt[g] / now[g]) ** step, 0.25, 4.0))
+                    sd = 0 if now[g] <= 0 else int(np.sign(tgt[g] - now[g]))
+                    flips[g] = flips[g] + 1 if sd and side[g] and sd != side[g] else 0
+                    side[g] = sd or side[g]
+                    if flips[g] >= 2:
+                        st[g] = max(st[g] / 2, step / 64)
+                        flips[g] = 0
+                    f = 2.0 if now[g] <= 0 else float(np.clip((tgt[g] / now[g]) ** st[g], 0.25, 4.0))
                 elif now[g] < relay_hz * (1 - tol):                         # 중계: 약할 때만 올림
                     f = 2.0 if now[g] <= 0 else float(np.clip((relay_hz / now[g]) ** step, 1.0, 4.0))
                 else:
@@ -903,9 +1024,16 @@ class ConnectomeLayer(Tissue):
             self._build()
             self.config["gains"] = dict(self.gains)
             now = measure()
+            if err(now) < best[0]:
+                best = (err(now), dict(self.gains), dict(factor), dict(now))
             if verbose:
                 from .._console import say
                 say(f"  보정 {it + 1}: " + ", ".join(f"{g} {now[g]:.1f} Hz" for g in groups), flush=True)
+        if not done(now) and best[0] < err(now):                          # 못 닿았으면 가장 가까웠던 배율로
+            self.gains, now = best[1], best[3]
+            factor.update(best[2])
+            self._build()
+            self.config["gains"] = dict(self.gains)
         return now
 
     # ─────────────── 신호 경로 ───────────────
@@ -921,19 +1049,9 @@ class ConnectomeLayer(Tissue):
         return out
 
     @staticmethod
-    def _bfs(graph: dict, start) -> dict:
-        """그룹 번호 → start에서의 홉 수"""
-        dist = {s: 0 for s in start}
-        frontier = list(start)
-        while frontier:
-            nxt = []
-            for a in frontier:
-                for b in graph.get(a, ()):
-                    if b not in dist:
-                        dist[b] = dist[a] + 1
-                        nxt.append(b)
-            frontier = nxt
-        return dist
+    def _bfs(graph: dict, start, stop=()) -> dict:
+        """그룹 번호 → start에서의 홉 수. stop에 있는 그룹은 닿기만 하고 그 너머로는 퍼지지 않음"""
+        return bfs(graph, start, stop)
 
     def _relay_groups(self, targets) -> list:
         """입력 → targets 흥분성 경로 위의 중간 그룹 (입력 그룹·그룹 밖 뉴런 "?" 제외), 입력에서 가까운 순.
@@ -953,8 +1071,9 @@ class ConnectomeLayer(Tissue):
         for a, bs in fwd_g.items():
             for b in bs:
                 rev_g.setdefault(b, set()).add(a)
-        fwd = self._bfs(fwd_g, starts)
-        bwd = self._bfs(rev_g, [gid[g] for g in targets])
+        tg = [gid[g] for g in targets]
+        fwd = self._bfs(fwd_g, starts, stop=tg)          # 목표를 지나 되돌아오는 고리는 중계가 아님
+        bwd = self._bfs(rev_g, tg, stop=starts)          # 입력으로 되돌아가는 우회 (버섯체 PN → MBON → PN → KC)도 아님
         skip = set(starts) | {gid[g] for g in targets} | {len(self._group_names) - 1}
         mid = sorted((i for i in fwd if i in bwd and i not in skip), key=lambda i: (fwd[i], i))
         return [self._group_names[i] for i in mid]
@@ -978,11 +1097,14 @@ class ConnectomeLayer(Tissue):
 
     def _input_spikes(self, r):
         """가장 활발한 입력 뉴런이 시행 하나에 내는 평균 스파이크 수 (입력 그룹이 없으면 None).
-        평균이 아니라 최대: 버섯체 PN의 절반처럼 일부러 입력 0인 뉴런이 섞여 있어도 오판하지 않게"""
-        if not self.n_in:
+        평균이 아니라 최대: 버섯체 PN의 절반처럼 일부러 입력 0인 뉴런이 섞여 있어도 오판하지 않게.
+        연속값 뉴런(graded)은 None: 입력·출력이 Hz가 아닌 활동값이라 '발화율 x 시간 = 스파이크 수'가 성립하지 않음
+        (예전: 활동 0~2를 Hz로 보고 calibrate가 "입력 뉴런이 거의 발화하지 않음"으로 멈췄음)"""
+        if not self.n_in or self.neuron == "graded":
             return None
         per = r[:, self.in_idx].mean(axis=0)
-        span = (self.t_ms - self.count_from_ms) / 1000.0
+        dt = self.p["dt"]
+        span = self._span(int(round(self.t_ms / dt)), int(round(self.count_from_ms / dt)), dt) / 1000.0   # 발화율과 같은 시간
         return float(per.max()) * span if per.size else 0.0
 
     def _quiet_inputs_msg(self, rates, spikes) -> str:
@@ -1023,9 +1145,11 @@ class ConnectomeLayer(Tissue):
         출력이 조용할 때 원인 찾기 - 경로가 없어 늘 0인 것과 경로는 있는데 약해서 끊긴 것을 구분.
         반환 Reach (print하면 표와 판정, .table은 pandas)"""
         import pandas as pd
-        import scipy.sparse as sps
+        rates = _batched(rates)
         c = self.circuit
-        A = sps.csr_matrix((np.ones(c.n_edges, np.int8), (c.pre, c.post)), shape=(c.N, c.N))
+        order = np.argsort(c.pre, kind="stable")                         # 보내는 뉴런 순 (CSR): 이웃 = post[indptr[i]:indptr[i+1]]
+        post_sorted = c.post[order]
+        indptr = np.concatenate([[0], np.cumsum(np.bincount(c.pre, minlength=c.N))])
         hop = np.full(c.N, np.inf)
         act = genetics_effects(self).get("act_idx")                       # activate로 자극하는 뉴런도 신호의 출발점
         frontier = np.unique(np.concatenate([B.numpy(self.in_idx)] + ([B.numpy(act)] if act is not None else [])))
@@ -1035,7 +1159,10 @@ class ConnectomeLayer(Tissue):
         d = 0
         while len(frontier):
             d += 1
-            nxt = np.unique(A[frontier].indices)
+            lo, hi = indptr[frontier], indptr[frontier + 1]
+            n_out = hi - lo
+            k = np.repeat(lo - np.concatenate([[0], np.cumsum(n_out)[:-1]]), n_out) + np.arange(n_out.sum())
+            nxt = np.unique(post_sorted[k])
             nxt = nxt[~np.isfinite(hop[nxt])]
             hop[nxt] = d
             frontier = nxt
@@ -1070,6 +1197,8 @@ class ConnectomeLayer(Tissue):
             tr += f" (종류 {len(self.log_scale.data):,}개가 배율 공유)"
         if self.neuron_params:
             tr += f", 뉴런 매개변수 그룹 {len(self.group_names)}개{' 학습' if isinstance(self.bias, Synapse) else ''}"
+        for n in self._extensions:
+            tr += f", {getattr(self, n).describe()}"
         if self._effects:
             tr += f", 켜진 효과기: {', '.join(map(repr, self._effects))}"
         if self.neuron == "lif" and self.timing != "brian":
@@ -1097,10 +1226,13 @@ class Reach:
     @property
     def break_at(self):
         """입력에서 가장 가까운 꺼진 중계·출력 그룹 (신호가 처음 끊기는 곳), 없으면 None.
-        경로가 아예 없는 출력(홉 수 무한)도 꺼진 것 - 예전에는 빼서 "출력까지 신호가 감"으로 잘못 판정했음"""
+        경로가 아예 없는 출력(홉 수 무한)도 꺼진 것 - 예전에는 빼서 "출력까지 신호가 감"으로 잘못 판정했음.
+        꺼진 출력이 없으면 None: 출력이 다른 경로로 신호를 받는데 꺼진 중계를 "끊긴 곳"으로 지목하지 않게"""
         t = self.table
+        if not self.silent_outputs:
+            return None
         dead = t[t.role.isin(["중계", "출력"]) & (t.rate_hz <= 0)]
-        return None if dead.empty else str(dead.iloc[0].group)
+        return str(dead.iloc[0].group)
 
     def __str__(self):
         t = self.table
@@ -1111,6 +1243,9 @@ class Reach:
         for _, r in far.iterrows():
             lines.append(f"  ! {r.group}: 뉴런 {r.unreachable:.0%}는 입력에서 가는 경로가 없음 (늘 0)")
         weak = t[(t.role == "출력") & (t.rate_hz > 0) & (t.rate_hz < self.weak_hz)]
+        if self.break_at is None:
+            for _, r in t[(t.role == "중계") & (t.rate_hz <= 0)].iterrows():
+                lines.append(f"  · 중계 {r.group}는 0 Hz (출력은 다른 경로로 신호를 받음)")
         if self.break_at is None and weak.empty:
             lines.append("  → 출력까지 신호가 감")
         elif self.break_at is None:
