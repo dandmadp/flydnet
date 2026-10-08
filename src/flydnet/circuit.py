@@ -217,6 +217,9 @@ class Circuit:
             except KeyError as e:
                 raise KeyError(f"names에 없는 노드: {e}") from None
             N = len(order)
+            if n is not None and n != N:                                # 예전: 조용히 무시 (연결 없는 노드가 빠진 회로)
+                raise ValueError(f"이름으로 만들면 노드 수는 이름 수({N}): n={n} - 연결 없는 노드까지 넣으려면 "
+                                 "names=[모든 노드 이름]으로")
         else:
             pre_i, post_i = pre.astype(np.int64), post.astype(np.int64)
             N = n if n is not None else len(meta) if meta is not None else                 int(max(pre_i.max(initial=-1), post_i.max(initial=-1))) + 1

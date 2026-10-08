@@ -15,6 +15,12 @@
   알림 (MinMaxScaler나 X / 255로). README·Learner 설명에 입력 범위 안내
 - **선택 옵션 `negative="onoff"`** (`RateEncoder`·`Learner`·`ConnectomeModel`): 부호 있는 특징을 ON(max(x, 0))·OFF(max(-x, 0))
   두 채널로 나눠 넣음 (시각계 ON/OFF 경로처럼). 기본은 `"clip"` (예전과 같은 값) - 기본으로 할지는 비교 실험 뒤에
+- **GPU `scatter_add` 계획 캐시가 제자리에서 바꾼 인덱스 배열을 알아채지 못하던 것** (이 버전 위 수정에서 생겼다가 고침):
+  같은 배열 객체면 예전 계획을 써서 `idx[:] = ...` 뒤의 기울기가 조용히 틀렸음 → 배열 내용의 지문(합·자리 가중합)도 비교
+- **`where(조건, 정수 신호, 0.5)`의 0.5가 0으로 잘리던 것**: 숫자를 늘 신호의 자료형으로 바꿨음 → 정수·불리언 신호와 숫자는
+  numpy 규칙대로 (float64). 실수 신호는 예전 그대로
+- `Circuit.from_edges(이름들, n=5)`: 이름으로 만들 때 n이 조용히 무시되던 것 → 이름 수와 다르면 오류 (연결 없는 노드는 names로)
+- `x[번호 신호, 0]` (튜플 안의 Signal 인덱스)가 IndexError → 됨
 - `fd.Signal(data, plastic)`의 plastic이 참·거짓이 아니어도 (`fd.Signal(x, 5)`) 조용히 bool로 바꾸던 것 → TypeError
 - `layer.calibrate(X, target)`에 numpy 숫자(`np.float32(5)`, `np.int64(10)`)를 주면 알기 어려운 TypeError → 숫자 하나로
 - 예제 `quickstart.py`: 분류 층에 seed가 없어 실행마다 결과가 달랐음 (엔진이 아니라 예제의 무작위 초기값) → seed=0

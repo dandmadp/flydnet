@@ -141,3 +141,52 @@ def test_signal_plastic_must_be_bool():
         with pytest.raises(TypeError, match="plastic"):
             fd.Signal(1.0, bad)
     assert fd.Signal(1.0, np.bool_(True)).plastic is True and fd.Signal(1.0, False).plastic is False
+
+
+# ─────────────── 버그 잡기 (전체 검증 전) ───────────────
+@needs_gpu
+def test_scatter_plan_notices_index_changed_in_place():
+    """같은 인덱스 배열(객체)을 제자리에서 바꾸면 계획을 다시 만듦 - 예전엔 객체만 보고 예전 계획을 써서 조용히 틀린 기울기
+    (겹침 없는 계획으로 [0, 0, 0, 0]을 더해 [1, 0, 0, 0], 맞는 값 [4, 0, 0, 0])"""
+    import cupy as cp
+    for first, second, want in (([0, 1, 2, 3], [0, 0, 0, 0], [4, 0, 0, 0]), ([0, 0, 1, 1], [3, 3, 2, 2], [0, 0, 2, 2]),
+                                ([0, 0, 1, 1], [0, 1, 2, 3], [1, 1, 1, 1])):
+        idx = cp.array(first)
+        B.scatter_add(cp.zeros(4, cp.float32), idx, cp.ones(4, cp.float32))
+        idx[:] = cp.array(second)
+        t = cp.zeros(4, cp.float32)
+        B.scatter_add(t, idx, cp.ones(4, cp.float32))
+        np.testing.assert_array_equal(cp.asnumpy(t), want)
+    s = fd.Signal(np.arange(4.0, dtype=np.float32), plastic=True, device="gpu")      # Signal 인덱싱 경로로도
+    idx = cp.array([0, 1, 2, 3])
+    s[idx].sum().retrograde()
+    s.retro = None
+    idx[:] = 1
+    s[idx].sum().retrograde()
+    np.testing.assert_array_equal(B.numpy(s.retro), [0, 4, 0, 0])
+
+
+def test_where_int_signal_with_float_number():
+    """where(정수 신호, 0.5): 예전엔 0.5를 신호의 정수형으로 바꿔 0 (조용히). numpy처럼 실수로. 실수 신호는 자료형 그대로"""
+    from flydnet.ganglion.signal import where
+    c = np.array([True, False])
+    np.testing.assert_array_equal(where(c, fd.Signal(np.array([3, 4])), 0.5).numpy(), np.where(c, [3, 4], 0.5))
+    assert where(c, fd.Signal(np.array([3.0, 4.0], np.float32)), 0.5).dtype == np.float32
+    assert where(c, fd.Signal(np.array([True, False])), 2).numpy().tolist() == [1, 2]
+
+
+def test_getitem_with_signal_inside_tuple():
+    """x[번호 신호, 0]: 예전엔 IndexError (튜플 안의 신호를 배열로 바꾸지 않음)"""
+    x = fd.Signal(np.arange(12.0).reshape(3, 4), plastic=True)
+    y = x[fd.Signal(np.array([0, 2, 2])), 1]
+    np.testing.assert_array_equal(y.numpy(), [1, 9, 9])
+    y.sum().retrograde()
+    assert x.retro[:, 1].tolist() == [1, 0, 2] and x.retro.sum() == 3
+
+
+def test_from_edges_names_and_n_must_agree():
+    """이름으로 만들 때 n을 주면 조용히 무시됐음 (연결 없는 노드가 빠진 회로) → 다르면 오류"""
+    with pytest.raises(ValueError, match="names"):
+        fd.Circuit.from_edges(["a"], ["b"], n=5)
+    assert fd.Circuit.from_edges(["a"], ["b"], n=2).N == 2
+    assert fd.Circuit.from_edges(["a"], ["b"], names=["a", "b", "c"]).N == 3

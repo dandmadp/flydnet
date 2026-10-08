@@ -506,6 +506,8 @@ class Signal:
     def __getitem__(self, idx):
         if isinstance(idx, Signal):
             idx = idx.data
+        elif isinstance(idx, tuple) and any(isinstance(p, Signal) for p in idx):   # x[번호 신호, 0] (예전: IndexError)
+            idx = tuple(p.data if isinstance(p, Signal) else p for p in idx)
         x = self.data
         xp = self.xp
 
@@ -657,7 +659,13 @@ def where(cond, a, b) -> Signal:
     ref = a if isinstance(a, Signal) else b if isinstance(b, Signal) else None
     if ref is None:
         ref = Signal(B.xp(B.device_of(c)).zeros((), dtype=np.float32))
-    cast = lambda v: v if isinstance(v, Signal) else Signal(ref.xp.asarray(v, dtype=ref.dtype))
+    def cast(v):
+        if isinstance(v, Signal):
+            return v
+        # 정수·불리언 신호와 숫자 하나: numpy 규칙대로 (정수 신호 + 0.5 → float64). 예전: 늘 신호의 자료형으로 바꿔
+        # where(정수 신호, 0.5)의 0.5가 0으로 잘렸음. 실수 신호는 예전 그대로 (그 자료형으로)
+        dt = np.result_type(ref.dtype, v) if ref.dtype.kind in "biu" and np.ndim(v) == 0 else ref.dtype
+        return Signal(ref.xp.asarray(v, dtype=dt))
     a, b = cast(a), cast(b)
     xp = ref.xp
     c = B.to(c, ref.device) if hasattr(c, "shape") else c                 # 조건을 신호의 장치로 (numpy 조건 + GPU 신호, GPU 조건 +

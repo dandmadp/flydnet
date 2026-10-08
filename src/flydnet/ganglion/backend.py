@@ -130,9 +130,10 @@ def _scatter_plan(shape, idx):
     정렬 키 = 칸 번호 x n + 원래 자리 → 겹치는 칸 안의 덧셈 순서가 원래 자리 순서로 정해짐 (정렬 알고리즘과 상관없이)"""
     cp = sys.modules["cupy"]
     key = (id(idx), tuple(shape))
+    fp = _index_fingerprint(idx) if isinstance(idx, cp.ndarray) else None
     hit = _PLANS.get(key)
-    if hit is not None and hit[0] is idx:
-        return hit[1]
+    if hit is not None and hit[0] is idx and hit[1] == fp:          # 같은 객체 + 같은 내용 (제자리에서 바꾼 배열은 다시 만듦)
+        return hit[2]
     sel = cp.arange(int(np.prod(shape)), dtype=cp.int64).reshape(shape)[idx]
     pos = sel.reshape(-1)
     n = len(pos)
@@ -148,8 +149,17 @@ def _scatter_plan(shape, idx):
     if isinstance(idx, cp.ndarray):                                   # 배열 하나일 때만 (튜플·슬라이스는 매번 새로)
         if len(_PLANS) > 64:
             _PLANS.clear()
-        _PLANS[key] = (idx, plan)                                     # 객체를 붙잡아 같은 주소의 다른 배열과 섞이지 않게
+        _PLANS[key] = (idx, fp, plan)                                 # 객체를 붙잡아 같은 주소의 다른 배열과 섞이지 않게
     return plan
+
+
+def _index_fingerprint(idx):
+    """인덱스 배열 내용의 지문 (모양, 자료형, 합, 자리 가중합) - 같은 객체를 제자리에서 바꾸면 달라짐. 예전엔 객체만 보고
+    예전 계획을 써서 겹침이 생긴 인덱스의 기울기가 조용히 틀렸음 (idx[:] = 0 → [1, 0, 0, 0], 맞는 값 [4, 0, 0, 0])"""
+    cp = sys.modules["cupy"]
+    f = idx.reshape(-1).astype(cp.int64)
+    w = cp.arange(len(f), dtype=cp.int64) % 65521 + 1
+    return (idx.shape, idx.dtype.str, int(f.sum()), int((f * w).sum()))
 
 
 def _scatter_add_gpu(target, idx, values):
