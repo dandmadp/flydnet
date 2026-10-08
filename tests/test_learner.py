@@ -16,7 +16,8 @@ def _data(n=60, d=6, classes=4, seed=0):
     r = np.random.default_rng(seed)
     centers = r.uniform(0, 1, (classes, d))
     y = np.arange(n) % classes
-    return (centers[y] + 0.05 * r.standard_normal((n, d))).astype(np.float32), y
+    X = centers[y] + 0.05 * r.standard_normal((n, d))
+    return np.clip(X, 0, None).astype(np.float32), y                     # 입력은 0 이상 (음수는 발화율 0으로 잘림 - 0.1.19부터 경고)
 
 
 def _L(**kw):

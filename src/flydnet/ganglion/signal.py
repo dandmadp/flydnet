@@ -51,6 +51,8 @@ class Signal:
     __array_priority__ = 1000                          # numpy 배열 @ Signal 같은 연산을 Signal 쪽이 처리
 
     def __init__(self, data, plastic: bool = False, device: str | None = None, dtype=None):
+        if not isinstance(plastic, (bool, np.bool_)):                  # 예전: bool(5)로 조용히 학습 신호가 됨 (fd.Signal(x, 5))
+            raise TypeError(f"plastic은 참·거짓 (True·False): {plastic!r} - 장치는 device=, 자료형은 dtype=")
         if isinstance(data, Signal):
             data = data.data
         elif hasattr(data, "detach") and hasattr(data, "cpu"):    # torch 텐서 → numpy (torch 연동)

@@ -150,6 +150,10 @@ learner.predict(X), learner.score(X, y)             # 라벨은 문자열 등 �
 learner.save("me.npz"); fd.Learner.load("me.npz")   # 불러온 뒤에도 계속 배움
 ```
 
+**입력은 0 이상으로.** 특징은 입력 뉴런의 발화율(0 이상)로 바뀌므로 음수는 0으로 잘린다 (음수가 5% 이상이면 경고).
+StandardScaler 대신 MinMaxScaler, 이미지는 `X / 255`. 부호에 뜻이 있으면 `fd.Learner(negative="onoff")` - 양수·음수를
+ON·OFF 두 채널로 나눠 넣음 (시각계 ON/OFF 경로처럼, `fd.RateEncoder`·`fd.ConnectomeModel`에도 같은 인자).
+
 | rule | 방식 | 냄새 24개, 6개씩 4번 차례로 | 한 번에 전부 |
 |---|---|---|---|
 | `"lda"` (기본) | 흐름 선형 판별 (Hayes & Kanan 2020): 클래스 평균 + 공유 공분산을 누적, 한 번 훑기 | **0.859** | **0.865** |

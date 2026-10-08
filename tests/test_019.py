@@ -76,3 +76,68 @@ def test_calibrate_accepts_numpy_scalar_target():
         tabs.append(L.calibrate(X, t, iters=3))
     for t in tabs[1:]:
         assert list(t.after_hz) == list(tabs[0].after_hz) and list(t.target_hz) == list(tabs[0].target_hz)
+
+
+# ─────────────── 음수 입력 (RateEncoder·Learner) ───────────────
+def test_rate_encoder_warns_once_on_negative_inputs():
+    """음수가 많은 입력 (StandardScaler 등): 예전엔 경고 없이 발화율 0으로 잘려 정확도가 조용히 떨어졌음
+    (보고된 예: Iris 0.867 → 0.733). 음수 비율 5% 이상이면 한 번 알림, 적으면 조용히"""
+    import warnings
+    X = np.random.default_rng(0).standard_normal((20, 8)).astype(np.float32)        # 음수 약 50%
+    for proj in ("random", None):
+        enc = fd.RateEncoder(8, 8 if proj is None else 30, projection=proj, device="cpu")
+        with pytest.warns(UserWarning, match="음수"):
+            enc(X)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            enc(X)                                                                  # 한 번만
+    few = np.abs(X)
+    few[0, 0] = -1.0                                                                # 음수 1/160 < 5%
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fd.RateEncoder(8, 30, device="cpu")(few)
+
+
+def test_learner_warns_on_negative_inputs():
+    X = np.random.default_rng(0).standard_normal((24, 6)).astype(np.float32)
+    y = np.arange(24) % 3
+    with pytest.warns(UserWarning, match="음수"):
+        fd.Learner(_rec(feedback_edges=True, strong=True), "IN", "O", t_ms=30, device="cpu").learn(X, y)
+
+
+def test_rate_encoder_onoff_channels():
+    """negative="onoff": 부호 있는 특징을 ON(max(x, 0))·OFF(max(-x, 0)) 두 채널로 (시각계 ON/OFF 경로처럼) - 음수 정보가
+    남고 경고 없음. 기본("clip")은 예전과 같은 값"""
+    import warnings
+    X = np.random.default_rng(1).standard_normal((5, 4)).astype(np.float32)
+    enc = fd.RateEncoder(4, 8, projection=None, negative="onoff", device="cpu")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        r = enc(X).numpy()
+    both = np.concatenate([np.maximum(X, 0), np.maximum(-X, 0)], 1)
+    np.testing.assert_allclose(r, both / both.max(1, keepdims=True) * 100, rtol=1e-6)
+    assert not np.array_equal(enc(X).numpy(), enc(-X).numpy())                       # 부호가 바뀌면 다른 발화율
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        clip = fd.RateEncoder(4, 4, projection=None, device="cpu")
+        assert np.array_equal(clip(np.abs(X)).numpy(), fd.RateEncoder(4, 4, projection=None, device="cpu")(np.abs(X)).numpy())
+    e2 = fd.RateEncoder(4, 30, negative="onoff", device="cpu")                      # 투영이면 2 x n_in 채널에서 모음
+    assert e2.P.shape == (30, 8) and e2(X).shape == (5, 30)
+    with pytest.raises(ValueError, match="2"):
+        fd.RateEncoder(4, 4, projection=None, negative="onoff", device="cpu")         # 1:1이면 n_out = 2 x n_in
+    with pytest.raises(ValueError, match="negative"):
+        fd.RateEncoder(4, 4, negative="abs", device="cpu")
+    L = fd.Learner(_rec(feedback_edges=True, strong=True), "IN", "O", t_ms=30, device="cpu", negative="onoff")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        L.learn(np.random.default_rng(0).standard_normal((24, 6)).astype(np.float32), np.arange(24) % 3)
+    assert L.encoders["default"].negative == "onoff"
+
+
+# ─────────────── Signal 인자 ───────────────
+def test_signal_plastic_must_be_bool():
+    """fd.Signal(1, 5): 예전엔 bool(5)로 조용히 학습 신호가 됨 → 참·거짓만 (numpy bool도)"""
+    for bad in (5, 0, 1.0, "yes", None):
+        with pytest.raises(TypeError, match="plastic"):
+            fd.Signal(1.0, bad)
+    assert fd.Signal(1.0, np.bool_(True)).plastic is True and fd.Signal(1.0, False).plastic is False

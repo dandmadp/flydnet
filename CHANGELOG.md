@@ -9,6 +9,13 @@
   → GPU에서도 정렬해 정해진 순서로 더함 (같은 입력이면 늘 같은 비트). 같은 인덱스 배열이면 정렬은 한 번만 해 두고 다시 씀 -
   예전보다 빠르거나 비슷 (시각계 크기 2.1 → 0.1 ms, 전체 뇌 연결 1,500만 개 → 칸 120개 18 → 8 ms). 연결마다 배율(`share="edge"`,
   기본)은 칸이 겹치지 않아 원래 결정론적이었음
+- **음수 입력이 경고 없이 0으로 잘리던 것** (`fd.RateEncoder`·`fd.GlomerularEncoder`, 그리고 이것을 쓰는 `fd.Learner`·
+  `fd.ConnectomeModel`): 입력은 발화율(0 이상)로 바뀌므로 음수는 0이 되어 그 정보가 사라짐 - 보고된 예: StandardScaler 입력에서
+  Iris 0.867 → 0.733, Wine 1.000 → 0.917, Digits 0.933 → 0.878 (0 ~ 1 입력 대비). 입력 칸의 5% 이상이 음수면 구조물마다 한 번
+  알림 (MinMaxScaler나 X / 255로). README·Learner 설명에 입력 범위 안내
+- **선택 옵션 `negative="onoff"`** (`RateEncoder`·`Learner`·`ConnectomeModel`): 부호 있는 특징을 ON(max(x, 0))·OFF(max(-x, 0))
+  두 채널로 나눠 넣음 (시각계 ON/OFF 경로처럼). 기본은 `"clip"` (예전과 같은 값) - 기본으로 할지는 비교 실험 뒤에
+- `fd.Signal(data, plastic)`의 plastic이 참·거짓이 아니어도 (`fd.Signal(x, 5)`) 조용히 bool로 바꾸던 것 → TypeError
 - `layer.calibrate(X, target)`에 numpy 숫자(`np.float32(5)`, `np.int64(10)`)를 주면 알기 어려운 TypeError → 숫자 하나로
 - 예제 `quickstart.py`: 분류 층에 seed가 없어 실행마다 결과가 달랐음 (엔진이 아니라 예제의 무작위 초기값) → seed=0
 

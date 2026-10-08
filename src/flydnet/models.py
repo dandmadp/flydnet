@@ -40,13 +40,15 @@ class ConnectomeModel(Pathway):
                 입력으로 되돌아가거나 출력을 지나 도는 고리는 경로가 아님) /
                 "input" (입력 그룹에서 나가는 연결 종류) / True (모든 연결) / False (커넥톰 고정, 분류 층만) / 목록
     calibrate:  True면 처음 본 데이터로 자동 보정 (calibrate_samples개까지)
+    negative:   음수 특징 - "clip" (0으로, 많으면 알림) / "onoff" (ON·OFF 두 채널, RateEncoder 쓸 때). 입력은 0 이상이
+                기본 (MinMaxScaler, X / 255 등)
     나머지 (t_ms, dt, input_mode, seed, device, 그 밖의 ConnectomeLayer 인자)는 커넥톰 층으로
     """
 
     def __init__(self, circuit, inputs, outputs, n_in: int, n_classes: int, encoder="auto", max_rate: float = 100.0,
                  target_hz="auto", trainable="path", calibrate: bool = True, calibrate_samples: int = 256,
                  t_ms: float = 50.0, dt: float = 0.5, input_mode: str = "regular", seed: int = 0,
-                 device: str | None = None, **layer_kw):
+                 device: str | None = None, negative: str = "clip", **layer_kw):
         _C.integer("n_in", n_in)
         _C.integer("n_classes", n_classes, lo=2)
         _C.pos("max_rate", max_rate)
@@ -62,7 +64,7 @@ class ConnectomeModel(Pathway):
             trainable = self._path_pairs(circuit, ins, outs) or False
         layer = ConnectomeLayer(circuit, inputs, outputs, t_ms=t_ms, dt=dt, input_mode=input_mode, trainable=trainable,
                                 device=dev, **layer_kw)
-        enc = self._encoder(encoder, circuit, ins, n_in, layer.n_in, max_rate, seed, dev)
+        enc = self._encoder(encoder, circuit, ins, n_in, layer.n_in, max_rate, seed, dev, negative)
         super().__init__(*([enc] if enc is not None else []), layer, Homeostasis(),
                          Projection(layer.n_out, n_classes, seed=seed, device=dev))
         if target_hz == "auto":
@@ -114,7 +116,7 @@ class ConnectomeModel(Pathway):
         return sorted(keys)
 
     @staticmethod
-    def _encoder(kind, circuit, ins, n_in, n_neurons, max_rate, seed, dev):
+    def _encoder(kind, circuit, ins, n_in, n_neurons, max_rate, seed, dev, negative="clip"):
         from .encoders import GlomerularEncoder, RateEncoder
         from .ganglion.tissue import Tissue
         if kind is None:
@@ -125,8 +127,12 @@ class ConnectomeModel(Pathway):
             return kind
         if kind not in ("auto", "rate", "glomeruli"):
             raise ValueError(f"encoder는 'auto', 'rate', 'glomeruli', 구조물, None: {kind!r}")
+        if negative not in ("clip", "onoff"):
+            raise ValueError(f"negative는 'clip' 또는 'onoff': {negative!r}")
+        if kind == "glomeruli" and negative == "onoff":
+            raise ValueError("negative='onoff'는 RateEncoder용 (사구체 반응은 0 이상) - encoder='rate'")
         glom = None
-        if kind in ("auto", "glomeruli") and len(ins) == 1 and circuit.meta is not None and \
+        if kind in ("auto", "glomeruli") and negative == "clip" and len(ins) == 1 and circuit.meta is not None and \
                 {"cell_sub_class", "cell_type"} <= set(circuit.meta.columns):
             try:
                 glom = GlomerularEncoder(circuit, ins[0], max_rate=max_rate, device=dev)
@@ -138,8 +144,9 @@ class ConnectomeModel(Pathway):
             return glom
         if glom is not None and glom.n_glomeruli == n_in:                   # 사구체 반응 데이터 (fd.door_task 등)
             return glom
-        return RateEncoder(n_in, n_neurons, max_rate=max_rate, seed=seed,
-                           projection=None if n_in == n_neurons else "random", device=dev)
+        one = n_in * (2 if negative == "onoff" else 1) == n_neurons       # 채널 하나 = 입력 뉴런 하나
+        return RateEncoder(n_in, n_neurons, max_rate=max_rate, seed=seed, negative=negative,
+                           projection=None if one else "random", device=dev)
 
     # ─────────────── 보정 ───────────────
     @property

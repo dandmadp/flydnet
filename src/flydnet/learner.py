@@ -5,6 +5,7 @@
   learner.learn(X_new, y_new)                     # 새 클래스: 이어서 추가, 앞에서 배운 것은 그대로
   learner.learn(X_img, y_img, source="image")     # 다른 종류(특징 수가 다른) 데이터: 입력 변환만 새로, 커넥톰·기억은 공유
   learner.predict(X), learner.score(X, y), learner.save("learner.npz"), fd.Learner.load("learner.npz")
+  입력은 0 이상 (MinMaxScaler, 이미지는 X / 255) - 음수는 발화율 0으로 잘림 (많으면 경고). 부호가 뜻이 있으면 negative="onoff"
 
 구조: 데이터 → 입력 변환(source마다) → 커넥톰 층 (스파이킹, 학습 안 함) → KC 발화율 → 기억(출력)
 rule
@@ -161,12 +162,14 @@ class Learner:
     epochs, rate: backprop의 learn() 한 번당 에폭 수·학습률 (적응형 가소성 = Adam)
     t_ms, target_hz, max_rate: 커넥톰 층 시뮬레이션 길이 (ms), 보정할 출력 평균 발화율 ("auto": ConnectomeModel과 같음),
                입력 변환의 최대 발화율 (Hz)
+    negative:  음수 특징 - "clip" (기본, 0으로 잘림, 많으면 알림) / "onoff" (ON·OFF 두 채널로, 부호 정보 유지).
+               입력은 0 이상이 기본: StandardScaler 대신 MinMaxScaler, 이미지는 X / 255
     나머지 인자는 ConnectomeLayer로 (dt, input_mode 등)
     """
 
     def __init__(self, circuit=None, inputs="PN", outputs="KC", rule: str = "lda", per_class: int = 1, shrink="auto",
                  epochs: int = 5, rate: float = 1e-3, t_ms: float = 50.0, target_hz="auto", max_rate: float = 100.0,
-                 batch: int = 256, seed: int = 0, device: str | None = None, **layer_kw):
+                 batch: int = 256, seed: int = 0, device: str | None = None, negative: str = "clip", **layer_kw):
         if rule not in RULES:
             raise ValueError(f"rule은 {RULES} 중 하나: {rule!r}")
         _C.integer("per_class", per_class)
@@ -179,7 +182,9 @@ class Learner:
             _C.pos("target_hz", target_hz)
         if shrink != "auto":
             _C.nonneg("shrink", shrink)
-        self.shrink = shrink
+        if negative not in ("clip", "onoff"):
+            raise ValueError(f"negative는 'clip'(음수를 0으로) 또는 'onoff'(ON·OFF 두 채널): {negative!r}")
+        self.shrink, self.negative = shrink, negative
         self.lda = None                       # lda
         self.circuit, self.inputs, self.outputs = circuit, inputs, outputs
         self.rule, self.per_class, self.epochs, self.rate = rule, per_class, epochs, float(rate)
@@ -211,7 +216,7 @@ class Learner:
         from .models import ConnectomeModel
         ins = [self.inputs] if isinstance(self.inputs, str) else list(self.inputs)
         enc = ConnectomeModel._encoder("auto", self.circuit, ins, n_in, self.layer.n_in, self.max_rate,
-                                       self.seed + len(self.encoders), self.device)
+                                       self.seed + len(self.encoders), self.device, self.negative)
         self.encoders[source], self.n_in[source] = enc, n_in
         return enc
 
@@ -375,7 +380,7 @@ class Learner:
     def _config(self):
         return dict(inputs=self.inputs, outputs=self.outputs, rule=self.rule, per_class=self.per_class, shrink=self.shrink,
                     epochs=self.epochs, rate=self.rate, t_ms=self.t_ms, target_hz=self.target_hz,
-                    max_rate=self.max_rate, batch=self.batch, seed=self.seed, layer_kw=self.layer_kw)
+                    max_rate=self.max_rate, batch=self.batch, seed=self.seed, negative=self.negative, layer_kw=self.layer_kw)
 
     def save(self, path):
         """파일 하나에 (설정, 라벨, 입력 변환·커넥톰 보정, 기억). 회로 자체는 저장하지 않음 - 불러올 때 같은 회로로"""

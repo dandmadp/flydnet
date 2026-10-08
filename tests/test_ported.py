@@ -15,6 +15,7 @@ def mb():
     return fd.Circuit.from_flywire()
 
 
+@pytest.mark.filterwarnings("ignore:RateEncoder 입력의")             # 음수를 0으로 자르는 공식을 일부러 시험
 def test_rate_encoder_identity_is_formula():
     """특징 하나 = 뉴런 하나: 음수는 0, 시료마다 최댓값 = max_rate"""
     x = np.random.default_rng(0).normal(size=(5, 12)).astype(np.float32)
@@ -81,6 +82,7 @@ def test_datasets_shapes():
     assert x.shape == (24, 30) and set(y) == {0, 1} and set(p) == {0, 1} and (x < 1).all()
 
 
+@pytest.mark.filterwarnings("ignore:RateEncoder 입력의")             # 표준 정규 특징 - extract 경로만 확인
 def test_train_linear_and_extract():
     rng = np.random.default_rng(0)
     X = rng.normal(size=(300, 5)).astype(np.float32); y = (X[:, 0] + X[:, 1] > 0).astype(int)
