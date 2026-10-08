@@ -357,6 +357,8 @@ class Learner:
         one = (X.ndim if hasattr(X, "ndim") else np.ndim(X)) == 1
         s = self.scores(X, source)
         if classes is not None:
+            if not len(list(classes)):                                    # 예전: 모든 점수가 -inf라 첫 클래스로 조용히
+                raise ValueError("classes가 비어 있음 - 고를 라벨을 하나 이상")
             m = np.full(len(self.classes), -np.inf)
             m[self._labels(list(classes), grow=False)] = 0
             s = s + m
@@ -368,7 +370,9 @@ class Learner:
     def score(self, X, y, source: str = "default", classes=None) -> float:
         """정확도"""
         y = list(y.tolist() if hasattr(y, "tolist") else y)
-        p = self.predict(X, source, classes)
+        p = np.atleast_1d(self.predict(X, source, classes))
+        if len(p) != len(y):                                              # 예전: zip이 짧은 쪽에 맞춰 조용히 잘랐음
+            raise ValueError(f"X와 y의 개수가 다름: {len(p)} 대 {len(y)}")
         return float(np.mean([_label(a) == _label(b) for a, b in zip(p, y)]))
 
     def __repr__(self):

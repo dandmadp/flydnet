@@ -519,7 +519,7 @@ class MushroomBodyOutput(Tissue):
 
     def activity(self, x):
         a = as_input(x, B.device_of(self.prototypes)).data
-        a = a.reshape(1, -1) if a.ndim == 1 else a.reshape(len(a), -1)   # 시료 하나 (n,)도 (예전: (n, 1)로 봄)
+        a = a.reshape(1, -1) if a.ndim == 1 else a.reshape(len(a), int(np.prod(a.shape[1:])))   # 시료 하나 (n,)도 (예전: (n, 1)로 봄)
         a = a.astype(self.prototypes.dtype, copy=False)
         if self.binary:
             return (a > 0).astype(a.dtype)
@@ -546,9 +546,7 @@ class MushroomBodyOutput(Tissue):
         s = self._scores(self.activity(x))
         xp = B.xp(B.device_of(s))
         if classes is not None:
-            mask = xp.full(self.n_classes, -xp.inf, dtype=s.dtype)
-            mask[xp.asarray(list(classes))] = 0
-            s = s + mask
+            s = s + B.class_mask(classes, self.n_classes, xp, s.dtype)
         out = B.numpy(s.argmax(1))
         return out[0] if np.ndim(x.data if isinstance(x, Signal) else x) == 1 else out
 

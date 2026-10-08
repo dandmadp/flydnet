@@ -231,7 +231,10 @@ def reinforce_(prototypes, count, a, y, per_class: int):
     a = _arr(a)
     k = per_class
     C = len(count) // k
-    y = B.to(B.check_labels(y, C), B.device_of(prototypes))
+    y = B.check_labels(y, C)
+    if len(a) != len(y):                                                 # 예전: 알기 어려운 IndexError (불리언 인덱스 길이)
+        raise ValueError(f"활동과 라벨의 개수가 다름: {len(a)} 대 {len(y)}")
+    y = B.to(y, B.device_of(prototypes))
     onehot = xp.eye(C, dtype=xp.int64)[y]
     rank = (xp.cumsum(onehot, axis=0) * onehot).sum(1) - 1               # 클래스 안 순번
     empty = count.reshape(C, k) == 0
@@ -262,7 +265,7 @@ def kenyon_code(x, w_pn_kc, k: int, projection=None, center: bool = True, binary
     W = _arr(w_pn_kc)
     xp = B.xp(B.device_of(W))
     a = B.to(_arr(x), B.device_of(W))
-    a = (a.reshape(1, -1) if a.ndim == 1 else a.reshape(len(a), -1)).astype(W.dtype, copy=False)   # 시료 하나 (n,)도
+    a = (a.reshape(1, -1) if a.ndim == 1 else a.reshape(len(a), int(np.prod(a.shape[1:])))).astype(W.dtype, copy=False)   # 시료 하나 (n,)도
     if projection is not None:
         a = a @ _arr(projection).T
     if center:

@@ -190,3 +190,60 @@ def test_from_edges_names_and_n_must_agree():
         fd.Circuit.from_edges(["a"], ["b"], n=5)
     assert fd.Circuit.from_edges(["a"], ["b"], n=2).N == 2
     assert fd.Circuit.from_edges(["a"], ["b"], names=["a", "b", "c"]).N == 3
+
+
+def test_scores_reject_label_count_mismatch():
+    """정확도에 개수가 다른 라벨: 예전엔 Learner.score가 zip으로 짧은 쪽만 (24개 중 10개로 0.6), readout.accuracy는 라벨 1개를
+    모든 예측과 비교 (조용히 틀림) → 오류. MushroomBodyOutput.learn·AssocReadout.step은 알기 어려운 IndexError → 같은 오류"""
+    r = np.random.default_rng(0)
+    X = r.random((24, 6)).astype(np.float32)
+    y = np.arange(24) % 3
+    L = fd.Learner(_rec(feedback_edges=True, strong=True), "IN", "O", t_ms=30, device="cpu").learn(X, y)
+    with pytest.raises(ValueError, match="개수"):
+        L.score(X, y[:10])
+    assert 0 <= L.score(X[0], y[:1]) <= 1                                       # 시료 하나도
+    for R in (fd.DopamineReadout, fd.AssocReadout):
+        m = R(6, 3, device="cpu").fit(X, y)
+        with pytest.raises(ValueError, match="개수"):
+            m.accuracy(X, y[:1])
+        with pytest.raises(ValueError, match="개수"):
+            m.step(X, y[:5])
+    with pytest.raises(ValueError, match="개수"):
+        fd.MushroomBodyOutput(6, 3, device="cpu").learn(X, np.r_[y, y[:6]])
+
+
+@needs_gpu
+def test_rate_encoder_without_projection_follows_to():
+    """RateEncoder(projection=None)는 투영 행렬이 없어 장치를 따로 기억 - 예전엔 .to('gpu') 뒤에도 CPU에서 계산"""
+    X = np.random.default_rng(0).random((4, 6)).astype(np.float32)
+    for neg, n_out in (("clip", 6), ("onoff", 12)):
+        e = fd.RateEncoder(6, n_out, projection=None, negative=neg, device="cpu")
+        ref = e(X).numpy()
+        assert e.to("gpu")(X).device == "gpu" and e.device == "gpu"
+        np.testing.assert_array_equal(e(X).numpy(), ref)
+        assert e.to("cpu")(X).device == "cpu"
+
+
+def test_predict_classes_must_be_valid():
+    """predict(classes=...): 빈 목록은 예전 Learner가 모든 점수 -inf로 첫 클래스를, 음수 번호는 파이썬 음수 인덱스로 뒤 클래스를
+    조용히 골랐음 (나머지는 알기 어려운 IndexError) → 알기 쉬운 오류. 빈 입력 예측은 빈 결과"""
+    r = np.random.default_rng(0)
+    X = r.random((24, 6)).astype(np.float32)
+    y = np.arange(24) % 3
+    models = [fd.AssocReadout(6, 3, device="cpu").fit(X, y), fd.DopamineReadout(6, 3, device="cpu").fit(X, y),
+              fd.MushroomBodyOutput(6, 3, device="cpu").learn(X, y)]
+    for m in models:
+        for bad in ([], [-1], [5]):
+            with pytest.raises(ValueError, match="classes|범위"):
+                m.predict(X[:3], classes=bad)
+        assert set(m.predict(X, classes=[1, 2]).tolist()) <= {1, 2}
+        assert m.predict(np.zeros((0, 6), np.float32)).shape == (0,)
+    L = fd.Learner(_rec(feedback_edges=True, strong=True), "IN", "O", t_ms=30, device="cpu").learn(X, y)
+    with pytest.raises(ValueError, match="비어"):
+        L.predict(X[:3], classes=[])
+
+
+def test_encoder_max_rate_zero_rejected():
+    """max_rate=0이면 모든 입력이 0 Hz (예전: 허용되어 조용히 입력이 사라짐)"""
+    with pytest.raises(ValueError, match="max_rate"):
+        fd.RateEncoder(6, 6, projection=None, max_rate=0, device="cpu")

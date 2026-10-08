@@ -21,6 +21,13 @@
   numpy 규칙대로 (float64). 실수 신호는 예전 그대로
 - `Circuit.from_edges(이름들, n=5)`: 이름으로 만들 때 n이 조용히 무시되던 것 → 이름 수와 다르면 오류 (연결 없는 노드는 names로)
 - `x[번호 신호, 0]` (튜플 안의 Signal 인덱스)가 IndexError → 됨
+- **정확도에 개수가 다른 라벨이 조용히 계산되던 것**: `Learner.score`는 zip으로 짧은 쪽만 (24개 중 10개로 0.6),
+  `DopamineReadout`·`AssocReadout.accuracy`는 라벨 1개를 모든 예측과 비교 → 오류. `MushroomBodyOutput.learn`·readout `step`의
+  알기 어려운 IndexError도 같은 오류로
+- **`predict(classes=...)`**: 빈 목록은 `Learner`가 모든 점수 -inf로 첫 클래스를, 음수 번호는 파이썬 음수 인덱스로 뒤 클래스를
+  조용히 골랐음 (`AssocReadout`·`DopamineReadout`·`MushroomBodyOutput`) → 알기 쉬운 오류 (공용 검사 하나로). 빈 입력 예측은 빈 결과
+- `RateEncoder(projection=None)`: `.to('gpu')` 뒤에도 CPU에서 계산하고 `.device`가 'cpu' → 옮긴 장치로
+- `RateEncoder`·`GlomerularEncoder(max_rate=0)`: 입력이 모두 0 Hz가 되는데 허용 → 오류
 - `fd.Signal(data, plastic)`의 plastic이 참·거짓이 아니어도 (`fd.Signal(x, 5)`) 조용히 bool로 바꾸던 것 → TypeError
 - `layer.calibrate(X, target)`에 numpy 숫자(`np.float32(5)`, `np.int64(10)`)를 주면 알기 어려운 TypeError → 숫자 하나로
 - 예제 `quickstart.py`: 분류 층에 seed가 없어 실행마다 결과가 달랐음 (엔진이 아니라 예제의 무작위 초기값) → seed=0

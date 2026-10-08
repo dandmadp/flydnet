@@ -64,7 +64,7 @@ class RateEncoder(Tissue):
                  projection: str | None = "random", device: str | None = None, negative: str = "clip"):
         _C.integer('n_in', n_in)
         _C.integer('n_out', n_out)
-        _C.nonneg('max_rate', max_rate)
+        _C.pos('max_rate', max_rate)                                   # 0이면 입력이 모두 0 Hz (예전: 허용)
         _C.integer('k', k)
         if negative not in ("clip", "onoff"):
             raise ValueError(f"negative는 'clip'(음수를 0으로) 또는 'onoff'(ON·OFF 두 채널): {negative!r}")
@@ -101,6 +101,13 @@ class RateEncoder(Tissue):
         r = to_rates(x, self.max_rate)
         return r.reshape(-1) if one else r
 
+    def _moved(self, device):
+        self._dev = device                                               # 투영이 없으면 장치를 따로 기억 (예전: .to 뒤에도 CPU에서 계산)
+
+    @property
+    def device(self) -> str:
+        return B.device_of(self.P) if self.P is not None else self._dev
+
     def extra_repr(self):
         return f"{self.n_in} → {self.n_out}, 최대 {self.max_rate} Hz" + (", ON·OFF 두 채널" if self.negative == "onoff" else "")
 
@@ -114,7 +121,7 @@ class GlomerularEncoder(Tissue):
     """
 
     def __init__(self, circuit, group: str = "PN", max_rate: float = 100.0, device: str | None = None):
-        _C.nonneg('max_rate', max_rate)
+        _C.pos('max_rate', max_rate)                                   # 0이면 입력이 모두 0 Hz (예전: 허용)
         super().__init__()
         if circuit.meta is None:
             raise ValueError("circuit.meta(세포 주석)가 필요함 - Circuit.from_flywire()로 만든 회로를 쓸 것")

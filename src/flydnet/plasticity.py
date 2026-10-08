@@ -98,7 +98,7 @@ class DopamineReadout(_Saveable):
 
     def activity(self, X):
         X = _arr(X, self.device)
-        X = X.reshape(1, -1) if X.ndim == 1 else X.reshape(len(X), -1)    # 시료 하나 (n,)도 (예전: (n, 1)로 봐서 오류)
+        X = X.reshape(1, -1) if X.ndim == 1 else X.reshape(len(X), int(np.prod(X.shape[1:])))    # 시료 하나 (n,)도 (예전: (n, 1)로 봐서 오류)
         X = X.astype(np.float32, copy=False)
         if self.binary:
             return (X > 0).astype(np.float32)
@@ -115,10 +115,7 @@ class DopamineReadout(_Saveable):
     def _masked(self, s, classes):
         if classes is None:
             return s
-        xp = self.xp
-        mask = xp.full(self.n_classes, -xp.inf, dtype=s.dtype)
-        mask[xp.asarray(list(classes))] = 0
-        return s + mask
+        return s + B.class_mask(classes, self.n_classes, self.xp, s.dtype)
 
     def predict(self, X, classes=None) -> np.ndarray:
         """예측 클래스 (numpy). 시료 하나 (n,)면 클래스 번호 하나"""
@@ -145,6 +142,8 @@ class DopamineReadout(_Saveable):
         """샘플 묶음 하나로 시냅스 갱신 (묶음 안 변화는 평균). classes: 경쟁할 출력 (bidir)"""
         xp = self.xp
         a = self.activity(X)
+        if len(a) != len(B.sample_labels(y)):
+            raise ValueError(f"X와 y의 개수가 다름: {len(a)} 대 {len(B.sample_labels(y))}")
         if self.mode == "assoc":                                          # 누적 평균: 순서가 바뀌어도 결과 같음
             da = self.dopamine(X, y, classes)
             self.n_seen += da.sum(0)
@@ -175,7 +174,10 @@ class DopamineReadout(_Saveable):
         return self
 
     def accuracy(self, X, y, classes=None) -> float:
-        return float((self.predict(X, classes) == B.sample_labels(y)).mean())
+        p, y = np.atleast_1d(self.predict(X, classes)), B.sample_labels(y)
+        if len(p) != len(y):                                              # 예전: 라벨 1개면 모든 예측과 퍼져 비교 (조용히 틀림)
+            raise ValueError(f"X와 y의 개수가 다름: {len(p)} 대 {len(y)}")
+        return float((p == y).mean())
 
 
 def _take(X, idx):

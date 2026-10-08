@@ -262,6 +262,18 @@ def sample_labels(y, what: str = "라벨") -> np.ndarray:
     return y
 
 
+def class_mask(classes, n_classes: int, xp, dtype):
+    """predict(classes=...)의 마스크: 고를 클래스는 0, 나머지는 -inf. 비었거나 범위 밖(음수 포함)이면 오류 - 예전: 빈 목록은
+    모든 점수가 -inf라 0번 클래스로, 음수는 파이썬 음수 인덱스로 뒤쪽 클래스를 조용히 골랐음"""
+    c = np.asarray(list(classes))
+    if c.size == 0:
+        raise ValueError("classes가 비어 있음 - 고를 클래스를 하나 이상")
+    c = check_labels(c, n_classes, "classes")
+    mask = xp.full(n_classes, -xp.inf, dtype=dtype)
+    mask[to(c, "gpu" if xp is not np else "cpu")] = 0
+    return mask
+
+
 def check_labels(y, n_classes: int, what: str = "라벨") -> np.ndarray:
     """정수 라벨이 0 ~ n_classes−1 안인지 (음수는 파이썬 음수 인덱스로 조용히 엉뚱한 칸을 고르므로 오류)"""
     y = labels(y)
