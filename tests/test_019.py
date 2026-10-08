@@ -247,3 +247,22 @@ def test_encoder_max_rate_zero_rejected():
     """max_rate=0이면 모든 입력이 0 Hz (예전: 허용되어 조용히 입력이 사라짐)"""
     with pytest.raises(ValueError, match="max_rate"):
         fd.RateEncoder(6, 6, projection=None, max_rate=0, device="cpu")
+
+
+def test_numpy_int_seeds_and_single_items_accepted():
+    """seeds에 numpy 정수 (np.int64(6) 등)·목록 자리에 하나 (controls="shuffled", pairs="IN>H", screen에 Line 하나):
+    예전엔 'not iterable', 글자마다 쪼갠 "모르는 대조군: s"·"회로에 없는 연결 쌍: ['>', ...]", 'Line'에 items 없음"""
+    c = _rec(feedback_edges=True, strong=True)
+    run = lambda circ, s: 0.5 + 0.01 * s
+    rep = fd.compare(run, c, controls="shuffled", seeds=np.int64(3), verbose=False, check_repeat=False)
+    assert rep.seeds == [0, 1, 2] and list(rep.scores) == ["real", "shuffled"]
+    L = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair")
+    X = np.full((2, 6), 150, np.float32)
+    assert fd.explain(lambda l, s: l(X, seed=s).sum(), L, seeds=np.int64(2)).seeds == [0, 1]
+    assert fd.gradcheck(lambda l, s: l(X, seed=s).sum(), L, seeds=np.int32(2)).seeds == 2
+    with pytest.warns(UserWarning, match="seed 2개로는"):
+        df = fd.genetics.screen(lambda l, s: 1.0, L, fd.genetics.driver(c, group="H"), seeds=np.int64(2), verbose=False)
+    assert list(df.line) == ["H"]
+    assert np.array_equal(c.shuffled(pairs="IN>H").post, c.shuffled(pairs=["IN>H"]).post)
+    with pytest.raises(TypeError, match="정수"):
+        fd.compare(run, c, seeds=[0, 1.5, 2], verbose=False)

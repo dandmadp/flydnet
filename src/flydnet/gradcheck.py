@@ -73,7 +73,7 @@ class GradCheck:
 def gradcheck(score, layer, eps: float = 0.05, seed: int = 0, min_edges: int = 1, seeds=None) -> GradCheck:
     """연결 종류마다 역전파 기울기 대 유한 차분 (seeds면 그 seed들의 평균 출력으로). layer는 trainable인 ConnectomeLayer"""
     _C.pos('eps', eps)
-    seed_list = [seed] if seeds is None else (list(range(seeds)) if isinstance(seeds, int) else list(seeds))
+    seed_list = [seed] if seeds is None else _C.seed_list(seeds)
     if not seed_list:
         raise ValueError(f"seeds는 1개 이상: {seeds!r}")
     if not getattr(layer, "trainable", False):

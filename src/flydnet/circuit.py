@@ -406,6 +406,8 @@ class Circuit:
                  pairs/exclude는 별칭이 아닌 원래 그룹 이름 기준
         """
         _C.optional(_C.pos, 'local 반경', local[1] if local is not None else None)
+        pairs = [pairs] if isinstance(pairs, str) else pairs              # 쌍 하나 (예전: 글자마다 쌍으로 봄 - '>')
+        exclude = [exclude] if isinstance(exclude, str) else exclude
         rng = np.random.default_rng(seed)
         g = self.group_of()
         post = self.post.copy()

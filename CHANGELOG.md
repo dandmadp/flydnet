@@ -28,6 +28,10 @@
   조용히 골랐음 (`AssocReadout`·`DopamineReadout`·`MushroomBodyOutput`) → 알기 쉬운 오류 (공용 검사 하나로). 빈 입력 예측은 빈 결과
 - `RateEncoder(projection=None)`: `.to('gpu')` 뒤에도 CPU에서 계산하고 `.device`가 'cpu' → 옮긴 장치로
 - `RateEncoder`·`GlomerularEncoder(max_rate=0)`: 입력이 모두 0 Hz가 되는데 허용 → 오류
+- seeds에 numpy 정수 (`np.int64(6)`, `len(...)` 결과 등): `compare`·`explain`·`gradcheck`·`genetics.screen`이 'not iterable'
+  오류 → 받음 (공용 `_check.seed_list`, 목록 안의 실수 seed는 조용히 자르지 않고 오류)
+- 목록 자리에 하나: `compare(controls="shuffled")`가 글자마다 대조군으로 봐서 "모르는 대조군: s", `circuit.shuffled(pairs="PN>KC")`가
+  "회로에 없는 연결 쌍: ['>', ...]", `genetics.screen`에 Line 하나가 AttributeError → 하나로 받음
 - `fd.Signal(data, plastic)`의 plastic이 참·거짓이 아니어도 (`fd.Signal(x, 5)`) 조용히 bool로 바꾸던 것 → TypeError
 - `layer.calibrate(X, target)`에 numpy 숫자(`np.float32(5)`, `np.int64(10)`)를 주면 알기 어려운 TypeError → 숫자 하나로
 - 예제 `quickstart.py`: 분류 층에 seed가 없어 실행마다 결과가 달랐음 (엔진이 아니라 예제의 무작위 초기값) → seed=0

@@ -49,6 +49,19 @@ def integer(name, v, lo: int = 1):
     return int(v)
 
 
+def seed_list(seeds, name: str = "seeds") -> list:
+    """seed 개수(정수 - numpy 정수도) 또는 목록 → 목록. 예전엔 isinstance(seeds, int)라 np.int64(6)이 'not iterable' 오류"""
+    if isinstance(seeds, numbers.Integral) and not isinstance(seeds, bool):
+        return list(range(int(seeds)))
+    if isinstance(seeds, (str, bytes)) or not hasattr(seeds, "__iter__"):
+        raise TypeError(f"{name}는 개수(정수) 또는 seed 목록: {seeds!r}")
+    out = list(seeds)
+    bad = [s for s in out if isinstance(s, bool) or not isinstance(s, numbers.Integral)]
+    if bad:
+        raise TypeError(f"{name}의 seed는 정수: {bad[:3]}")
+    return [int(s) for s in out]
+
+
 def optional(check, name, v, *a, **k):
     return v if v is None else check(name, v, *a, **k)
 

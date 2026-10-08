@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from . import _check as _C
 import contextlib
+import numbers
 import re
 
 import numpy as np
@@ -322,10 +323,12 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     effector: "silence" / "block" / "activate"
     반환 표: 집단, 뉴런 수, 기준 평균, 조작 평균, 변화, 변화 비율, p (부호 뒤집기 순열 검정),
             p_holm (집단 수만큼 여러 번 시험한 것을 보정), 변화가 큰 순. seed 6개 미만이면 p < 0.05가 불가능해 경고"""
-    if hasattr(seeds, "__len__") and not len(seeds):
-        raise ValueError("seeds 목록이 비어 있음")
-    if not hasattr(seeds, "__len__"):
+    if isinstance(seeds, numbers.Integral) and not isinstance(seeds, bool):
         _C.integer("seeds", seeds)
+    elif not len(_C.seed_list(seeds)):
+        raise ValueError("seeds 목록이 비어 있음")
+    if isinstance(lines_, Line):                                     # 집단 하나도 (예전: 'Line' object has no attribute 'items')
+        lines_ = {lines_.name: lines_}
     _C.pos('hz', hz)
     from ._console import say
     from .controls import sign_flip_p
@@ -335,7 +338,7 @@ def screen(measure, layer, lines_: dict, effector: str = "silence", seeds=5, hz:
     if not lines_:
         raise ValueError("lines_가 비어 있음 - {이름: Line} (fd.genetics.lines(...) 등)")
     import warnings
-    seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    seeds = _C.seed_list(seeds)
     if len(set(seeds)) != len(seeds):                               # 같은 seed = 같은 짝을 두 번 세어 p가 작아짐 (유사 반복)
         raise ValueError(f"seeds에 같은 값이 있음: {seeds} - 짝마다 다른 seed")
     min_p = 2 / 2 ** len(seeds)                                    # 부호 뒤집기 검정이 낼 수 있는 가장 작은 p

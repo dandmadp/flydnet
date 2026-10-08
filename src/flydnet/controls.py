@@ -344,13 +344,15 @@ def compare(run, circuit, controls=("shuffled",), seeds=5, chance: float | None 
     _C.optional(_C.finite, 'chance', chance)
     _C.optional(_C.unit, 'ceiling', ceiling)
     _C.nonneg('floor_margin', floor_margin)
+    if isinstance(controls, (str, Control)) or callable(controls):  # 하나만 (예전: 문자열을 글자마다 대조군으로 봄 - 's')
+        controls = [controls]
     controls = [_as_control(c) for c in controls]
     if not controls:
         raise ValueError("대조군이 없음 - 예: controls=['shuffled', 'randomized']")
     names = [c.name for c in controls]
     if len(set(names)) != len(names):
         raise ValueError(f"대조군 이름이 겹침: {names} (name=으로 구분)")
-    seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    seeds = _C.seed_list(seeds)
     if len(set(seeds)) != len(seeds):                               # 같은 seed = 같은 짝을 두 번 세어 p가 작아짐 (유사 반복)
         raise ValueError(f"seeds에 같은 값이 있음: {seeds} - 짝마다 다른 seed")
     if len(seeds) < 2:

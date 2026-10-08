@@ -105,7 +105,7 @@ def explain(score, layer, by: str | None = None, pathways: bool = False, verify:
     from . import genetics as G
     if not hasattr(layer, "_probe"):
         raise TypeError("ConnectomeLayer에서만 (fd.ConnectomeLayer)")
-    seeds = list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+    seeds = _C.seed_list(seeds)
     if not seeds:
         raise ValueError("seeds는 1개 이상")
     circuit, dev = layer.circuit, layer.device
