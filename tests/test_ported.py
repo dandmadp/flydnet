@@ -150,7 +150,7 @@ def test_kernel_compile_failure_falls_back():
     """전용 커널 컴파일이 실패해도 CuPy 기본 연산으로 같은 결과"""
     import numpy as np
     import pytest
-    import scipy.sparse as sps
+    sps = pytest.importorskip("scipy.sparse")                      # scipy는 선택 설치
     from flydnet.ganglion import backend as B, kernels as K
     if not B.gpu_available():
         pytest.skip("GPU 없음")

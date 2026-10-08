@@ -567,6 +567,8 @@ class Circuit:
         info = json.loads(str(d[prefix + "info"]))
         groups = {g: np.asarray(d[f"{prefix}group{i}"]) for i, g in enumerate(info["groups"])}
         meta = pd.DataFrame(info["meta"]) if info.get("meta") is not None else None
+        if meta is not None:                                       # JSON null → NaN (원래 주석과 같게 - pandas 1.x는 None으로 남았음)
+            meta = meta.where(meta.notna(), np.nan)
         pos = np.asarray(d[prefix + "pos"]) if prefix + "pos" in d else None
         return cls(np.asarray(d[prefix + "root_ids"]), groups, np.asarray(d[prefix + "pre"]),
                    np.asarray(d[prefix + "post"]), np.asarray(d[prefix + "weight"]), name=info["name"],

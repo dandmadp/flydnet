@@ -170,7 +170,7 @@ def test_gpu_spmm_segmented_is_exact_and_deterministic():
     """긴 행을 조각내는 전용 커널: scipy와 같은 값, 반복 실행 비트 단위로 같음 (cuSPARSE는 실행마다 다름),
     짧은 행(조각 하나)은 예전 커널(spmm_rm)과 비트 단위로 같음. 버섯체 APL처럼 입력이 수천 개인 행 포함"""
     import pytest
-    import scipy.sparse as sps
+    sps = pytest.importorskip("scipy.sparse")                      # scipy는 선택 설치
     from flydnet.ganglion import kernels as K
     if not fd.ganglion.backend.gpu_available() or K._cuda() is None:
         pytest.skip("GPU 없음")

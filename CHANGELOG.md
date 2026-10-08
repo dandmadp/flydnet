@@ -38,8 +38,11 @@
 - 예제 `visual_local_motion.py`: 칸별 평균을 torch 희소 행렬 곱(cuSPARSE)으로 해서 프로세스마다 마지막 자리가 달라 학습이
   갈렸음 (엔진 출력은 같음) → 밀집 행렬 곱 (104 x 6100, 약 2.5 MB). 이제 두 번 돌리면 학습 값·기록이 비트까지 같음
 
+- 저장한 층을 불러오면 회로 주석(meta)의 빈 값이 pandas 1.x에서 NaN 대신 None으로 돌아오던 것 → NaN으로 (주석으로 고르는
+  기능의 결과는 같았음, `meta.astype(str)` 비교 등이 달랐음). 최소 의존성 (numpy 1.23.5·pandas 1.5.3)에서 전체 테스트·골든 확인
+
 ### 그 밖
-- 테스트: `test_graphs.py`가 scipy 없이도 수집됨 (scipy가 필요한 시험만 건너뜀), `ref_data.py`는 원본 parquet가 없으면 알리고 건너뜀
+- 테스트: `test_graphs.py`가 scipy 없이도 수집됨 (scipy가 필요한 시험만 건너뜀), GPU 시험 2개가 GPU 확인 전에 scipy를 불러 실패하던 것, `ref_data.py`는 원본 parquet가 없으면 알리고 건너뜀
 - 문서: README의 원본 Brian2 비교 표를 저장된 결과(`validation/shiu2024/`)와 맞춤, lab 예제 실행 시간을 실제 기록으로
 - `validation/shiu2024/`의 `compare.py`·`run_brian2.py`: 파일을 열고 닫지 않던 것 (ResourceWarning 4개) → 읽고 쓰는 즉시 닫음
   (결과 파일은 같은 바이트)
