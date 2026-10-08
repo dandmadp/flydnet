@@ -105,7 +105,7 @@ for r, c in enumerate(cells):
     for t in range(len(OUT)):
         m = (out_cell == c) & (out_type == t)
         pool[r, t, np.nonzero(m)[0]] = 1.0 / m.sum()
-pool = pool.reshape(-1, engine.n_out).to_sparse().to(dev)        # (칸×8, n_out)
+pool = pool.reshape(-1, engine.n_out).to(dev)                   # (칸×8, n_out) 밀집 - torch 희소 곱(cuSPARSE)은 실행마다 반올림이 달라 학습이 갈렸음
 ix, iy = cell(in_np)
 in_cell = np.clip(ix, 0, nx - 1) * ny + np.clip(iy, 0, ny - 1)
 in_r = torch.tensor(np.searchsorted(cells, in_cell).clip(0, len(cells) - 1))

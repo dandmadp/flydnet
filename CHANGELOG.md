@@ -18,6 +18,8 @@
 - `fd.Signal(data, plastic)`의 plastic이 참·거짓이 아니어도 (`fd.Signal(x, 5)`) 조용히 bool로 바꾸던 것 → TypeError
 - `layer.calibrate(X, target)`에 numpy 숫자(`np.float32(5)`, `np.int64(10)`)를 주면 알기 어려운 TypeError → 숫자 하나로
 - 예제 `quickstart.py`: 분류 층에 seed가 없어 실행마다 결과가 달랐음 (엔진이 아니라 예제의 무작위 초기값) → seed=0
+- 예제 `visual_local_motion.py`: 칸별 평균을 torch 희소 행렬 곱(cuSPARSE)으로 해서 프로세스마다 마지막 자리가 달라 학습이
+  갈렸음 (엔진 출력은 같음) → 밀집 행렬 곱 (104 x 6100, 약 2.5 MB). 이제 두 번 돌리면 학습 값·기록이 비트까지 같음
 
 ### 그 밖
 - 테스트: `test_graphs.py`가 scipy 없이도 수집됨 (scipy가 필요한 시험만 건너뜀), `ref_data.py`는 원본 parquet가 없으면 알리고 건너뜀
