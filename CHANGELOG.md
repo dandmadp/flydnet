@@ -1,6 +1,6 @@
 # 변경 기록
 
-## [0.1.19] - 미배포
+## [0.1.19] - 2026-10-09
 
 ### 버그 수정
 - **파생 회로가 원래 회로와 배열을 공유하던 것** (`shuffled`·`randomized`·`shuffled_weights`·`normalized`·`with_sign`·`regroup`·`genetics.ablate`):
