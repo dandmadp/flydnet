@@ -174,7 +174,9 @@ class Tissue:
         def walk(t, prefix):
             for n, keep in t._buffers.items():
                 if keep and prefix + n in state:
-                    object.__setattr__(t, n, B.to(np.asarray(state[prefix + n]), dev))
+                    # 복사본으로 (예전: CPU에선 넘긴 배열을 그대로 써서, 같은 상태를 불러온 두 모델이 원형 등을 공유 -
+                    # 한쪽을 학습하면 다른 쪽과 넘긴 dict도 조용히 바뀌었음)
+                    object.__setattr__(t, n, B.to(np.array(state[prefix + n], copy=True), dev))
             for n, c in t._tissues.items():
                 walk(c, prefix + n + ".")
         bad = [f"{n}: 모양 {tuple(np.shape(arr))} ≠ {tuple(syn[n].shape)}" for n, arr in state.items()
@@ -187,7 +189,7 @@ class Tissue:
             raise ValueError("; ".join(bad))
         for n, arr in state.items():
             if n in syn:
-                new = B.to(np.asarray(arr, dtype=syn[n].data.dtype), dev)
+                new = B.to(np.array(arr, dtype=syn[n].data.dtype, copy=True), dev)   # 바꿔 끼울 때도 넘긴 배열과 따로
                 if B.device_of(syn[n].data) == dev and getattr(syn[n].data.flags, "writeable", True):   # CuPy는 이 속성이 없음
                     syn[n].data[...] = new                         # 제자리에: 같은 메모리를 쓰는 torch Parameter·옵티마이저가
                 else:                                               # 계속 이 값을 봄 (바꿔 끼우면 학습이 반영되지 않았음)
@@ -520,7 +522,7 @@ class MushroomBodyOutput(Tissue):
     def activity(self, x):
         a = as_input(x, B.device_of(self.prototypes)).data
         a = a.reshape(1, -1) if a.ndim == 1 else a.reshape(len(a), int(np.prod(a.shape[1:])))   # 시료 하나 (n,)도 (예전: (n, 1)로 봄)
-        a = a.astype(self.prototypes.dtype, copy=False)
+        a = P.check_activity(a.astype(self.prototypes.dtype, copy=False), self.n_in)
         if self.binary:
             return (a > 0).astype(a.dtype)
         xp = B.xp(B.device_of(a))

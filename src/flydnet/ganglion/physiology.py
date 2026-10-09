@@ -222,6 +222,16 @@ def recall(a, prototypes, count=None):
     return s if count is None else xp.where(_arr(count) == 0, -xp.inf, s)
 
 
+def check_activity(a, n_in: int):
+    """리드아웃에 들어오는 활동 (B, n) 확인: 특징 수, NaN·무한대. 예전: NaN 시료 하나로 배우면 그 클래스 원형(W)이 영영 NaN이
+    되고 (이후 예측은 조용히 0번 클래스로), 특징 수가 다르면 numpy 내부 오류 메시지"""
+    if a.shape[1] != n_in:
+        raise ValueError(f"입력 특징 수는 {n_in}: 받은 것 {a.shape[1]}")
+    if not bool(B.xp(B.device_of(a)).isfinite(a).all()):
+        raise ValueError("입력에 NaN 또는 무한대가 있음")
+    return a
+
+
 def reinforce_(prototypes, count, a, y, per_class: int):
     """도파민 강화 (배열 제자리 갱신): 클래스 y의 원형 per_class개 중
     - 빈 원형이 있으면 그 클래스의 i번째 샘플이 i번째 빈 원형을 채움

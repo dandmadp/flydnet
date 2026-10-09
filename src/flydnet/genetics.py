@@ -286,9 +286,8 @@ def ablate(circuit, line: Line):
         raise ValueError("다른 회로에서 고른 드라이버")
     gone = np.zeros(circuit.N, bool); gone[line.idx] = True
     keep = ~(gone[circuit.pre] | gone[circuit.post])
-    from .circuit import Circuit
-    return Circuit(circuit.root_ids, circuit.groups, circuit.pre[keep], circuit.post[keep], circuit.weight[keep],
-                   name=f"{circuit.name} [제거: {line.name}]", meta=circuit.meta, pos=circuit.pos)
+    return circuit._derive(f"{circuit.name} [제거: {line.name}]", pre=circuit.pre[keep], post=circuit.post[keep],
+                           weight=circuit.weight[keep])
 
 
 def effects(layer) -> dict:

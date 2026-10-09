@@ -323,9 +323,21 @@ class Circuit:
             a = np.asarray(v)
             if a.ndim != 1 or (a.size and (a.dtype.kind not in "iu" or a.min() < 0 or a.max() >= self.N)):
                 raise ValueError(f"regroup: 그룹 {k!r}의 값은 노드 번호 배열 (0 ~ {self.N - 1}): {v!r}"[:200])
-        return Circuit.from_edges(self.pre, self.post, self.weight, groups={k: np.asarray(v) for k, v in groups.items()},
-                                  meta=self.meta if self.meta is not None else pd.DataFrame(index=range(self.N)),
-                                  pos=self.pos, name=self.name, rest=rest)._with_ids(self.root_ids)
+        return Circuit.from_edges(self.pre.copy(), self.post.copy(), self.weight.copy(),
+                                  groups={k: np.asarray(v) for k, v in groups.items()},
+                                  meta=self.meta.copy() if self.meta is not None else pd.DataFrame(index=range(self.N)),
+                                  pos=self.pos.copy() if self.pos is not None else None, name=self.name,
+                                  rest=rest)._with_ids(self.root_ids.copy())
+
+    def _derive(self, name: str, pre=None, post=None, weight=None) -> "Circuit":
+        """이 회로에서 만든 새 회로: 주지 않은 배열(pre·post·weight)과 번호·그룹·주석·위치는 복사본으로. 예전엔 같은 배열을
+        그대로 넘겨, 대조군의 weight를 제자리에서 바꾸면 (ctrl.weight[m] = 0) 원래 회로도 조용히 바뀌었음 (fd.compare의 비교가
+        틀어짐)"""
+        own = lambda a, given: np.array(a, copy=True) if given is None else given
+        return Circuit(self.root_ids.copy(), {k: v.copy() for k, v in self.groups.items()}, own(self.pre, pre),
+                       own(self.post, post), own(self.weight, weight), name=name,
+                       meta=self.meta.copy() if self.meta is not None else None,
+                       pos=self.pos.copy() if self.pos is not None else None)
 
     def _with_ids(self, ids):
         self.root_ids = np.asarray(ids, np.int64)
@@ -451,8 +463,7 @@ class Circuit:
             what += f" local r={local[1]:g}"
         if merge:
             what += f" merge {'+'.join(sorted(set(merge.values())))}"
-        return Circuit(self.root_ids, self.groups, self.pre, post, self.weight,
-                       name=f"{self.name} [shuffled{what}]", meta=self.meta, pos=self.pos)
+        return self._derive(f"{self.name} [shuffled{what}]", post=post)
 
     def _pair_index(self):
         """(보내는 그룹, 받는 그룹) 쌍마다 연결 번호들"""
@@ -485,8 +496,7 @@ class Circuit:
                 size = min(total, size + 2 * (E - len(cand)) + 16)
             new_pre[idx] = src[cand[:E] // nd]
             new_post[idx] = dst[cand[:E] % nd]
-        return Circuit(self.root_ids, self.groups, new_pre, new_post, self.weight,
-                       name=f"{self.name} [randomized]", meta=self.meta, pos=self.pos)
+        return self._derive(f"{self.name} [randomized]", pre=new_pre, post=new_post)
 
     def shuffled_weights(self, seed: int = 0) -> "Circuit":
         """배선은 그대로, 그룹 쌍마다 시냅스 수(세기)만 연결끼리 섞음 (세기 분포가 중요한지 묻는 대조군)"""
@@ -494,8 +504,7 @@ class Circuit:
         w = self.weight.copy()
         for idx in self._pair_index().values():
             w[idx] = w[idx][rng.permutation(len(idx))]
-        return Circuit(self.root_ids, self.groups, self.pre, self.post, w,
-                       name=f"{self.name} [shuffled weights]", meta=self.meta, pos=self.pos)
+        return self._derive(f"{self.name} [shuffled weights]", weight=w)
 
     def subset(self, groups) -> "Circuit":
         """지정한 그룹들의 뉴런만 남긴 회로 (그 사이 연결만)"""
@@ -520,8 +529,7 @@ class Circuit:
         tot = np.bincount(self.post, weights=np.abs(self.weight), minlength=self.N)
         t = tot[self.post]
         w = np.where(t > 0, self.weight / np.where(t > 0, t, 1), 0).astype(np.float32)   # 입력이 모두 0인 뉴런은 0 (NaN 아님)
-        return Circuit(self.root_ids, self.groups, self.pre, self.post, w, name=f"{self.name} [정규화]",
-                       meta=self.meta, pos=self.pos)
+        return self._derive(f"{self.name} [정규화]", weight=w)
 
     def with_sign(self, pre_groups, sign: int) -> "Circuit":
         """pre_groups 뉴런이 보내는 연결을 모두 흥분(+1) 또는 억제(-1)로 바꾼 회로.
@@ -531,9 +539,7 @@ class Circuit:
         pre_groups = [pre_groups] if isinstance(pre_groups, str) else list(pre_groups)
         m = np.isin(self.pre, np.concatenate([self.groups[g] for g in pre_groups]))
         w = self.weight.copy(); w[m] = sign * np.abs(w[m])
-        return Circuit(self.root_ids, self.groups, self.pre, self.post, w,
-                       name=f"{self.name} [{'+'.join(pre_groups)} {'흥분' if sign > 0 else '억제'}]",
-                       meta=self.meta, pos=self.pos)
+        return self._derive(f"{self.name} [{'+'.join(pre_groups)} {'흥분' if sign > 0 else '억제'}]", weight=w)
 
     def summary(self) -> pd.DataFrame:
         """그룹 간 연결 요약 (시냅스 수, 흥분/억제)"""

@@ -266,3 +266,74 @@ def test_numpy_int_seeds_and_single_items_accepted():
     assert np.array_equal(c.shuffled(pairs="IN>H").post, c.shuffled(pairs=["IN>H"]).post)
     with pytest.raises(TypeError, match="정수"):
         fd.compare(run, c, seeds=[0, 1.5, 2], verbose=False)
+
+
+@pytest.mark.parametrize("make", ["shuffled", "randomized", "shuffled_weights", "normalized", "regroup", "ablate"])
+def test_derived_circuit_owns_arrays(make):
+    """파생 회로(대조군·정규화·재그룹·제거)의 배열을 제자리에서 바꿔도 원래 회로는 그대로 (예전엔 weight·pre·번호·그룹을 공유)"""
+    c = fd.Circuit.from_edges([0, 1, 2, 3], [1, 2, 3, 0], [1., 2, 3, 4], groups={"a": [0, 1]})
+    before = {k: np.array(v, copy=True) for k, v in
+              dict(w=c.weight, pre=c.pre, post=c.post, ids=c.root_ids, a=c.groups["a"]).items()}
+    d = {"shuffled": lambda: c.shuffled(0), "randomized": lambda: c.randomized(0),
+         "shuffled_weights": lambda: c.shuffled_weights(0), "normalized": lambda: c.normalized(),
+         "regroup": lambda: c.regroup({"b": [2]}),
+         "ablate": lambda: fd.genetics.ablate(c, fd.genetics.Line(c, [3], "x"))}[make]()
+    for arr in (d.weight, d.pre, d.post, d.root_ids, *d.groups.values()):
+        arr[:] = 0
+    after = dict(w=c.weight, pre=c.pre, post=c.post, ids=c.root_ids, a=c.groups["a"])
+    for k in before:
+        assert np.array_equal(before[k], after[k]), k
+
+
+def test_readout_state_is_snapshot():
+    """AssocReadout.state()가 복사본: 남겨 둔 값이 이어 배워도 그대로 (예전엔 CPU에서 내부 배열 그대로)"""
+    rng = np.random.default_rng(0)
+    X, y = rng.random((40, 20)).astype(np.float32), rng.integers(0, 3, 40)
+    r = fd.AssocReadout(20, 3, device="cpu")
+    r.step(X, y)
+    s = r.state()
+    snap = {k: np.array(v, copy=True) for k, v in s.items()}
+    r.step(X[:10] * 3, y[:10])
+    for k in snap:
+        assert np.array_equal(snap[k], s[k]), k
+
+
+def test_load_state_does_not_share_arrays():
+    """같은 상태를 불러온 두 모델이 배열을 공유하지 않음 (예전: 한쪽 학습이 다른 쪽과 넘긴 dict를 바꿈)"""
+    rng = np.random.default_rng(0)
+    X, y = rng.random((40, 20)).astype(np.float32), rng.integers(0, 3, 40)
+    M = fd.ganglion.MushroomBodyOutput
+    s = M(20, 3, device="cpu").learn(X, y).state()
+    keep = {k: np.array(v, copy=True) for k, v in s.items()}
+    a, b = M(20, 3, device="cpu").load_state(s), M(20, 3, device="cpu").load_state(s)
+    a.learn(X[:10] * 2, (y[:10] + 1) % 3)
+    assert np.array_equal(b.prototypes, keep["prototypes"]) and np.array_equal(b.count, keep["count"])
+    for k in keep:
+        assert np.array_equal(s[k], keep[k]), k
+    p = fd.Projection(4, 3, seed=0)
+    st = p.state()
+    st["W"].setflags(write=False) if "W" in st else None
+    q = fd.Projection(4, 3, seed=1).load_state(st)
+    assert all(np.array_equal(v, st[k]) for k, v in q.state().items())
+
+
+@pytest.mark.parametrize("kind", ["dopamine", "assoc", "mbo"])
+def test_readout_rejects_nonfinite_and_wrong_width(kind):
+    """리드아웃이 NaN·무한대·특징 수 틀린 입력을 거부 (예전: NaN 시료 하나로 배우면 원형이 영영 NaN, 이후 예측은 조용히 0번)"""
+    rng = np.random.default_rng(0)
+    X, y = rng.random((40, 20)).astype(np.float32), rng.integers(0, 3, 40)
+    make = {"dopamine": lambda: fd.DopamineReadout(20, 3, device="cpu"),
+            "assoc": lambda: fd.AssocReadout(20, 3, device="cpu"),
+            "mbo": lambda: fd.ganglion.MushroomBodyOutput(20, 3, device="cpu")}[kind]
+    learn = (lambda r: r.learn) if kind == "mbo" else (lambda r: r.step)
+    for bad in (np.nan, np.inf):
+        Z = X.copy()
+        Z[3, 5] = bad
+        r = make()
+        with pytest.raises(ValueError, match="NaN"):
+            learn(r)(Z, y)
+        learn(r)(X, y)
+        with pytest.raises(ValueError, match="NaN"):
+            r.predict(Z)
+    with pytest.raises(ValueError, match="특징 수"):
+        learn(make())(X[:, :10], y)

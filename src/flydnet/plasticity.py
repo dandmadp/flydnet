@@ -20,7 +20,7 @@ import json
 import numpy as np
 
 from .ganglion import backend as B
-from .ganglion.physiology import recall, reinforce_
+from .ganglion.physiology import recall, reinforce_, check_activity
 from .ganglion.signal import Signal
 
 
@@ -42,8 +42,9 @@ class _Saveable:
         raise NotImplementedError
 
     def state(self) -> dict:
+        """복사본 (예전: CPU에선 내부 배열 그대로라 best = r.state()로 남긴 값이 이어 배우면 조용히 바뀌었음)"""
         return {"format": np.array(type(self).__name__), "config": np.array(json.dumps(self._config())),
-                **{k: B.numpy(getattr(self, k)) for k in self._ARRAYS}}
+                **{k: np.array(B.numpy(getattr(self, k)), copy=True) for k in self._ARRAYS}}
 
     def save(self, path):
         from ._archive import write
@@ -99,7 +100,7 @@ class DopamineReadout(_Saveable):
     def activity(self, X):
         X = _arr(X, self.device)
         X = X.reshape(1, -1) if X.ndim == 1 else X.reshape(len(X), int(np.prod(X.shape[1:])))    # 시료 하나 (n,)도 (예전: (n, 1)로 봐서 오류)
-        X = X.astype(np.float32, copy=False)
+        X = check_activity(X.astype(np.float32, copy=False), int(self.W.shape[1]))
         if self.binary:
             return (X > 0).astype(np.float32)
         return X / self.xp.maximum(X.max(axis=1, keepdims=True), 1e-8)

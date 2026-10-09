@@ -3,6 +3,16 @@
 ## [0.1.19] - 미배포
 
 ### 버그 수정
+- **파생 회로가 원래 회로와 배열을 공유하던 것** (`shuffled`·`randomized`·`shuffled_weights`·`normalized`·`with_sign`·`regroup`·`genetics.ablate`):
+  대조군의 weight·pre·post·번호·그룹을 제자리에서 바꾸면 (`ctrl.weight[m] = 0`) 원래 회로도 조용히 바뀌어 비교가 틀어졌음
+  → 넘겨받지 않은 배열과 주석(meta·pos)은 복사본으로 (`Circuit._derive`)
+- **`AssocReadout`·`DopamineReadout`의 `state()`가 내부 배열을 그대로 돌려주던 것** (CPU): `best = r.state()`로 남긴 값이
+  이어 배우면 조용히 바뀌었음 → 복사본
+- **`load_state`가 넘긴 배열을 그대로 쓰던 것** (CPU, 버퍼 - `MushroomBodyOutput`의 원형·횟수 등): 같은 상태를 불러온 두 모델이
+  배열을 공유해, 한쪽을 학습하면 다른 쪽과 넘긴 dict도 조용히 바뀌었음 → 복사본으로
+- **리드아웃이 NaN·무한대 입력으로 배우던 것** (`DopamineReadout`·`AssocReadout`·`MushroomBodyOutput`): 시료 하나에 NaN이 있으면
+  그 클래스 원형(W)이 영영 NaN이 되고 이후 예측은 조용히 0번 클래스로 → 학습·예측 모두 오류. 특징 수가 다르면 numpy 내부 메시지
+  대신 "입력 특징 수는 20: 받은 것 10" (Learner·Connectome 층은 이미 막고 있었음)
 - **GPU 학습이 실행마다 미세하게 달라지던 것** (`share="pair"`, 세포 유형별 매개변수 `bias`·`t_mbr`·`train_neurons`,
   `Neuropil(train="pair")`, `fd.STDP`): 여러 연결이 값 하나를 함께 쓰면 역전파에서 같은 칸에 기울기를 더하는데, 그 덧셈이
   `cupy.add.at`(원자적 덧셈)이라 순서가 실행마다 달라 마지막 자리가 달랐고, 학습을 거듭하면 결과가 갈렸음 (시각계 예제).
