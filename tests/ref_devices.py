@@ -40,13 +40,13 @@ makers = {
     "Neuropil pair": (lambda d: fd.Neuropil(g, "in", "h1", train="pair", device=d), X),
     "RateEncoder": (lambda d: fd.RateEncoder(10, 10, device=d), X),
     "Homeostasis": (lambda d: fd.Homeostasis(), X),
-    "Connectome LIF": (lambda d: fd.Connectome(g, "in", "out", t_ms=30, trainable=True, input_mode="regular", device=d), X),
-    "Connectome LIF poisson": (lambda d: fd.Connectome(g, "in", "out", t_ms=30, trainable=True, device=d), X),
-    "Connectome graded": (lambda d: fd.Connectome(g, "in", "out", t_ms=5, neuron="graded", trainable=True, device=d), X / 100),
-    "Connectome Izhikevich": (lambda d: fd.Connectome(g, "in", "out", t_ms=20, neuron=fd.neurons.Izhikevich(),
+    "Connectome LIF": (lambda d: fd.ConnectomeLayer(g, "in", "out", t_ms=30, trainable=True, input_mode="regular", device=d), X),
+    "Connectome LIF poisson": (lambda d: fd.ConnectomeLayer(g, "in", "out", t_ms=30, trainable=True, device=d), X),
+    "Connectome graded": (lambda d: fd.ConnectomeLayer(g, "in", "out", t_ms=5, neuron="graded", trainable=True, device=d), X / 100),
+    "Connectome Izhikevich": (lambda d: fd.ConnectomeLayer(g, "in", "out", t_ms=20, neuron=fd.neurons.Izhikevich(),
                                                       trainable=True, device=d), X),
     "Pathway": (lambda d: fd.Pathway(fd.RateEncoder(10, 10, device=d),
-                                     fd.Connectome(g, "in", "out", t_ms=30, trainable=True, device=d),
+                                     fd.ConnectomeLayer(g, "in", "out", t_ms=30, trainable=True, device=d),
                                      fd.Homeostasis(), fd.Projection(6, 3, seed=1, device=d)), X),
 }
 
@@ -83,7 +83,7 @@ for name, (make, x) in makers.items():
     ok(f"{name}: 다시 .to('cpu') = CPU", close(yd, ya))
 
 # 학습 상태가 장치를 따라감: CPU에서 3스텝 → GPU로 옮겨 3스텝 = 처음부터 6스텝
-for Rule in (fd.Adaptive, lambda s, **k: fd.Plasticity(s, momentum=0.9, **k)):
+for Rule in (fd.AdaptivePlasticity, lambda s, **k: fd.Plasticity(s, momentum=0.9, **k)):
     p1, p2 = fd.Projection(10, 3, seed=0, device="cpu"), fd.Projection(10, 3, seed=0, device="cpu")
     r1, r2 = Rule(p1.named_synapses(), rate=0.01), Rule(p2.named_synapses(), rate=0.01)
     y = np.array([0, 1, 2, 0])
@@ -96,8 +96,8 @@ for Rule in (fd.Adaptive, lambda s, **k: fd.Plasticity(s, momentum=0.9, **k)):
 
 # torch 연결 장치: bridge 기울기 = 자체 엔진 기울기, torch.optim 한 스텝 = 자체 엔진 Plasticity 한 스텝
 for dev in ("cpu", "gpu"):
-    L1 = fd.Connectome(g, "in", "out", t_ms=30, trainable=True, input_mode="regular", device=dev)
-    L2 = fd.Connectome(g, "in", "out", t_ms=30, trainable=True, input_mode="regular", device=dev)
+    L1 = fd.ConnectomeLayer(g, "in", "out", t_ms=30, trainable=True, input_mode="regular", device=dev)
+    L2 = fd.ConnectomeLayer(g, "in", "out", t_ms=30, trainable=True, input_mode="regular", device=dev)
     br = fd.torch.bridge(L2, seed=2)
     tdev = "cuda" if dev == "gpu" else "cpu"
     xt = torch.tensor(X, device=tdev, requires_grad=True)

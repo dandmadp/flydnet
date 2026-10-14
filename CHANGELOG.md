@@ -1,5 +1,29 @@
 # 변경 기록
 
+## [0.1.20] - 미배포
+
+### 속도
+- **GPU: 발화하지 않은 뉴런의 연결 건너뛰기** (`kernels.spmm(skip_silent=True)`, LIF 순전파): 매 스텝 발화한 뉴런의 비트맵을
+  만들고 (전체 뇌 17KB), 희소 곱이 발화하지 않은 뉴런의 연결은 읽지 않음. 묶음이 작으면 스레드마다, 크면 연결 32개씩 투표
+  (`__ballot_sync`)로 통째로 건너뜀. 조각·더하기 순서가 그대로라 **결과는 비트 단위로 같음** (0을 더하지 않을 뿐).
+  직전 순전파에서 한 스텝에 발화한 뉴런이 5% 미만이고 연결 세기가 유한할 때만 씀 (촘촘하면 오히려 느림).
+  RTX 5070, 전체 뇌 시행 30개 200 ms: 2.85초 → 1.59초 (희소 곱 약 1,050 → 430 µs/스텝). 버섯체 특징 추출은 활동이 기준을
+  넘어 그대로
+
+### 바뀐 사용법
+- **같은 클래스의 두 번째 이름은 경고 (0.1.21에서 없어짐)**: `fd.Connectome` → `fd.ConnectomeLayer`, `fd.Adaptive` →
+  `fd.AdaptivePlasticity`, `fd.Glomeruli` → `fd.GlomerularEncoder`, `fd.Inhibition` → `fd.LateralInhibition`, `fd.MBON` →
+  `fd.MushroomBodyOutput`, `fd.tune` → `fd.tune_surrogate`. 지금은 쓰면 `FutureWarning`과 함께 원래 것을 돌려줌.
+  예제·테스트·README는 원래 이름으로. `fd.flywire()`·`fd.brain()`·`fd.worm()`과 인자 `damp`·`ckpt`는 그대로
+
+### 검증
+- **겹치는 연구 재현 예제 3개를 `lab/`으로** (`odor_task`·`door_task`·`door_mixtures`): 셋 다 "버섯체 PN→KC 스파이킹 특징 +
+  선형 분류, 실제 대 섞은 배선"으로 데이터만 다르고, 검증 기록(예제별 호출 함수)에서 다른 예제가 부르지 않는 함수가 없거나
+  `biconditional_mixtures` 하나뿐 (테스트가 따로 확인). 셋이 검증 예제 작업 시간의 약 40%였음. 0.1.18의 `door_assoc`·
+  `odor_ablation`과 같은 기준. 실행은 `python lab/odor_task.py` 등 그대로
+- `verify.py`의 "지난 실행과 다른 줄": 걸린 시간(`176s`, `165 ms`, `총 1251초`)은 비교에서 뺌 - 예전엔 시간 줄이 매번 다른 줄로
+  잡혀 결과 숫자가 바뀐 줄이 묻혔음
+
 ## [0.1.19] - 2026-10-09
 
 ### 버그 수정

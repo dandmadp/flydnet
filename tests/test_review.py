@@ -67,8 +67,8 @@ def test_group_t_mbr_equal_to_tau_matches_scalar(tm):
     """그룹별 t_mbr = tau(5 ms)에서 정확한 적분 계수가 0/0이 되어 출력이 0 Hz이던 것"""
     c = _strong()
     x = np.full((4, 6), 150, np.float32)
-    ref = fd.Connectome(c, "IN", "O", t_ms=40, device="cpu", params={"t_mbr": tm})(x, seed=1).data
-    grp = fd.Connectome(c, "IN", "O", t_ms=40, device="cpu", params={"t_mbr": tm},
+    ref = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu", params={"t_mbr": tm})(x, seed=1).data
+    grp = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu", params={"t_mbr": tm},
                         t_mbr={g: tm for g in c.groups})(x, seed=1).data
     np.testing.assert_allclose(grp, ref, rtol=1e-5)
 
@@ -77,7 +77,7 @@ def test_group_t_mbr_equal_to_tau_matches_scalar(tm):
 def test_calibrate_group_without_inputs_raises():
     """들어오는 연결이 없는 그룹은 배율로 보정할 수 없음 - 예전엔 아무것도 못 바꾸고 조용히 끝남"""
     c = fd.Circuit.from_edges([0, 0], [1, 1], [20.0, 20.0], groups={"IN": [0], "H": [1], "L": [2]}, n=3)
-    layer = fd.Connectome(c, "IN", ("H", "L"), t_ms=20, device="cpu")
+    layer = fd.ConnectomeLayer(c, "IN", ("H", "L"), t_ms=20, device="cpu")
     with pytest.raises(ValueError, match="들어오는 연결"):
         layer.calibrate(np.full((2, 1), 100.0, np.float32), {"L": 10})
 
@@ -112,8 +112,8 @@ def test_ungrouped_neurons_do_not_break_controls():
 
 def test_meta_types_survive_save_and_driver_matches(tmp_path):
     c = _small()
-    p = fd.Connectome(c, "A", "B", device="cpu", t_ms=5).save(tmp_path / "x")
-    c2 = fd.Connectome.load(p).circuit
+    p = fd.ConnectomeLayer(c, "A", "B", device="cpu", t_ms=5).save(tmp_path / "x")
+    c2 = fd.ConnectomeLayer.load(p).circuit
     assert c2.meta.gaba.dtype == bool and c2.meta["size"].dtype == np.float64
     for cc in (c, c2):
         assert len(fd.genetics.driver(cc, gaba=True)) == 2
@@ -129,7 +129,7 @@ def test_normalized_zero_input_is_zero_not_nan():
 @pytest.mark.filterwarnings("ignore:seed .*개로는")                    # 측정 전에 멈추는지만
 def test_screen_checks_all_lines_before_running():
     c = _strong()
-    layer = fd.Connectome(c, "IN", "O", t_ms=20, device="cpu")
+    layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=20, device="cpu")
     calls = []
 
     def measure(l, s):
@@ -148,7 +148,7 @@ def test_holm_keeps_nan():
 
 
 def test_explain_and_gradcheck_leave_training_gradients_alone():
-    layer = fd.Connectome(_strong(), "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair")
+    layer = fd.ConnectomeLayer(_strong(), "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair")
     layer(X, seed=0).sum().retrograde()
     before = layer.log_scale.retro.copy()
     fd.explain(lambda l, s: l(X, seed=s).sum(), layer)
@@ -204,7 +204,7 @@ def _deep():
 def test_calibrate_output_only_wakes_relays():
     """출력만 목표로 주면 중간 층이 꺼져 있어 배율 256배에도 0 Hz로 끝나던 것 → 경로 위 중계 그룹도 맞춤"""
     c, x = _deep()
-    layer = fd.Connectome(c, "in", "out", device="cpu")
+    layer = fd.ConnectomeLayer(c, "in", "out", device="cpu")
     with pytest.warns(UserWarning, match="출력까지 가지 못함"):
         assert float(layer(x, seed=0).numpy().max()) == 0
     rep = layer.reach(x)
@@ -220,26 +220,26 @@ def test_calibrate_skips_inhibitory_relays():
     """억제를 내보내는 그룹(버섯체 APL처럼)은 키우면 신호를 막으므로 중계로 고르지 않음"""
     c = fd.Circuit.from_edges([0, 1, 2, 1], [1, 3, 1, 2], [20.0, 20.0, -20.0, 20.0],
                               groups={"IN": [0], "K": [1], "I": [2], "O": [3]})
-    layer = fd.Connectome(c, "IN", "O", device="cpu")
+    layer = fd.ConnectomeLayer(c, "IN", "O", device="cpu")
     assert layer._relay_groups(["O"]) == ["K"]
 
 
 def test_path_warnings_at_construction():
     c = fd.Circuit.from_edges([0, 1], [1, 2], [20.0, 20.0], groups={"IN": [0], "H": [1], "O": [2], "Z": [3]}, n=4)
     with pytest.warns(UserWarning, match="경로가 없는 출력"):
-        fd.Connectome(c, "IN", ("O", "Z"), device="cpu")
+        fd.ConnectomeLayer(c, "IN", ("O", "Z"), device="cpu")
     with pytest.warns(UserWarning, match="t_ms"):
-        fd.Connectome(c, "IN", "O", t_ms=2.0, device="cpu")
+        fd.ConnectomeLayer(c, "IN", "O", t_ms=2.0, device="cpu")
 
 
 @pytest.mark.filterwarnings("ignore:t_ms")                    # 짧은 t_ms는 일부러
 def test_silent_warning_blames_inputs_when_they_never_fire():
     c, _ = _deep()
-    layer = fd.Connectome(c, "in", "out", device="cpu", t_ms=5)
+    layer = fd.ConnectomeLayer(c, "in", "out", device="cpu", t_ms=5)
     with pytest.warns(UserWarning, match="거의 발화하지 않음"):            # 1보다 크지만 5 ms에 스파이크가 거의 없는 입력
         layer(np.full((2, 20), 3.0, np.float32), seed=0)
-    layer = fd.Connectome(c, "in", "out", device="cpu", t_ms=5)
-    with pytest.warns(UserWarning, match="발화율\(Hz\)"):              # 0~1 값을 그대로 (흔한 실수)
+    layer = fd.ConnectomeLayer(c, "in", "out", device="cpu", t_ms=5)
+    with pytest.warns(UserWarning, match=r"발화율\(Hz\)"):              # 0~1 값을 그대로 (흔한 실수)
         layer(np.full((2, 20), 0.5, np.float32), seed=0)
 
 
@@ -251,6 +251,6 @@ def test_hash_random_never_zero_at_seed_zero():
     assert hash_uniform(np, 0, 0, (1,))[0] > 0
     c, _ = _deep()
     with fd.quiescent():
-        r = fd.Connectome(c, "in", "out", device="cpu", t_ms=20)(np.full((1, 20), 1e-6, np.float32),
+        r = fd.ConnectomeLayer(c, "in", "out", device="cpu", t_ms=20)(np.full((1, 20), 1e-6, np.float32),
                                                                    seed=0, return_all=True).numpy()
     assert not r.any()

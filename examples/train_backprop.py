@@ -74,7 +74,7 @@ for name, (circ, out, trainable) in CONFIGS.items():
     n_par = model.n_synapses()
     conn = [(n, s) for n, s in model.named_synapses() if n.endswith("log_scale")]
     rest = [(n, s) for n, s in model.named_synapses() if not n.endswith("log_scale")]
-    rules = [fd.Adaptive(rest, rate=args.lr)] + ([fd.Adaptive(conn, rate=args.conn_lr)] if conn else [])
+    rules = [fd.AdaptivePlasticity(rest, rate=args.lr)] + ([fd.AdaptivePlasticity(conn, rate=args.conn_lr)] if conn else [])
     g = np.random.default_rng(0)
     t = time.time()
     curve = []

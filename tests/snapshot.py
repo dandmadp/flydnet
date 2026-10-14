@@ -21,7 +21,7 @@ X = np.random.default_rng(0).uniform(50, 200, (5, 6)).astype(np.float32)
 
 
 def run(dev, kw, effect=None, tf=False):
-    L = fd.Connectome(c, "IN", "O", **dict(dict(t_ms=40, device=dev, trainable=True), **kw))
+    L = fd.ConnectomeLayer(c, "IN", "O", **dict(dict(t_ms=40, device=dev, trainable=True), **kw))
     x = fd.Signal(X, device=dev, plastic=True)
     e = effect(L) if effect else None
     try:
@@ -53,7 +53,7 @@ def seq_activate(dev):
     H = c.groups["H"]
     out = []
     for i in (0, 5, 0, 5, 10, 0):
-        L = fd.Connectome(c, "IN", "O", t_ms=30, device=dev)
+        L = fd.ConnectomeLayer(c, "IN", "O", t_ms=30, device=dev)
         with G.activate(L, G.Line(c, H[i:i + 5], str(i)), hz=300), fd.quiescent():
             out.append(B.numpy(L(np.zeros((2, 6), np.float32), seed=1, return_all=True).data))
     return out

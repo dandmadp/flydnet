@@ -162,6 +162,75 @@ __global__ void lif_brian_bwd(const float* gV3, const float* gG3, const float* g
     gG[i] = a ? __fadd_rn(__fmul_rn(gV1, eg), __fmul_rn(gG2, gd)) : gG2;
     gV2_out[i] = gV2;
 }
+// silent-row skipping for sparse activity (whole brain): bit r of bits = row r of x has a nonzero value.
+// One warp per bitmap word (32 rows), columns read coalesced, __any_sync - no atomics, deterministic.
+__global__ void row_any(const float* x, unsigned int* bits, const int n, const int nb) {
+    const long long w = ((long long)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    const int nw = (n + 31) >> 5;
+    if (w >= nw) return;
+    unsigned int v = 0;
+    const int r0 = (int)(w << 5), r1 = min(n, r0 + 32);
+    for (int r = r0; r < r1; ++r) {
+        const float* xr = x + (long long)r * nb;
+        bool any = false;
+        for (int b = lane; b < nb; b += 32) any |= xr[b] != 0.f;
+        if (__any_sync(0xffffffffu, any)) v |= 1u << (r - r0);
+    }
+    if (lane == 0) bits[w] = v;
+}
+// spmm_seg with the same pieces and the same order of additions, skipping edges whose source row is all zero
+// (adding exact zeros changes nothing, so the bits are the same as spmm_seg when data and x are finite).
+// _mask: one thread per (piece, column) checks every edge - small batches.
+__global__ void spmm_seg_mask(const int* seg_start, const int* seg_end, const int* indices, const float* data,
+                              const float* x, const unsigned int* bits, float* part, const int n_seg, const int nb,
+                              const int gw) {
+    const long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long seg = tid / gw;
+    const int lane = (int)(tid % gw);
+    if (seg >= n_seg || lane >= nb) return;
+    const int start = seg_start[seg], end = seg_end[seg];
+    for (int b = lane; b < nb; b += gw) {
+        float s = 0.f;
+        for (int k = start; k < end; ++k) {
+            const int i = indices[k];
+            if ((bits[i >> 5] >> (i & 31)) & 1u) s += data[k] * x[(long long)i * nb + b];
+        }
+        part[seg * nb + b] = s;
+    }
+}
+// _ballot: the gw threads of a piece read gw edges at once, vote with __ballot_sync and visit only the active
+// edges in increasing k (index by shuffle) - a run of gw silent edges costs one step. Large batches.
+// The grid must cover whole warps (the vote uses every lane of the group).
+__global__ void spmm_seg_ballot(const int* seg_start, const int* seg_end, const int* indices, const float* data,
+                                const float* x, const unsigned int* bits, float* part, const int n_seg, const int nb,
+                                const int gw) {
+    const long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long seg = tid / gw;
+    const int lane = (int)(tid % gw);
+    const int base = (threadIdx.x & 31) - lane;
+    const unsigned low = gw == 32 ? 0xffffffffu : ((1u << gw) - 1u);
+    const unsigned mask = low << base;
+    const bool live = seg < n_seg;
+    const int start = live ? seg_start[seg] : 0, end = live ? seg_end[seg] : 0;
+    for (int b0 = 0; b0 < nb; b0 += gw) {
+        const int b = b0 + lane;
+        float s = 0.f;
+        for (int k0 = start; k0 < end; k0 += gw) {
+            const int k = k0 + lane;
+            const int i = k < end ? indices[k] : 0;
+            const bool on = k < end && ((bits[i >> 5] >> (i & 31)) & 1u);
+            unsigned m = (__ballot_sync(mask, on) >> base) & low;
+            while (m) {
+                const int t = __ffs(m) - 1;
+                m &= m - 1u;
+                const int ii = __shfl_sync(mask, i, t, gw);
+                if (b < nb) s += data[k0 + t] * x[(long long)ii * nb + b];
+            }
+        }
+        if (live && b < nb) part[seg * nb + b] = s;
+    }
+}
 }
 """
 # 커널 설명: spmm_rm = 받는 뉴런(행) 하나를 스레드 gw개가 (배치가 작으면 워프 하나가 행 여러 개), 행 우선이라 연속 읽기
@@ -180,7 +249,7 @@ def _cuda():
         try:
             mod = cp.RawModule(code=_CUDA_SRC)
             for name in ("spmm_rm", "spmm_seg", "seg_reduce", "edge_dot_rm", "edge_dot_thread", "edge_dot_u8", "poisson_spikes", "lif_brian_fwd",
-                         "lif_brian_bwd"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
+                         "lif_brian_bwd", "row_any", "spmm_seg_mask", "spmm_seg_ballot"):   # 여기서 컴파일 (지연 컴파일이라 나중에 실패하지 않게)
                 mod.get_function(name)
         except Exception as e:
             import warnings
@@ -223,9 +292,12 @@ def _segments(indptr):
     return segs
 
 
-def spmm(M, x):
+def spmm(M, x, skip_silent: bool = False):
     """희소 CSR (n_rows, n) @ 밀집 (n, nb). GPU·float32면 전용 커널 (결정론적 - 같은 입력이면 늘 같은 비트.
     CuPy 기본(cuSPARSE)은 실행마다 반올림이 달라 스파이크가 달라질 수 있음). 긴 행은 조각내 부하 균형.
+    skip_silent: x에서 모두 0인 행(이번 스텝에 발화하지 않은 뉴런)의 연결은 읽지 않음 - 같은 조각·같은 더하기 순서에서
+      0을 더하지 않을 뿐이라 같은 비트 (M·x가 유한할 때). 활동이 드물 때만 빠름 (전체 뇌, 시행 30개: 희소 곱 약 2.5배,
+      발화가 30% 넘으면 오히려 느림) - 고르는 쪽(ConnectomeLayer)이 직전 활동으로 정함
     CPU는 M(자체 CSR, csr.py)의 곱 - 직접 작성한 C 커널 / scipy / numpy 중 쓸 수 있는 것"""
     if (B.device_of(x) != "gpu" or x.ndim != 2 or not _gpu_ok(x, M.data) or M.indices.dtype.itemsize != 4
             or _cuda() is None):
@@ -237,8 +309,20 @@ def spmm(M, x):
     gw = min(32, 1 << max(0, (nb - 1).bit_length()))                 # 배치가 작으면 워프 하나가 조각 여러 개
     threads = 256
     part = cp.empty((n_seg, nb), dtype=cp.float32)
-    _cuda().get_function("spmm_seg")(((n_seg * gw + threads - 1) // threads,), (threads,),
-                                     (st, en, M.indices, M.data, x, part, np.int32(n_seg), np.int32(nb), np.int32(gw)))
+    if skip_silent and n_seg:
+        n = x.shape[0]
+        nw = (n + 31) // 32
+        bits = cp.empty(nw, dtype=cp.uint32)
+        _cuda().get_function("row_any")(((nw * 32 + threads - 1) // threads,), (threads,),
+                                        (x, bits, np.int32(n), np.int32(nb)))
+        name = "spmm_seg_ballot" if gw >= 16 else "spmm_seg_mask"    # 큰 배치: 연결 gw개씩 투표로 건너뜀
+        _cuda().get_function(name)(((n_seg * gw + threads - 1) // threads,), (threads,),   # 256의 배수 = 워프 통째
+                                   (st, en, M.indices, M.data, x, bits, part, np.int32(n_seg), np.int32(nb),
+                                    np.int32(gw)))
+    else:
+        _cuda().get_function("spmm_seg")(((n_seg * gw + threads - 1) // threads,), (threads,),
+                                         (st, en, M.indices, M.data, x, part, np.int32(n_seg), np.int32(nb),
+                                          np.int32(gw)))
     out = cp.empty((n_rows, nb), dtype=cp.float32)
     _cuda().get_function("seg_reduce")(((n_rows * nb + threads - 1) // threads,), (threads,),
                                        (row_seg, part, out, np.int32(n_rows), np.int32(nb)))
@@ -301,11 +385,12 @@ def matrices(wiring, values_data):
     return M, MT
 
 
-def propagate(x: Signal, values: Signal, M, MT, wiring, binary: bool = False) -> Signal:
+def propagate(x: Signal, values: Signal, M, MT, wiring, binary: bool = False, skip_silent: bool = False) -> Signal:
     """시냅스 전달 (N_pre, B) → (N_post, B).
-    binary: x가 0/1뿐이면 역전파용으로 1바이트로 저장 (연결별 기울기에만 쓰임, 그때 실수로 되돌림 - 값은 같음)"""
+    binary: x가 0/1뿐이면 역전파용으로 1바이트로 저장 (연결별 기울기에만 쓰임, 그때 실수로 되돌림 - 값은 같음)
+    skip_silent: 순전파 곱에서 발화하지 않은 뉴런의 연결을 건너뜀 (spmm, 같은 비트)"""
     xd = x.data
-    out = spmm(M, xd)
+    out = spmm(M, xd, skip_silent)
     if not learning_enabled() or not (x.plastic or values.plastic):
         return Signal(out)
     keep = xd.astype(np.uint8) if (binary and values.plastic) else xd if values.plastic else None

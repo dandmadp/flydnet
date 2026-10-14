@@ -3,7 +3,7 @@
 없어질 수 있음, 효과는 조건부 (README "실험적 기능")
 
   from flydnet import lab
-  layer = fd.Connectome(mb, "PN", "KC", trainable=["PN>KC"])
+  layer = fd.ConnectomeLayer(mb, "PN", "KC", trainable=["PN>KC"])
   g = lab.Growth(layer, allow=["PN>KC"], budget=5000)  # 층에 붙음 (layer.growth로도 - 이름 name="growth")
   g.grow(500)                                         # 무작위 (허용된 그룹 쌍 안에서)
   g.grow(500, rule="coactive", rates=X)               # 헤브: 대표 입력 X에서 함께 많이 발화한 뉴런 쌍

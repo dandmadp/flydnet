@@ -88,7 +88,7 @@ def run(seed, circuit, rule=None, budget=0):
     if rule and rule.endswith("-nocap"):
         growth["per_neuron"] = None
         rule = rule.removesuffix("-nocap")
-    layer = fd.Connectome(circuit, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC"])
+    layer = fd.ConnectomeLayer(circuit, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC"])
     if growth is not None:
         lab.Growth(layer, **growth)                                       # 추가 연결 부품 (layer.growth)
     R = enc(Xtr[::10])
@@ -118,7 +118,7 @@ def run(seed, circuit, rule=None, budget=0):
     if rule:
         grow(budget, seed)
         layer.calibrate(R, {"KC": 5}, **CAL)
-    opt = fd.Adaptive(model.named_synapses(), rate=3e-3, clip=1.0)
+    opt = fd.AdaptivePlasticity(model.named_synapses(), rate=3e-3, clip=1.0)
     step = 0
     for ep in range(args.epochs):
         opt.rate = 3e-3 * 0.5 * (1 + np.cos(np.pi * ep / args.epochs))

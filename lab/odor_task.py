@@ -1,8 +1,8 @@
 """
 실험 ③: 합성 냄새 과제 — 실제 버섯체 배선이 무작위 배선보다 나은가?
 
-  python examples/odor_task.py
-  python examples/odor_task.py --task-seeds 3 --shuffles 3   # 빠르게
+  python lab/odor_task.py
+  python lab/odor_task.py --task-seeds 3 --shuffles 3   # 빠르게
 
 냄새 = 사구체 56개 활성 벡터 → GlomerularEncoder(같은 사구체 PN = 같은 발화율) → 버섯체 → KC 발화율
 클래스 = 냄새 원형 여러 개의 묶음 → 사구체 공간에선 선형 분리가 어려움 (확장 층이 필요한 과제)

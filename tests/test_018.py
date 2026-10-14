@@ -26,7 +26,7 @@ def test_paths_do_not_loop_through_inputs_or_outputs():
     예전에는 버섯체 PN → KC 모델에서 MBON이 중계로 잡혀 calibrate가 MBON 연결을 키우고, trainable="path"가
     PN>MBON·KC>MBON까지 학습했으며, reach가 "신호가 MBON에서 끊김"으로 잘못 판정했음"""
     c = _loop_circuit()
-    layer = fd.Connectome(c, "in", "out", t_ms=30, device="cpu")
+    layer = fd.ConnectomeLayer(c, "in", "out", t_ms=30, device="cpu")
     assert layer._relay_groups(["out"]) == ["h"]
     assert fd.ConnectomeModel._path_pairs(c, ["in"], ["out"]) == ["h>out", "in>h"]
     rep = layer.reach(np.full((2, 10), 100.0, np.float32))
@@ -108,7 +108,7 @@ def test_single_sample_inputs():
     m = fd.ConnectomeModel(g, "in", "out", n_in=10, n_classes=2, device="cpu", t_ms=20)
     m.fit(X, [0, 1, 0, 1], epochs=1, verbose=False)
     assert np.ndim(m.predict(X[0])) == 0 and m.predict(X[0]) == m.predict(X[:1])[0]
-    L = fd.Connectome(g, "in", "out", t_ms=40, device="cpu")
+    L = fd.ConnectomeLayer(g, "in", "out", t_ms=40, device="cpu")
     assert len(L.reach(X[0]).table) == 3
     L.calibrate(X[0], {"out": 12.5}, iters=20)            # 시료 하나·40 ms·6개: 발화율이 약 4.2 Hz 단위
     assert fd.Neuropil(g, "in", "h1", device="cpu")(X[0]).shape == (len(g.groups["h1"]),)
@@ -119,12 +119,12 @@ def test_single_sample_inputs():
 def test_direct_gain_edit_applies_to_forward():
     """layer.gains[...]를 직접 바꾸면 순전파에도 반영 (예전: 저장 파일에만 들어가 저장 전후 동작이 달랐음)"""
     g, X = _small()
-    L = fd.Connectome(g, "in", "out", t_ms=40, device="cpu")
+    L = fd.ConnectomeLayer(g, "in", "out", t_ms=40, device="cpu")
     with fd.quiescent():
         before = L(X, seed=0).numpy()
         L.gains["in>h1"] = 2.0
         after = L(X, seed=0).numpy()
-        ref = fd.Connectome(g, "in", "out", t_ms=40, device="cpu", gains={"in>h1": 2.0})(X, seed=0).numpy()
+        ref = fd.ConnectomeLayer(g, "in", "out", t_ms=40, device="cpu", gains={"in>h1": 2.0})(X, seed=0).numpy()
     assert before.mean() > 0 and not np.array_equal(before, after)
     np.testing.assert_array_equal(after, ref)
 
@@ -135,7 +135,7 @@ def test_duplicate_seeds_rejected():
     g, X = _small()
     with pytest.raises(ValueError, match="같은 값"):
         fd.compare(lambda c, s: 0.5, g, seeds=[0, 0, 1], verbose=False)
-    L = fd.Connectome(g, "in", "out", t_ms=20, device="cpu")
+    L = fd.ConnectomeLayer(g, "in", "out", t_ms=20, device="cpu")
     with pytest.raises(ValueError, match="같은 값"):
         fd.genetics.screen(lambda L_, s: 1.0, L, fd.genetics.lines(g, by="group"), seeds=[1, 1], verbose=False)
 
@@ -217,7 +217,7 @@ def test_neuropil_and_threefactor_deterministic_on_gpu():
     X = (x * 150 + 50).astype(np.float32)
     res = []
     for _ in range(3):
-        L = fd.Connectome(c, "IN", "O", t_ms=60, trainable=True, device="gpu")
+        L = fd.ConnectomeLayer(c, "IN", "O", t_ms=60, trainable=True, device="gpu")
         tf = fd.ThreeFactor(L, feedback="connectome")
         o = tf(X, seed=3)
         (o * o).sum().retrograde()
@@ -231,7 +231,7 @@ def test_calibrate_damps_oscillation_on_lesioned_mushroom_body():
     지금은 진동하는 그룹만 보폭을 줄여 목표 안으로. 손상 없는 회로의 배율은 예전과 같음 (위 진동이 없으므로)"""
     import warnings
     mb = fd.flywire()
-    enc = fd.Glomeruli(mb)
+    enc = fd.GlomerularEncoder(mb)
     g = mb.group_of()
     pk = np.nonzero((g[mb.pre] == "PN") & (g[mb.post] == "KC"))[0]
     cut = np.random.default_rng(1000).choice(pk, int(0.8 * len(pk)), replace=False)
@@ -239,12 +239,12 @@ def test_calibrate_damps_oscillation_on_lesioned_mushroom_body():
     keep[cut] = False
     c = fd.Circuit(mb.root_ids, mb.groups, mb.pre[keep], mb.post[keep], mb.weight[keep], meta=mb.meta)
     X = fd.door_task(n_odors=24, noise=1.2, seed=0)[0][::3]
-    L = fd.Connectome(c, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", device="cpu")
+    L = fd.ConnectomeLayer(c, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", device="cpu")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         tab = L.calibrate(enc(X), {"KC": 5})
     assert abs(tab.after_hz[0] - 5) <= 0.5
-    L0 = fd.Connectome(mb, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", device="cpu")
+    L0 = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", device="cpu")
     L0.calibrate(enc(fd.door_task(n_odors=12, seed=0)[0][::3]), {"KC": 5})
     assert L0.gains["PN>KC"] == pytest.approx(6.280486, rel=1e-5)        # 0.1.18 이전 보정과 같은 배율
 
@@ -331,9 +331,9 @@ def test_layer_rejects_overlapping_groups():
     c = fd.Circuit(np.arange(4), {"A": np.array([0, 1]), "B": np.array([1, 2]), "C": np.array([3])},
                    np.array([0, 1, 2]), np.array([3, 3, 3]), np.ones(3, np.float32))
     with pytest.raises(ValueError, match="겹침"):
-        fd.Connectome(c, ["A", "B"], "C", t_ms=20, device="cpu")
+        fd.ConnectomeLayer(c, ["A", "B"], "C", t_ms=20, device="cpu")
     with pytest.raises(ValueError, match="겹침"):                         # 입력에 안 쓰는 그룹이 겹쳐도 (연결 종류가 틀어짐)
-        fd.Connectome(c, "C", "A", t_ms=20, device="cpu")
+        fd.ConnectomeLayer(c, "C", "A", t_ms=20, device="cpu")
     with pytest.raises(ValueError, match="겹침"):                         # Neuropil도 (예전: 겹친 입력의 첫 자리 값을 버림)
         fd.Neuropil(c, ["A", "B"], "C", device="cpu")
     with pytest.raises(ValueError, match="여러 번"):
@@ -345,8 +345,8 @@ def test_trainable_accepts_single_pair_string():
     """trainable="IN>H" (문자열 하나): 예전엔 글자마다 연결 종류로 봐서 엉뚱한 오류"""
     from test_threefactor import _rec
     c = _rec()
-    a = fd.Connectome(c, "IN", "O", device="cpu", trainable="IN>H")
-    b = fd.Connectome(c, "IN", "O", device="cpu", trainable=["IN>H"])
+    a = fd.ConnectomeLayer(c, "IN", "O", device="cpu", trainable="IN>H")
+    b = fd.ConnectomeLayer(c, "IN", "O", device="cpu", trainable=["IN>H"])
     assert a.trainable and np.array_equal(B.numpy(a.train_pos), B.numpy(b.train_pos))
 
 
@@ -370,7 +370,7 @@ def test_genetics_screen_and_driver_argument_checks():
     G = fd.genetics
     with pytest.raises(ValueError, match="missing"):
         G.driver(c, group="H", missing="skip")
-    L = fd.Connectome(c, "IN", "O", t_ms=20, device="cpu")
+    L = fd.ConnectomeLayer(c, "IN", "O", t_ms=20, device="cpu")
     with pytest.raises(ValueError, match="비어"):
         G.screen(lambda l, s: 1.0, L, {}, seeds=2, verbose=False)
     calls = {"n": 0}
@@ -385,7 +385,7 @@ def test_genetics_screen_and_driver_argument_checks():
 def test_observers_need_spiking_layer():
     """연속값 뉴런 층의 순전파는 관찰자를 부르지 않음 - 예전: STDP는 알기 어려운 AttributeError, 직접 만든 Monitor는 조용히 아무것도 안 함"""
     from test_threefactor import _rec
-    L = fd.Connectome(_rec(), "IN", "O", neuron="graded", t_ms=6, dt=1.0, device="cpu", trainable=True)
+    L = fd.ConnectomeLayer(_rec(), "IN", "O", neuron="graded", t_ms=6, dt=1.0, device="cpu", trainable=True)
     with pytest.raises(ValueError, match="스파이킹"):
         fd.STDP(L)
     with pytest.raises(ValueError, match="스파이킹"):
@@ -397,7 +397,7 @@ def test_gradcheck_restores_log_scale_in_place():
     """gradcheck가 학습값을 제자리로 되돌림 - 예전엔 사본으로 바꿔 끼워 같은 배열을 쓰던 torch 연결이 끊어짐"""
     from test_threefactor import _rec
     c = _rec(feedback_edges=True, strong=True)
-    L = fd.Connectome(c, "IN", "O", t_ms=40, device="cpu", trainable=True, gains={"IN>H": 2.0, "H>O": 2.0})
+    L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu", trainable=True, gains={"IN>H": 2.0, "H>O": 2.0})
     X = np.random.default_rng(0).uniform(60, 200, (3, 6)).astype(np.float32)
     before = L.log_scale.data
     snap = before.copy()

@@ -144,18 +144,24 @@ def test_door_task():
 
 # ─────────────── 짧은 이름·자동 보정 ───────────────
 def test_short_names():
-    assert fd.Connectome is fd.ConnectomeLayer and fd.Adaptive is fd.AdaptivePlasticity
-    assert fd.Glomeruli is fd.GlomerularEncoder and fd.Inhibition is fd.LateralInhibition
-    assert fd.MBON is fd.MushroomBodyOutput and fd.tune is fd.tune_surrogate
-    a = fd.Connectome(_c(), "IN", "O", t_ms=40, device="cpu", damp=0.2, ckpt=10)
+    """같은 클래스의 두 번째 이름은 0.1.20부터 경고 (0.1.21에서 없어짐) - 쓰면 원래 것을 돌려줌. 인자 짧은 이름은 그대로"""
+    old = {"Connectome": fd.ConnectomeLayer, "Adaptive": fd.AdaptivePlasticity, "Glomeruli": fd.GlomerularEncoder,
+           "Inhibition": fd.LateralInhibition, "MBON": fd.MushroomBodyOutput, "tune": fd.tune_surrogate}
+    for name, obj in old.items():
+        with pytest.warns(FutureWarning, match=obj.__name__):
+            assert getattr(fd, name) is obj
+        assert name not in dir(fd)                                     # 자동 완성에는 안 나옴
+    with pytest.raises(AttributeError):
+        fd.NoSuchName
+    a = fd.ConnectomeLayer(_c(), "IN", "O", t_ms=40, device="cpu", damp=0.2, ckpt=10)
     assert a.surrogate_damp == 0.2 and a.checkpoint_every == 10
     with pytest.raises(TypeError, match="하나만"):
-        fd.Connectome(_c(), "IN", "O", device="cpu", damp=0.2, surrogate_damp=0.3)
+        fd.ConnectomeLayer(_c(), "IN", "O", device="cpu", damp=0.2, surrogate_damp=0.3)
 
 
 def test_calibrate_reaches_targets_and_saves(tmp_path):
     c = _c()
-    L = fd.Connectome(c, "IN", ("H", "O"), t_ms=100, device="cpu", input_mode="regular")
+    L = fd.ConnectomeLayer(c, "IN", ("H", "O"), t_ms=100, device="cpu", input_mode="regular")
     tab = L.calibrate(X, {"H": 30, "O": 15}, iters=12)
     assert set(tab.group) == {"H", "O"}
     with fd.quiescent():
@@ -164,13 +170,13 @@ def test_calibrate_reaches_targets_and_saves(tmp_path):
         assert abs(r[:, c.groups[g]].mean() - t) <= 0.25 * t, (g, r[:, c.groups[g]].mean())
     assert any(k.endswith(">H") for k in L.gains) and L.config["gains"] == L.gains
     L.save(tmp_path / "cal")
-    M = fd.Connectome.load(tmp_path / "cal.npz", device="cpu")
+    M = fd.ConnectomeLayer.load(tmp_path / "cal.npz", device="cpu")
     assert M.gains == L.gains
     with pytest.raises(ValueError, match="입력 그룹"):
         L.calibrate(X, {"IN": 10})
     with pytest.raises(KeyError, match="회로에 없는"):
         L.calibrate(X, {"Q": 10})
-    t2 = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu").calibrate(X, 20)   # 숫자 = 출력 그룹 모두
+    t2 = fd.ConnectomeLayer(c, "IN", "O", t_ms=60, device="cpu").calibrate(X, 20)   # 숫자 = 출력 그룹 모두
     assert list(t2.group[t2.role == "목표"]) == ["O"] and list(t2.group[t2.role == "중계"]) == ["H"]   # 경로 위 H도
 
 
@@ -214,12 +220,12 @@ def test_signal_python_protocols():
     ("x.grad", ".retro"), ("x.backward()", "retrograde"), ("x.w", ".numpy()"), ("x.requires_grad", "plastic"),
     ("p.parameters()", "synapses()"), ("p.zero_grad()", "clear_retro"), ("p.weigth", "weight"),
     ("rule.zero_grad()", ".clear()"), ("rule.lr", ".rate"), ("c.num_nodes", ".N"),
-    ("fd.Linear", "fd.Projection"), ("fd.Adam", "fd.Adaptive"), ("fd.no_grad", "fd.quiescent"),
+    ("fd.Linear", "fd.Projection"), ("fd.Adam", "fd.AdaptivePlasticity"), ("fd.no_grad", "fd.quiescent"),
 ])
 def test_attribute_hints(code, hint):
     x = fd.Signal(np.ones(3, np.float32))
     p = fd.Projection(3, 2, device="cpu")
-    rule = fd.Adaptive(p.synapses())
+    rule = fd.AdaptivePlasticity(p.synapses())
     c = fd.graphs.layered([2, 2, 2], 0.5)
     with pytest.raises(AttributeError, match=None) as e:
         eval(code)
@@ -232,7 +238,7 @@ def test_hints_do_not_break_copy_pickle_hasattr():
     p = fd.Pathway(fd.Projection(3, 2, device="cpu"), fd.Activation("relu"))
     x = fd.Signal(np.ones((2, 3), np.float32))
     c = fd.graphs.layered([2, 2, 2], 0.5)
-    for obj in (p, x, c, fd.Adaptive(p.synapses())):
+    for obj in (p, x, c, fd.AdaptivePlasticity(p.synapses())):
         copy.deepcopy(obj)
         pickle.loads(pickle.dumps(obj))
     assert not hasattr(x, "grad") and not hasattr(p, "parameters") and getattr(p, "nope", 7) == 7
@@ -251,9 +257,9 @@ def test_train_accepts_lists_and_pandas():
 
 def test_duplicate_groups_rejected():
     with pytest.raises(ValueError, match="같은 이름이 여러 번"):
-        fd.Connectome(_c(), ["IN", "IN"], "O", device="cpu")
+        fd.ConnectomeLayer(_c(), ["IN", "IN"], "O", device="cpu")
     with pytest.raises(ValueError, match="같은 이름이 여러 번"):
-        fd.Connectome(_c(), "IN", ["O", "O"], device="cpu")
+        fd.ConnectomeLayer(_c(), "IN", ["O", "O"], device="cpu")
 
 
 def test_data_size_check(tmp_path):
@@ -336,13 +342,13 @@ def test_double_retrograde_errors():
     (lambda: _L(dt=-0.1), "dt는 양수"),
     (lambda: _L(gains={"IN>H": -2.0}), "0 이상"),
     (lambda: _L().set_gain("IN>H", -1), "0 이상"),
-    (lambda: fd.Connectome(_c(), "IN", ("H", "O"), t_ms=30, device="cpu").calibrate(X, {"H": -5}), "양수"),
+    (lambda: fd.ConnectomeLayer(_c(), "IN", ("H", "O"), t_ms=30, device="cpu").calibrate(X, {"H": -5}), "양수"),
     (lambda: fd.explain(lambda l, s: l(X, seed=s).sum(), _L(), seeds=0), "seeds"),
     (lambda: fd.compare(lambda c, s: 0.5, _c(), controls=[], seeds=3, verbose=False), "대조군이 없음"),
     (lambda: fd.train(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], batch=0, verbose=False), "batch"),
     (lambda: fd.train(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], epochs=-1, verbose=False), "epochs"),
-    (lambda: fd.Inhibition(frac=1.5), "frac"),
-    (lambda: fd.Inhibition(k=0), "k는"),
+    (lambda: fd.LateralInhibition(frac=1.5), "frac"),
+    (lambda: fd.LateralInhibition(k=0), "k는"),
 ])
 def test_bad_numbers_rejected(make, match):
     with pytest.raises(ValueError, match=match):

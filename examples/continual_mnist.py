@@ -44,7 +44,7 @@ class Backprop:
     def __init__(self, n_in, mu, sd, replay=0, lr=1e-3, seed=0):
         self.mu, self.sd, self.m = mu, sd, replay
         self.net = fd.Projection(n_in, 10, seed=seed)
-        self.rule = fd.Adaptive(self.net.named_synapses(), rate=lr)
+        self.rule = fd.AdaptivePlasticity(self.net.named_synapses(), rate=lr)
         self.bx, self.by = [], []
 
     def f(self, X):

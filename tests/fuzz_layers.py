@@ -62,7 +62,7 @@ def _build(rng, dev):
     elif kind == "norm":
         m = fd.Homeostasis(eps=float(rng.choice([1e-5, 0.1])))
     elif kind == "inhibit":
-        m = fd.Inhibition(k=int(rng.integers(1, n_in + 1)))
+        m = fd.LateralInhibition(k=int(rng.integers(1, n_in + 1)))
     else:
         m = fd.Activation(str(rng.choice(["relu", "tanh", "sigmoid"])))
     shape = {0: (n_in,), 1: (int(rng.integers(1, 5)), n_in), 2: (int(rng.integers(1, 4)), int(rng.integers(1, 4)), n_in)}

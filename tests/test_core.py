@@ -726,7 +726,7 @@ def test_anatomy_in_pathway_learns_toy_problem():
     rng = np.random.default_rng(0)
     X = rng.standard_normal((300, 10)).astype(np.float32)
     y = (X[:, 0] > 0).astype(int) + (X[:, 1] > 0).astype(int)
-    rule = fd.Adaptive(model.named_synapses(), rate=1e-2)
+    rule = fd.AdaptivePlasticity(model.named_synapses(), rate=1e-2)
     first = None
     for _ in range(150):
         loss = fd.surprise(model(X), y)

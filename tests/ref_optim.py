@@ -59,10 +59,10 @@ cases = {
     "SGD 관성": (lambda s: fd.Plasticity(s, rate=0.05, momentum=0.9), lambda p: torch.optim.SGD(p, lr=0.05, momentum=0.9)),
     "SGD 감쇠+관성": (lambda s: fd.Plasticity(s, rate=0.05, momentum=0.8, decay=0.01),
                    lambda p: torch.optim.SGD(p, lr=0.05, momentum=0.8, weight_decay=0.01)),
-    "Adam": (lambda s: fd.Adaptive(s, rate=0.01), lambda p: torch.optim.Adam(p, lr=0.01)),
-    "Adam betas·eps": (lambda s: fd.Adaptive(s, rate=0.02, betas=(0.8, 0.99), eps=1e-6),
+    "Adam": (lambda s: fd.AdaptivePlasticity(s, rate=0.01), lambda p: torch.optim.Adam(p, lr=0.01)),
+    "Adam betas·eps": (lambda s: fd.AdaptivePlasticity(s, rate=0.02, betas=(0.8, 0.99), eps=1e-6),
                        lambda p: torch.optim.Adam(p, lr=0.02, betas=(0.8, 0.99), eps=1e-6)),
-    "AdamW": (lambda s: fd.Adaptive(s, rate=0.01, decay=0.1), lambda p: torch.optim.AdamW(p, lr=0.01, weight_decay=0.1)),
+    "AdamW": (lambda s: fd.AdaptivePlasticity(s, rate=0.01, decay=0.1), lambda p: torch.optim.AdamW(p, lr=0.01, weight_decay=0.1)),
 }
 for name, (mf, mt) in cases.items():
     for label, kw in (("", {}), (" + clip", dict(clip=1.0)), (" + 일부만 기울기", dict(skip_some=True)),

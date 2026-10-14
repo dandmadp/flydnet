@@ -30,7 +30,7 @@ def ok(name, cond, detail=""):
 def run(neuron, dev, cfg, X, f64=False):
     kw = dict(t_ms=30, device=dev, trainable=True, input_mode=cfg["mode"], dt=cfg["dt"])
     kw.update(cfg["kw"])
-    L = fd.Connectome(c, "IN", "O", neuron=neuron, **kw)
+    L = fd.ConnectomeLayer(c, "IN", "O", neuron=neuron, **kw)
     if f64:                                                   # float64로 (원소별 경로): 반올림 차이 없이 수식만 비교
         L.w_syn = L.w_syn.astype(np.float64)
         L._build()
@@ -105,7 +105,7 @@ if torch is not None:
                                                count_from_ms=5, share="pair")),
                      ("graded", dict(neuron="graded", t_ms=8)),
                      ("graded+bias", dict(neuron="graded", t_ms=8, bias={"H": 0.3}, train_neurons=True))):
-        a = fd.Connectome(c, "IN", "O", device="cpu", trainable=True, **kw)
+        a = fd.ConnectomeLayer(c, "IN", "O", device="cpu", trainable=True, **kw)
         xin = Xl if kind.startswith("legacy") else Xl / 220
         x = fd.Signal(xin, plastic=True)
         ya = a(x, seed=1, return_all=False)

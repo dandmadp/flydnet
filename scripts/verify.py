@@ -10,7 +10,7 @@
   refs      참조 검사 10종 (tests/ref_*.py): 연산·역전파 대 torch, 최적화기 대 torch.optim, LIF 커널 대 독립 구현 등. 약 1분
   snapshot  엔진 비트 단위 비교 (tests/snapshot.py, 기준 .verify/snapshot_base.npz)
   tests     전체 테스트 (경고도 실패로) - 파일을 둘로 나눠 동시에 + 옵션 조합 60개·퍼저 3종을 같이
-  examples  예제 22개 원래 크기 그대로 + 원본 Brian2 검증 - GPU 메모리를 보며 병렬로, 오래 걸리는 것부터
+  examples  예제 17개 원래 크기 그대로 (lab/ 제외) + 원본 Brian2 검증 - GPU 메모리를 보며 병렬로, 오래 걸리는 것부터
 
 --changed (영향 분석): 예제마다 지난 실행에서 실제로 호출된 flydnet 함수(와 그 함수가 든 모듈·클래스의 최상위 코드)를
 기록해 두고, 그 소스가 한 글자도 바뀌지 않았으면 지난 결과를 그대로 씀 (같은 코드·같은 seed → 같은 결과).
@@ -270,6 +270,14 @@ def _numbers(text):
     return keep
 
 
+_TIME = re.compile(r"\d+(?:\.\d+)?\s*(?:ms|s|초|분)(?![A-Za-z가-힣])")
+
+
+def _same_numbers(line):
+    """비교용: 걸린 시간(176s, 165 ms, 총 1251초)은 <t>로. 예전엔 시간 줄이 늘 '다른 줄'로 잡혀 결과가 바뀐 줄이 묻혔음"""
+    return _TIME.sub("<t>", line)
+
+
 def stage_examples(a):
     EXLOG.mkdir(parents=True, exist_ok=True)
     prev = {}
@@ -331,8 +339,8 @@ def stage_examples(a):
         ok &= good
         diff = ""
         if old.get("numbers") and good:
-            a_, b_ = old["numbers"], rec_out["numbers"]
-            changed = [x for x in b_ if x not in a_]
+            a_ = {_same_numbers(x) for x in old["numbers"]}             # 지난 기록(시간 그대로 저장)에도 같은 처리
+            changed = [x for x in rec_out["numbers"] if _same_numbers(x) not in a_]
             diff = f", 지난 실행과 다른 줄 {len(changed)}개" if changed else ", 출력 숫자 지난 실행과 같음"
         say(f"  {'✓' if good else '✗'} {j.name:<22} {j.seconds:5.0f}s  GPU {rec_out['gpu_peak'] / GB:4.1f} GB  "
             f"경고 {warns}{diff}")

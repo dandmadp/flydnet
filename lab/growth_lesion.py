@@ -50,7 +50,7 @@ fd.ganglion.limit_gpu_memory(0.75)
 t0 = time.time()
 
 mb = fd.flywire()
-enc = fd.Glomeruli(mb)
+enc = fd.GlomerularEncoder(mb)
 g = mb.group_of()
 pk = np.nonzero((g[mb.pre] == "PN") & (g[mb.post] == "KC"))[0]
 CAL = dict(iters=60)
@@ -94,7 +94,7 @@ def run(seed, data, circuit, rule=None, budget=0):
     if rule and rule.endswith("-nocap"):                                  # 받는 뉴런 상한 없이 (0.1.18 기본 "auto" 전과 같음)
         growth["per_neuron"] = None
         rule = rule.removesuffix("-nocap")
-    layer = fd.Connectome(circuit, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC"])
+    layer = fd.ConnectomeLayer(circuit, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC"])
     if growth is not None:
         lab.Growth(layer, **growth)                                       # 추가 연결 부품 (layer.growth)
     R = enc(Xtr[::3])
@@ -103,7 +103,7 @@ def run(seed, data, circuit, rule=None, budget=0):
     model = fd.Pathway(enc, layer, head)
     rng = np.random.default_rng(seed)
     headA = fd.Pathway(fd.Homeostasis(), fd.Projection(layer.n_out, 24, seed=seed + 7))
-    ruleA = fd.Adaptive(headA.named_synapses(), rate=3e-3, clip=1.0)
+    ruleA = fd.AdaptivePlasticity(headA.named_synapses(), rate=3e-3, clip=1.0)
 
     def grow(n, s):
         if rule == "gradient":
@@ -124,7 +124,7 @@ def run(seed, data, circuit, rule=None, budget=0):
     if rule:
         grow(budget, seed)
         layer.calibrate(R, {"KC": 5}, **CAL)                             # 추가 연결이 더한 입력만큼 다시 맞춤
-    opt = fd.Adaptive(model.named_synapses(), rate=3e-3, clip=1.0)
+    opt = fd.AdaptivePlasticity(model.named_synapses(), rate=3e-3, clip=1.0)
     step = 0
     for ep in range(args.epochs):
         opt.rate = 3e-3 * 0.5 * (1 + np.cos(np.pi * ep / args.epochs))

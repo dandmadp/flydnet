@@ -17,8 +17,8 @@ args = ap.parse_args()
 
 mb = fd.flywire()                                                   # 오른쪽 버섯체 (FlyWire v783)
 Xtr, ytr, Xte, yte = fd.door_task(n_odors=12)                       # DoOR 실제 냄새 (사구체 활성)
-enc = fd.Glomeruli(mb)                                              # 사구체 → PN 발화율
-layer = fd.Connectome(mb, "PN", args.read, t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC", "KC>MBON"])
+enc = fd.GlomerularEncoder(mb)                                              # 사구체 → PN 발화율
+layer = fd.ConnectomeLayer(mb, "PN", args.read, t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC", "KC>MBON"])
 print(layer.calibrate(enc(Xtr[::3]), {"KC": 5, "MBON": 20}).round(2).to_string(index=False))   # 가중치 자동 보정
 model = fd.Pathway(enc, layer, fd.Homeostasis(), fd.Projection(len(mb.groups[args.read]), 12, seed=0))
 hist = fd.train(model, Xtr, ytr, val=(Xte, yte), epochs=args.epochs)

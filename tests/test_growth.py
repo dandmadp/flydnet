@@ -23,7 +23,7 @@ def _layer(c, dev="cpu", growth=None, **kw):
     """시험 층. growth=dict(...)/True면 flydnet.lab.Growth를 붙임 (layer.growth)"""
     base = dict(t_ms=60, dt=0.25, input_mode="regular", device=dev, gains={"IN>H": 2.0, "H>O": 2.0})   # 출력이 발화하는 세기
     base.update(kw)
-    L = fd.Connectome(c, "IN", "O", **base)
+    L = fd.ConnectomeLayer(c, "IN", "O", **base)
     if growth is not None and growth is not False:
         lab.Growth(L, **({} if growth is True else dict(growth)))
     return L
@@ -263,7 +263,7 @@ def test_save_load_and_pathway_resize(tmp_path):
     L = _layer(c, trainable=True, growth=dict(budget=60, per_neuron=None))
     L.growth.grow(40, seed=0)
     L.growth.log.data = np.random.default_rng(0).normal(0, 0.3, 40).astype(np.float32)
-    back = fd.Connectome.load(L.save(tmp_path / "g"))
+    back = fd.ConnectomeLayer.load(L.save(tmp_path / "g"))
     with fd.quiescent():
         assert np.array_equal(L(X, seed=1).numpy(), back(X, seed=1).numpy())
     assert back.growth.n == 40 and back.growth.budget == 60
@@ -293,7 +293,7 @@ def test_rule_state_resets_when_edges_change():
     c = _rec(feedback_edges=True, strong=True)
     L = _layer(c, trainable=True, growth=dict(budget=100, per_neuron=None))
     L.growth.grow(30, seed=0)
-    rule = fd.Adaptive(L.named_synapses(), rate=1e-2)
+    rule = fd.AdaptivePlasticity(L.named_synapses(), rate=1e-2)
     for step in range(4):
         rule.clear(); (L(X, seed=1) * 0.01).sum().retrograde(); rule.step()
         if step == 1:
@@ -309,7 +309,7 @@ def test_rule_state_follows_surviving_edges(dev, rule_cls):
     c = _rec(feedback_edges=True, strong=True)
     L = _layer(c, dev=dev, trainable=True, growth=dict(budget=100, per_neuron=None))
     L.growth.grow(30, seed=0)
-    rule = (fd.Adaptive(L.named_synapses(), rate=1e-2) if rule_cls == "Adaptive"
+    rule = (fd.AdaptivePlasticity(L.named_synapses(), rate=1e-2) if rule_cls == "Adaptive"
             else fd.Plasticity(L.named_synapses(), rate=1e-2, momentum=0.9))
     i = [n for n, _ in L.named_synapses()].index("growth.log")
     for _ in range(3):
@@ -478,7 +478,7 @@ def test_load_only_reattaches_flydnet_extensions(tmp_path):
     L = _layer(c, growth=dict(budget=5, per_neuron=None))
     L.growth.grow(3, seed=0)
     p = L.save(tmp_path / "ok")
-    assert fd.Connectome.load(p).growth.n == 3
+    assert fd.ConnectomeLayer.load(p).growth.n == 3
     d, _ = read(p, "ConnectomeLayer")
     for mod, cls in (("os", "system"), ("subprocess", "Popen"), ("flydnet.ganglion.tissue", "Pathway")):
         cfg = json.loads(str(d["config"]))
@@ -486,7 +486,7 @@ def test_load_only_reattaches_flydnet_extensions(tmp_path):
         bad = dict(d, config=np.array(json.dumps(cfg, ensure_ascii=False)))
         q = write(tmp_path / f"bad_{cls}", "ConnectomeLayer", bad)
         with pytest.raises(ValueError, match="확장"):
-            fd.Connectome.load(q)
+            fd.ConnectomeLayer.load(q)
 
 
 def test_bridge_picks_up_synapses_added_after_wrapping():

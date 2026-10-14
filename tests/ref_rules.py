@@ -41,7 +41,7 @@ for it in range(n):
         kw["damp"] = float(rng.choice([0.3, 1.0]))
     eff = [e for e in ("silence", "block", "activate", "mosaic") if rng.random() < 0.3]
     for dev in devs:
-        L = fd.Connectome(c, "IN", "O", device=dev, **kw)
+        L = fd.ConnectomeLayer(c, "IN", "O", device=dev, **kw)
         ex = []
         if "silence" in eff:
             ex.append(G.silence(L, G.Line(c, H[2:6], "s")))
@@ -82,7 +82,7 @@ print(f"ThreeFactor 비교 {compared}개, 출력이 약해 건너뜀 {skipped}�
 
 # 2) STDP = 기록한 스파이크로 직접 센 쌍 기반 STDP (지연 무시, 보낸 시각 기준)
 for dev in devs:
-    L = fd.Connectome(c, "IN", "O", t_ms=40, dt=0.1, trainable=True, input_mode="regular", device=dev)
+    L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, dt=0.1, trainable=True, input_mode="regular", device=dev)
     blk = G.block(L, G.Line(c, H[:4], "b"))                              # 막힌 뉴런: 시냅스 전은 0, 시냅스 후는 실제 발화
     x = rng.uniform(80, 200, (2, 6)).astype(np.float32)
     st = fd.STDP(L, a_plus=0.01, a_minus=0.012, tau_plus=15.0, tau_minus=25.0)

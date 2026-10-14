@@ -46,7 +46,7 @@ def mlp(Ftr, ytr, Fte, yte, hidden=64, steps=300, seed=0):
     f = lambda X: ((X - mu) / sd).astype(np.float32)
     net = fd.Pathway(fd.Projection(Ftr.shape[1], hidden, seed=seed), fd.Activation("relu"),
                      fd.Projection(hidden, 2, seed=seed + 1))
-    rule = fd.Adaptive(net.named_synapses(), rate=1e-2, decay=1e-4)           # 약한 감쇠 (AdamW식, 예전 torch판은 L2)
+    rule = fd.AdaptivePlasticity(net.named_synapses(), rate=1e-2, decay=1e-4)           # 약한 감쇠 (AdamW식, 예전 torch판은 L2)
     x = f(Ftr)
     for _ in range(steps):
         rule.clear(); fd.surprise(net(x), ytr).retrograde(); rule.step()

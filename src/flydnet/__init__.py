@@ -22,7 +22,7 @@ from .ganglion import (Signal, Synapse, Tissue, Pathway, Projection, Neuropil, L
                        Activation, Homeostasis, MushroomBodyOutput, Plasticity, AdaptivePlasticity, quiescent, surprise,
                        transmit, fire, inhibit, ConnectomeLayer, DEFAULT_PARAMS, checkpoint)
 
-__version__ = "0.1.19"
+__version__ = "0.1.20"
 
 # 0.1 기능의 자체 엔진판 (torch 없음)
 from .encoders import RateEncoder, GlomerularEncoder, to_rates
@@ -46,20 +46,23 @@ from .visual import (visual_circuit, column_map, drifting_grating, direction_off
                      VISUAL_SYSTEM, PHOTORECEPTORS, COLUMNAR, LPTC, MOTION_PATHWAY)
 
 
-# 짧은 이름 (긴 이름도 그대로 동작)
-Connectome = ConnectomeLayer
-Adaptive = AdaptivePlasticity
-Glomeruli = GlomerularEncoder
-Inhibition = LateralInhibition
-MBON = MushroomBodyOutput
-tune = tune_surrogate
+# 짧은 이름
 flywire = Circuit.from_flywire          # fd.flywire() = 오른쪽 버섯체, fd.flywire(groups, side=...)
 brain = Circuit.whole_brain             # 전체 뇌 138,639개 뉴런
 worm = Circuit.celegans                 # 예쁜꼬마선충
 
 
+# 같은 클래스의 두 번째 이름: 0.1.20부터 경고, 0.1.21에서 없앰 (이름이 둘이라 헷갈림)
+_OLD_NAMES = {"Connectome": "ConnectomeLayer", "Adaptive": "AdaptivePlasticity", "Glomeruli": "GlomerularEncoder",
+              "Inhibition": "LateralInhibition", "MBON": "MushroomBodyOutput", "tune": "tune_surrogate"}
+
+
 def __getattr__(name):
-    """flydnet.torch (torch 연동)는 처음 쓸 때 불러옴. torch가 없으면 설치 안내"""
+    """flydnet.torch (torch 연동)는 처음 쓸 때 불러옴. torch가 없으면 설치 안내. 옛 짧은 이름은 경고와 함께 원래 것"""
+    if name in _OLD_NAMES:
+        import warnings
+        warnings.warn(f"fd.{name}은 0.1.21에서 없어짐 - fd.{_OLD_NAMES[name]}로", FutureWarning, stacklevel=2)
+        return globals()[_OLD_NAMES[name]]
     if name != "torch":
         from .ganglion.hints import MODULE, missing
         err = missing("flydnet", name, MODULE, list(globals()))

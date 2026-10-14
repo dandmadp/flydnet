@@ -41,19 +41,19 @@ fd.ganglion.limit_gpu_memory(0.75)
 t0 = time.time()
 
 mb = fd.flywire()
-enc = fd.Glomeruli(mb)
+enc = fd.GlomerularEncoder(mb)
 
 
 def run(seed, cond):
     Xtr, ytr, Xte, yte = fd.door_task(n_odors=args.odors, noise=args.noise, seed=seed)
     growth = None if cond == "fixed" else dict(allow=["PN>KC"], budget=args.budget)
-    layer = fd.Connectome(mb, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC"])
+    layer = fd.ConnectomeLayer(mb, "PN", "KC", t_ms=50, dt=0.5, input_mode="regular", trainable=["PN>KC"])
     if growth is not None:
         lab.Growth(layer, **growth)                                       # 추가 연결 부품 (layer.growth)
     layer.calibrate(enc(Xtr[::3]), {"KC": 5})
     head = fd.Pathway(fd.Homeostasis(), fd.Projection(layer.n_out, args.odors, seed=seed))
     model = fd.Pathway(enc, layer, head)
-    rule = fd.Adaptive(model.named_synapses(), rate=3e-3, clip=1.0)
+    rule = fd.AdaptivePlasticity(model.named_synapses(), rate=3e-3, clip=1.0)
     rng = np.random.default_rng(seed)
     rates = enc(Xtr[::3]).numpy()
 

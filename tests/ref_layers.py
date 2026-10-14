@@ -105,7 +105,7 @@ for dev in devs:
 # 3) 측억제·발화·활성화 = torch
 x = np.round(r.standard_normal((4, 10)) * 2) / 2
 for k in (1, 3, 10):
-    a = fd.Inhibition(k=k)(x).numpy()
+    a = fd.LateralInhibition(k=k)(x).numpy()
     kth = -np.sort(-x, 1)[:, k - 1:k]
     ok(f"Inhibition k={k} = k번째 이상 남김", np.array_equal(a, x * (x >= kth)))
 for kind, f in (("relu", torch.relu), ("tanh", torch.tanh), ("sigmoid", torch.sigmoid)):

@@ -59,7 +59,7 @@ def test_gpu_training_gradients_repeat_bitwise(kw):
     X = np.random.default_rng(0).uniform(50, 200, (8, 6)).astype(np.float32)
     res = []
     for _ in range(3):
-        L = fd.Connectome(c, "IN", "O", t_ms=40, device="gpu", trainable=True, **kw)
+        L = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="gpu", trainable=True, **kw)
         (L(X, seed=1) * 0.01).sum().retrograde()
         res.append([B.numpy(s.retro) for s in L.synapses()])
     assert all(np.array_equal(a, b) for r_ in res[1:] for a, b in zip(res[0], r_))
@@ -72,7 +72,7 @@ def test_calibrate_accepts_numpy_scalar_target():
     X = np.full((2, 10), 100, np.float32)
     tabs = []
     for t in (10.0, np.float32(10), np.int64(10)):
-        L = fd.Connectome(c, "in", "out", t_ms=40, device="cpu")
+        L = fd.ConnectomeLayer(c, "in", "out", t_ms=40, device="cpu")
         tabs.append(L.calibrate(X, t, iters=3))
     for t in tabs[1:]:
         assert list(t.after_hz) == list(tabs[0].after_hz) and list(t.target_hz) == list(tabs[0].target_hz)
@@ -256,7 +256,7 @@ def test_numpy_int_seeds_and_single_items_accepted():
     run = lambda circ, s: 0.5 + 0.01 * s
     rep = fd.compare(run, c, controls="shuffled", seeds=np.int64(3), verbose=False, check_repeat=False)
     assert rep.seeds == [0, 1, 2] and list(rep.scores) == ["real", "shuffled"]
-    L = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair")
+    L = fd.ConnectomeLayer(c, "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair")
     X = np.full((2, 6), 150, np.float32)
     assert fd.explain(lambda l, s: l(X, seed=s).sum(), L, seeds=np.int64(2)).seeds == [0, 1]
     assert fd.gradcheck(lambda l, s: l(X, seed=s).sum(), L, seeds=np.int32(2)).seeds == 2

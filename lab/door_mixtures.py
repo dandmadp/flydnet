@@ -1,8 +1,8 @@
 """
 실험 ⑤: 실제 냄새 혼합물 — 조건부 구별 (biconditional discrimination, XOR형)
 
-  python examples/door_mixtures.py
-  python examples/door_mixtures.py --sets 30 --shuffles 3   # 빠르게
+  python lab/door_mixtures.py
+  python lab/door_mixtures.py --sets 30 --shuffles 3   # 빠르게
 
 냄새 4개 (A, B, C, D)마다: AB → 보상(1), CD → 보상(1), AC → 보상 없음(0), BD → 보상 없음(0)
 모든 냄새가 보상·무보상에 똑같이 한 번씩 들어가고 모든 샘플이 2개 혼합이라, 반응이 더해지면

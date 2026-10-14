@@ -111,7 +111,7 @@ def _mask(seen):
 
 def linear_cl(buffer_per_class=0, epochs=1, lr=1e-3):
     lin = fd.Projection(Xtr.shape[1], 100, seed=0)
-    rule = fd.Adaptive(lin.named_synapses(), rate=lr)
+    rule = fd.AdaptivePlasticity(lin.named_synapses(), rate=lr)
     buf_x, buf_y = [], []
 
     def learn(X, y, seen):

@@ -72,7 +72,7 @@ def test_clip_numpy_bounds_on_gpu():
 
 def test_saturating_input_rate_warns_once():
     """입력 뉴런은 두 스텝에 한 번까지만 발화 (dt 0.1 ms면 5 kHz) - 그 이상은 조용히 잘렸음"""
-    layer = fd.Connectome(_rec(strong=True), "IN", "O", t_ms=20, device="cpu")
+    layer = fd.ConnectomeLayer(_rec(strong=True), "IN", "O", t_ms=20, device="cpu")
     with pytest.warns(UserWarning, match="포화"):
         layer(np.full((1, 6), 20000, np.float32), seed=0)
     import warnings
@@ -86,7 +86,7 @@ def test_calibrate_and_reach_do_not_raise_silent_warning():
     import warnings
     c = fd.graphs.layered([20, 100, 100, 10], 0.1, seed=0)
     x = np.full((4, 20), 100, np.float32)
-    layer = fd.Connectome(c, "in", "out", device="cpu")
+    layer = fd.ConnectomeLayer(c, "in", "out", device="cpu")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         layer.reach(x)
@@ -113,7 +113,7 @@ def test_unit_hint_for_normalized_inputs():
     """0~1 입력은 Hz로 해석돼 거의 입력이 없음 - 예전에는 "연결이 약함"으로 잘못 안내했음"""
     c, x = _colab()
     layer = fd.ConnectomeLayer(c, inputs=["input_group"], outputs=["output_group"], device="cpu")
-    with pytest.warns(UserWarning, match="발화율\(Hz\)") as rec:
+    with pytest.warns(UserWarning, match=r"발화율\(Hz\)") as rec:
         layer(x)
     assert not any("연결이 약함" in str(w.message) for w in rec)
 
@@ -167,7 +167,7 @@ def test_fused_lif_bitwise_equals_elementwise(monkeypatch, kw, effect):
     X = np.random.default_rng(0).uniform(50, 200, (5, 6)).astype(np.float32)
 
     def run():
-        layer = fd.Connectome(c, "IN", "O", t_ms=40, device="gpu", trainable=True, **kw)
+        layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="gpu", trainable=True, **kw)
         eff = (fd.genetics.activate(layer, fd.genetics.driver(c, group="H"), hz=80) if effect == "activate" else
                fd.genetics.mosaic(layer, p=0.4) if effect == "mosaic" else None)
         x = fd.Signal(X, device="gpu", plastic=True)
@@ -193,7 +193,7 @@ def test_backward_memory_per_step_stays_small():
     import cupy as cp
     c = fd.graphs.erdos_renyi(4000, 0.01, weight=20.0, groups={"in": np.arange(100), "out": np.arange(3900, 4000)})
     X = np.full((16, 100), 80, np.float32)
-    layer = fd.Connectome(c, "in", "out", t_ms=40, device="gpu", trainable=True)
+    layer = fd.ConnectomeLayer(c, "in", "out", t_ms=40, device="gpu", trainable=True)
     pool = cp.get_default_memory_pool()
     pool.free_all_blocks()
     base = pool.used_bytes()
@@ -215,7 +215,7 @@ def test_fused_inverse_cache_not_fooled_by_reused_gpu_memory(monkeypatch):
     lines = [G.Line(c, H[i:i + 5], str(i)) for i in (0, 5, 10, 15)]
 
     def run(line):
-        layer = fd.Connectome(c, "IN", "O", t_ms=30, device="gpu")
+        layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=30, device="gpu")
         with G.activate(layer, line, hz=300), fd.quiescent():
             return layer(np.zeros((2, 6), np.float32), seed=1, return_all=True).numpy()
     fast = [run(ln) for ln in lines * 3]
@@ -231,7 +231,7 @@ def test_stdp_sees_post_spikes_of_blocked_neurons():
     """Shibire(block)는 발화는 그대로 두고 전달만 막음 - STDP의 시냅스 후 흔적은 실제 발화로 (예전: 0이 되어 학습 없음)"""
     c = _rec(feedback_edges=True, strong=True)
     X = np.random.default_rng(0).uniform(50, 200, (4, 6)).astype(np.float32)
-    layer = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu", trainable=True)
+    layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=60, device="cpu", trainable=True)
     st = fd.STDP(layer)
     onto = np.isin(B.numpy(layer.wiring.post)[B.numpy(layer.train_pos)], c.groups["O"])
     with fd.genetics.block(layer, fd.genetics.driver(c, group="O")):
@@ -241,7 +241,7 @@ def test_stdp_sees_post_spikes_of_blocked_neurons():
 
 
 def test_tune_surrogate_restores_layer_on_failure():
-    layer = fd.Connectome(_rec(strong=True), "IN", "O", t_ms=80, device="cpu", trainable=True, share="pair")
+    layer = fd.ConnectomeLayer(_rec(strong=True), "IN", "O", t_ms=80, device="cpu", trainable=True, share="pair")
     n = [0]
 
     def score(l, s):
@@ -250,7 +250,7 @@ def test_tune_surrogate_restores_layer_on_failure():
             raise RuntimeError("score 실패")
         return l(np.full((2, 6), 150, np.float32), seed=s).sum()
     with pytest.raises(RuntimeError):
-        fd.tune(score, layer, verbose=False)
+        fd.tune_surrogate(score, layer, verbose=False)
     assert layer.surrogate_damp == "auto"
 
 
@@ -265,7 +265,7 @@ def test_load_state_is_all_or_nothing():
 
 def test_calibrate_restores_gains_when_interrupted():
     c = fd.graphs.layered([20, 100, 10], 0.15, seed=0)
-    layer = fd.Connectome(c, "in", "out", device="cpu")
+    layer = fd.ConnectomeLayer(c, "in", "out", device="cpu")
     n, orig = [0], layer.forward
 
     def flaky(*a, **k):
@@ -304,12 +304,12 @@ def test_save_keeps_attributes_changed_after_construction(tmp_path):
     """layer.t_ms = 80 등 만든 뒤 바꾼 값이 저장에서 빠지고 불러온 층이 다르게 동작하던 것"""
     c = _rec(strong=True)
     X = np.full((2, 6), 150, np.float32)
-    layer = fd.Connectome(c, "IN", "O", t_ms=40, device="cpu")
+    layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu")
     layer.t_ms, layer.noise, layer.slope, layer.count_from_ms = 80, 0.5, 5.0, 10.0
     layer.p["w_syn"] = 0.5
     with fd.quiescent():
         a = layer(X, seed=0).numpy()
-    m = fd.Connectome.load(layer.save(tmp_path / "l"))
+    m = fd.ConnectomeLayer.load(layer.save(tmp_path / "l"))
     assert (m.t_ms, m.noise, m.slope, m.count_from_ms, m.p["w_syn"]) == (80, 0.5, 5.0, 10.0, 0.5)
     with fd.quiescent():
         np.testing.assert_array_equal(m(X, seed=0).numpy(), a)
@@ -319,8 +319,8 @@ def test_changing_w_syn_after_construction_applies_to_connections():
     """p["w_syn"]을 바꾸면 입력 자극에만 반영되고 연결 세기는 그대로이던 것 (같은 값인데 55 Hz 대 5 Hz)"""
     c = _rec(strong=True)
     X = np.full((2, 6), 150, np.float32)
-    a = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu", params={"w_syn": 0.6})
-    b = fd.Connectome(c, "IN", "O", t_ms=60, device="cpu")
+    a = fd.ConnectomeLayer(c, "IN", "O", t_ms=60, device="cpu", params={"w_syn": 0.6})
+    b = fd.ConnectomeLayer(c, "IN", "O", t_ms=60, device="cpu")
     b.p["w_syn"] = 0.6
     with fd.quiescent():
         np.testing.assert_array_equal(a(X, seed=0).numpy(), b(X, seed=0).numpy())
@@ -331,7 +331,7 @@ def test_threefactor_after_moving_layer_to_gpu():
     c = _rec(feedback_edges=True, strong=True)
     X = np.random.default_rng(0).uniform(50, 200, (3, 6)).astype(np.float32)
     for fb in ("random", "connectome"):
-        layer = fd.Connectome(c, "IN", "O", t_ms=40, device="cpu", trainable=True)
+        layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu", trainable=True)
         tf = fd.ThreeFactor(layer, feedback=fb, seed=0)
         layer.to("gpu")
         o = tf(X, seed=1)
@@ -368,7 +368,7 @@ def test_old_pathway_file_without_gains_warns():
     """0.1.16 이전 Pathway 파일에는 보정 배율이 저장되지 않음 - 조용히 보정 전 세기로 돌지 않게 알림 (ConnectomeLayer.save
     파일은 config에 배율이 있으므로 알리지 않음)"""
     c = _rec(feedback_edges=True, strong=True)
-    p = fd.Pathway(fd.Connectome(c, "IN", "O", t_ms=40, device="cpu", trainable=True))
+    p = fd.Pathway(fd.ConnectomeLayer(c, "IN", "O", t_ms=40, device="cpu", trainable=True))
     old = {k: v for k, v in p.state().items() if "gain_" not in k}                  # 옛 파일처럼 배율 항목 없음
     with pytest.warns(UserWarning, match="연결 배율"):
         p.load_state(old)
@@ -381,7 +381,7 @@ def test_reach_verdict_counts_unreachable_outputs():
     c = fd.Circuit.from_edges([0, 1], [1, 2], [20.0, 20.0], groups={"IN": [0], "H": [1], "O": [2], "Z": [3]}, n=4)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        layer = fd.Connectome(c, "IN", "Z", device="cpu")
+        layer = fd.ConnectomeLayer(c, "IN", "Z", device="cpu")
     rep = layer.reach(np.full((2, 1), 150, np.float32))
     assert rep.break_at == "Z" and "경로가 없음" in str(rep)
 
@@ -390,7 +390,7 @@ def test_activation_only_layer_reach_and_calibrate():
     """입력 그룹 없이 activate로만 자극하는 층: reach는 자극 뉴런에서 출발, calibrate는 그 그룹에서 중계를 찾음"""
     G = fd.genetics
     c = fd.graphs.layered([20, 100, 100, 10], 0.1, seed=0)
-    layer = fd.Connectome(c, None, "out", t_ms=60, device="cpu")
+    layer = fd.ConnectomeLayer(c, None, "out", t_ms=60, device="cpu")
     with G.activate(layer, G.driver(c, group="in"), hz=100):
         assert layer._relay_groups(["out"]) == ["h1", "h2"]
         assert layer.reach(None).break_at is not None                        # 보정 전: 끊김

@@ -335,9 +335,9 @@ class ConnectomeLayer(Tissue):
             out += getattr(self, n).paths()
         return out
 
-    def _send(self, sent, values, M, MT, extra, binary):
+    def _send(self, sent, values, M, MT, extra, binary, skip_silent=False):
         """고정 배선 전달 + 추가 경로 전달 (추가 경로가 없으면 고정 배선만 - 전과 같은 계산)"""
-        out = K.propagate(sent, values, M, MT, self.wiring, binary=binary)
+        out = K.propagate(sent, values, M, MT, self.wiring, binary=binary, skip_silent=skip_silent)
         for wx, vx, Mx, MTx in extra:
             out = out + K.propagate(sent, vx, Mx, MTx, wx, binary=binary)
         return out
@@ -546,6 +546,7 @@ class ConnectomeLayer(Tissue):
             values = values * self._probe["edge"]
         probe_n = self._probe.get("neuron")
         M, MT = K.matrices(self.wiring, values.data)                       # 순전파당 한 번만
+        skip = self._skip_silent(M)
         extra = self._extra_paths()                                          # 추가 연결 (없으면 [])
         if seed is None:
             seed = int(np.random.SeedSequence().generate_state(1)[0])
@@ -643,7 +644,7 @@ class ConnectomeLayer(Tissue):
                 else:
                     refr = Signal(xp.where(spk.data > 0, rfc_set, refr.data - 1))   # 효과기가 바꾼 발화로
                 sent = spk if blocked is None else scaled(spk, blocked)    # Shibire: 발화는 하지만 전달 없음
-                buf[(s + dly) % R] = self._send(sent, values, M, MT, extra, binary)
+                buf[(s + dly) % R] = self._send(sent, values, M, MT, extra, binary, skip)
                 if obs is not None:
                     obs.step(s, sent.data, u=uu[0], act=act, fired=spk.data)     # fired: Shibire로 막혀도 실제 발화
                 release(spk, sent, spk_raw)
@@ -657,10 +658,30 @@ class ConnectomeLayer(Tissue):
         phase0 = Signal(xp.broadcast_to(self.phase0[:, None], (self.n_in, Bn)).copy())
         state = (V0, z(), z(), z(), phase0, *[z() for _ in range(R)])
         state = self._run(run, state, steps, x, record)
+        self._note_activity(state[3].data, steps - s_cnt)
         rate = state[3].T * (1000.0 / self._span(steps, s_cnt, dt))            # (B, N) Hz
         out = rate if return_all else rate[:, self.out_idx]
         self._check_silent(x, rate)
         return (out, self._trace(rec)) if record is not None else out
+
+    SKIP_BELOW = 0.05
+
+    def _skip_silent(self, M) -> bool:
+        """이번 순전파에서 발화하지 않은 뉴런의 연결을 건너뛸지 (kernels.spmm skip_silent): GPU이고, 직전 순전파에서 한 스텝에
+        발화한 뉴런(시행 중 하나라도)이 SKIP_BELOW보다 적었고, 연결 세기가 모두 유한할 때 (무한대 x 0 = NaN을 건너뛰면 달라짐).
+        어느 쪽이든 같은 비트 - 속도만 다름 (활동이 드문 전체 뇌에서 빠르고, 촘촘하면 느림)"""
+        act = getattr(self, "_activity", None)
+        if act is None or self.device != "gpu" or B.device_of(M.data) != "gpu":
+            return False
+        return float(act) < self.SKIP_BELOW and bool(B.xp("gpu").isfinite(M.data).all())
+
+    def _note_activity(self, counts, n_steps):
+        """한 스텝에 발화한 뉴런 비율의 추정 (뉴런마다 min(1, 시행 합 스파이크 / 스텝 수)의 평균) - 다음 순전파의 _skip_silent용.
+        장치의 값으로만 두고 (여기서 기다리지 않음) 다음 순전파에서 읽음"""
+        if B.device_of(counts) != "gpu" or n_steps <= 0 or counts.size == 0:
+            return
+        xp = B.xp("gpu")
+        object.__setattr__(self, "_activity", xp.minimum(counts.sum(axis=1) / float(n_steps), 1.0).mean())
 
     def _span(self, steps, s_cnt, dt):
         """발화율을 세는 시간 (ms). t_ms가 dt의 배수면 t_ms를 그대로 (예전과 같은 값), 아니면 실제로 돈 스텝 수 x dt"""

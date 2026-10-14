@@ -104,7 +104,7 @@ if "gpu" in devs:
 g = fd.graphs.layered([20, 30, 5], 0.2, weight=30, seed=0)
 rates = np.linspace(5, 200, 20).astype(np.float32)[None].repeat(64, 0)
 for mode in ("poisson", "regular"):
-    L = fd.Connectome(g, "in", "out", t_ms=500, dt=0.1, input_mode=mode, device="cpu")
+    L = fd.ConnectomeLayer(g, "in", "out", t_ms=500, dt=0.1, input_mode=mode, device="cpu")
     with fd.quiescent():
         out = L(rates, seed=0, return_all=True).numpy()[:, g.groups["in"]].mean(0)
     # 입력 뉴런 발화율 = 자극 발화율. poisson: 전체 스파이크 수가 포아송 잡음 안 (|z| < 4, 시행 64 x 0.5 s).

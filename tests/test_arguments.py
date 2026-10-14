@@ -13,9 +13,9 @@ c = _rec(feedback_edges=True)
 c = fd.Circuit(c.root_ids, c.groups, c.pre, c.post, c.weight * 4)
 X = np.random.default_rng(0).uniform(50, 200, (4, 6)).astype(np.float32)
 P = lambda **k: fd.Projection(6, 3, device="cpu", **k)
-L = lambda **k: fd.Connectome(c, "IN", "O", **dict(dict(t_ms=20, device="cpu"), **k))
-LHO = lambda **k: fd.Connectome(c, "IN", ("H", "O"), **dict(dict(t_ms=20, device="cpu"), **k))   # H도 출력 (calibrate)
-L0 = lambda **k: fd.Connectome(c, None, "O", **dict(dict(t_ms=20, device="cpu"), **k))   # 입력 그룹 없이 (activate로만)
+L = lambda **k: fd.ConnectomeLayer(c, "IN", "O", **dict(dict(t_ms=20, device="cpu"), **k))
+LHO = lambda **k: fd.ConnectomeLayer(c, "IN", ("H", "O"), **dict(dict(t_ms=20, device="cpu"), **k))   # H도 출력 (calibrate)
+L0 = lambda **k: fd.ConnectomeLayer(c, None, "O", **dict(dict(t_ms=20, device="cpu"), **k))   # 입력 그룹 없이 (activate로만)
 syn = lambda: fd.Projection(3, 2, device="cpu").synapses()
 NEEDS_DATA = ("Glomeruli", "KCExpansion", "door_task")
 
@@ -43,18 +43,18 @@ TABLE = [
     ("Plasticity rate", lambda v: fd.Plasticity(syn(), rate=v), "nonneg"),
     ("Plasticity momentum", lambda v: fd.Plasticity(syn(), momentum=v), "unit_open"),
     ("Plasticity decay", lambda v: fd.Plasticity(syn(), decay=v), "nonneg"),
-    ("Adaptive betas[0]", lambda v: fd.Adaptive(syn(), betas=(v, 0.999)), "unit_open"),
-    ("Adaptive betas[1]", lambda v: fd.Adaptive(syn(), betas=(0.9, v)), "unit_open"),
-    ("Adaptive eps", lambda v: fd.Adaptive(syn(), eps=v), "pos"),
-    ("Adaptive decay", lambda v: fd.Adaptive(syn(), decay=v), "nonneg"),
+    ("Adaptive betas[0]", lambda v: fd.AdaptivePlasticity(syn(), betas=(v, 0.999)), "unit_open"),
+    ("Adaptive betas[1]", lambda v: fd.AdaptivePlasticity(syn(), betas=(0.9, v)), "unit_open"),
+    ("Adaptive eps", lambda v: fd.AdaptivePlasticity(syn(), eps=v), "pos"),
+    ("Adaptive decay", lambda v: fd.AdaptivePlasticity(syn(), decay=v), "nonneg"),
     ("RateEncoder max_rate", lambda v: fd.RateEncoder(6, 4, max_rate=v, device="cpu"), "pos"),
     ("RateEncoder k", lambda v: fd.RateEncoder(6, 4, k=v, device="cpu"), "int_pos"),
-    ("Glomeruli max_rate", lambda v: fd.Glomeruli(fd.flywire(), max_rate=v, device="cpu"), "pos"),
+    ("Glomeruli max_rate", lambda v: fd.GlomerularEncoder(fd.flywire(), max_rate=v, device="cpu"), "pos"),
     ("KCExpansion k_frac", lambda v: fd.KCExpansion(fd.flywire(), k_frac=v, device="cpu"), "unit"),
     ("DopamineReadout lr", lambda v: fd.DopamineReadout(6, 2, lr=v, device="cpu"), "nonneg"),
     ("DopamineReadout n_classes", lambda v: fd.DopamineReadout(6, v, device="cpu"), "int_pos"),
     ("AssocReadout per_class", lambda v: fd.AssocReadout(6, 2, per_class=v, device="cpu"), "int_pos"),
-    ("MBON per_class", lambda v: fd.MBON(6, 2, per_class=v, device="cpu"), "int_pos"),
+    ("MBON per_class", lambda v: fd.MushroomBodyOutput(6, 2, per_class=v, device="cpu"), "int_pos"),
     ("AxonHillock slope", lambda v: fd.AxonHillock(slope=v), "pos"),
     ("Homeostasis eps", lambda v: fd.Homeostasis(eps=v), "nonneg"),
     ("train rate", lambda v: fd.train(fd.Pathway(P()), X, [0, 1, 0, 1], rate=v, epochs=1, verbose=False), "nonneg"),
@@ -116,7 +116,7 @@ def test_lif_params_typo_and_threshold():
 def test_valid_numpy_scalars_accepted():
     """numpy 정수·실수도 정상 인자로"""
     fd.Projection(np.int64(6), np.int32(3), device="cpu")
-    fd.Adaptive(syn(), rate=np.float32(1e-3), betas=(np.float64(0.9), 0.999))
+    fd.AdaptivePlasticity(syn(), rate=np.float32(1e-3), betas=(np.float64(0.9), 0.999))
     L(checkpoint_every=np.int64(5), noise=np.float32(0.5))
 
 
@@ -160,7 +160,7 @@ TABLE2 = [
     ("screen seeds", lambda v: G.screen(lambda l, s: 1.0, L(), G.lines(c), seeds=v, verbose=False), [0, -1, 1.5]),
     ("ThreeFactor feedback", lambda v: fd.ThreeFactor(L(trainable=True), feedback=v), ["foo", 3]),
     ("ThreeFactor seed", lambda v: fd.ThreeFactor(L(trainable=True), seed=v), [1.5, "a"]),
-    ("tune candidates 범위 밖", lambda v: fd.tune(lambda l, s: l(X, seed=s).sum(), L(trainable=True, share="pair"),
+    ("tune candidates 범위 밖", lambda v: fd.tune_surrogate(lambda l, s: l(X, seed=s).sum(), L(trainable=True, share="pair"),
                                                candidates=(v,), verbose=False), [0, -1, 2.0, "x"]),
     ("gradcheck seeds", lambda v: fd.gradcheck(lambda l, s: l(X, seed=s).sum(), L(trainable=True, share="pair"), seeds=v), [0, -1]),
     ("compare seeds", lambda v: fd.compare(lambda cc, s: 0.5 + 0.01 * s, c, seeds=v, verbose=False), [1.5, "a", -3]),
@@ -168,13 +168,13 @@ TABLE2 = [
     ("compare 대조군 이름", lambda v: fd.compare(lambda cc, s: 0.5, c, controls=[v], seeds=3, verbose=False), ["shuffle", 3]),
     ("Local radius", lambda v: fd.controls.Local(np.random.rand(c.N, 2), v), "pos"),
     ("Local xy 모양", lambda v: fd.compare(lambda cc, s: 0.5, c, controls=[fd.controls.Local(np.random.rand(v, 2), 1.0)], seeds=3, verbose=False), [3]),
-    ("door_odors min_measured", lambda v: fd.door_odors(fd.Glomeruli(_mb(), device="cpu").glomeruli, min_measured=v), [-1, 2.5]),
+    ("door_odors min_measured", lambda v: fd.door_odors(fd.GlomerularEncoder(_mb(), device="cpu").glomeruli, min_measured=v), [-1, 2.5]),
     ("biconditional_mixtures n", lambda v: fd.biconditional_mixtures(np.random.rand(10, 5), [(0, 1, 2, 3)], v), [0, -1, 2.5]),
     ("drifting_grating frames", lambda v: fd.drifting_grating(np.random.rand(10, 2), [0], t_ms=50, frames=v), "int_pos"),
     ("drifting_grating t_ms", lambda v: fd.drifting_grating(np.random.rand(10, 2), [0], t_ms=v, frames=5), "pos"),
     ("drifting_grating wavelength", lambda v: fd.drifting_grating(np.random.rand(10, 2), [0], t_ms=50, frames=5, wavelength=v), "pos"),
     ("column_map smooth", lambda v: fd.column_map(fd.visual_circuit(), smooth=v), [-1, 2.5]),
-    ("Glomeruli 없는 그룹", lambda v: fd.Glomeruli(_mb(), group=v, device="cpu"), ["없는그룹"]),
+    ("Glomeruli 없는 그룹", lambda v: fd.GlomerularEncoder(_mb(), group=v, device="cpu"), ["없는그룹"]),
     ("KCExpansion 없는 그룹", lambda v: fd.KCExpansion(_mb(), pre=v, device="cpu"), ["없는그룹"]),
     ("RateEncoder seed", lambda v: fd.RateEncoder(6, 4, seed=v, device="cpu"), [1.5, "a"]),
     ("evaluate batch", lambda v: fd.evaluate(fd.Pathway(fd.Projection(6, 2, device="cpu")), X, [0, 1, 0, 1], batch=v), "int_pos"),

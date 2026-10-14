@@ -110,7 +110,7 @@ ok("regroup: 연결 그대로, 나머지는 rest", np.array_equal(rg.pre, c.pre)
 
 # gradcheck: 연속값 뉴런은 기울기가 정확 → cos ≈ 1, 크기 비율 ≈ 1, '믿을 만함'
 g = fd.graphs.layered([8, 30, 5], 0.3, weight=0.5, seed=0)
-L = fd.Connectome(g, "in", "out", t_ms=6, neuron="graded", trainable=True, device="cpu", share="pair")
+L = fd.ConnectomeLayer(g, "in", "out", t_ms=6, neuron="graded", trainable=True, device="cpu", share="pair")
 X = np.random.default_rng(1).random((4, 8)).astype(np.float32)
 W = np.random.default_rng(2).standard_normal((4, 5)).astype(np.float32)
 gc = fd.gradcheck(lambda L_, s: (L_(X, seed=s) * fd.Signal(W)).sum(), L, eps=0.01)
@@ -119,7 +119,7 @@ ok("gradcheck: 크기 비율 ≈ 1", abs(gc.ratio - 1) < 0.01, gc.ratio)
 ok("gradcheck: '믿을 만함'", "믿을 만함" in str(gc))
 
 # explain: 경로별 예측의 합 = 연결마다 기울기 합 (pathways=True), 유형 합 = 뉴런 합
-L2 = fd.Connectome(g, "in", "out", t_ms=6, neuron="graded", device="cpu")
+L2 = fd.ConnectomeLayer(g, "in", "out", t_ms=6, neuron="graded", device="cpu")
 e = fd.explain(lambda L_, s: (L_(X, seed=s) * fd.Signal(W)).sum(), L2, by="group", pathways=True)
 ok("explain: 유형 합 = 뉴런 합", np.isclose(e.groups.pred_drop.sum(), e.neurons.sum(), rtol=1e-4))
 # 연속값 뉴런은 선형 구간에서 끄기 = 1차 예측 (활동 r이 r_max·0에 걸리지 않으면 정확)

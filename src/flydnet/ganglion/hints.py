@@ -38,10 +38,10 @@ CIRCUIT = {
 
 MODULE = {
     "Linear": "fd.Projection", "Sequential": "fd.Pathway", "Module": "fd.Tissue", "Parameter": "fd.Synapse",
-    "Tensor": "fd.Signal", "tensor": "fd.Signal", "Adam": "fd.Adaptive", "AdamW": "fd.Adaptive(..., decay=...)",
+    "Tensor": "fd.Signal", "tensor": "fd.Signal", "Adam": "fd.AdaptivePlasticity", "AdamW": "fd.AdaptivePlasticity(..., decay=...)",
     "SGD": "fd.Plasticity", "no_grad": "fd.quiescent", "cross_entropy": "fd.surprise", "CrossEntropyLoss": "fd.surprise",
     "LayerNorm": "fd.Homeostasis", "ReLU": "fd.Activation('relu')", "relu": "Signal.relu() 또는 fd.Activation('relu')",
-    "load": "fd.Connectome.load(path) 또는 tissue.load(path)", "ConnectomeLayer_": "fd.Connectome",
+    "load": "fd.ConnectomeLayer.load(path) 또는 tissue.load(path)", "ConnectomeLayer_": "fd.ConnectomeLayer",
     "Brain": "fd.brain()", "FlyWire": "fd.flywire()", "from_flywire": "fd.flywire()", "whole_brain": "fd.brain()",
 }
 

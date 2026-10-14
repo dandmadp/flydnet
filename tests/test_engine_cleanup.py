@@ -114,7 +114,7 @@ def test_ci95_without_scipy(monkeypatch):
 def test_reach_hops_numpy_csr():
     """홉 수 BFS는 numpy CSR (예전 scipy). 발화율을 재는 순전파의 scipy 의존은 4단계에서 없앰"""
     c = fd.graphs.layered([5, 8, 4], 0.5, seed=0)
-    layer = fd.Connectome(c, "in", "out", t_ms=20, device="cpu")
+    layer = fd.ConnectomeLayer(c, "in", "out", t_ms=20, device="cpu")
     t = layer.reach(np.full((1, 5), 80, np.float32)).table
     assert dict(zip(t.group, t.hops)) == {"in": 0.0, "h1": 1.0, "out": 2.0}
 
@@ -266,7 +266,7 @@ def test_forward_without_scipy(monkeypatch):
     monkeypatch.setitem(sys.modules, "scipy.sparse", None)
     monkeypatch.delenv("FLYDNET_SPARSE", raising=False)
     c = fd.graphs.layered([5, 8, 4], 0.5, seed=0)
-    layer = fd.Connectome(c, "in", "out", t_ms=40, device="cpu", trainable=True, gains={"in>h1": 6.0, "h1>out": 6.0})
+    layer = fd.ConnectomeLayer(c, "in", "out", t_ms=40, device="cpu", trainable=True, gains={"in>h1": 6.0, "h1>out": 6.0})
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="CPU 희소 연산이 느린 경로")
         out = layer(np.full((1, 5), 120, np.float32), seed=0)
@@ -362,7 +362,7 @@ def test_missing_kernel_file(monkeypatch, tmp_path):
 # ─────────────── 6단계: 버그 ───────────────
 def _graded_layer(**kw):
     c = fd.graphs.layered([30, 60, 10], 0.2, seed=0)
-    return fd.Connectome(c, "in", "out", t_ms=100, dt=1.0, neuron="graded", device="cpu",
+    return fd.ConnectomeLayer(c, "in", "out", t_ms=100, dt=1.0, neuron="graded", device="cpu",
                          bias={"h1": 0.5, "out": 0.5}, **kw)
 
 
@@ -393,7 +393,7 @@ def test_graded_calibrate_rejects_unreachable_target():
 def test_graded_calibrate_default_relay_follows_r_max():
     """relay_hz 기본("auto") = r_max의 4분의 1 - 예전 기본 5는 r_max가 5 이하면 기본값만으로 오류였음"""
     c = fd.graphs.layered([30, 60, 10], 0.2, seed=0)
-    layer = fd.Connectome(c, "in", "out", t_ms=100, dt=1.0, neuron="graded", device="cpu", params={"r_max": 4.0},
+    layer = fd.ConnectomeLayer(c, "in", "out", t_ms=100, dt=1.0, neuron="graded", device="cpu", params={"r_max": 4.0},
                           bias={"h1": 0.5, "out": 0.5})
     act = (np.random.default_rng(0).random((4, 20, 30)) * 2).astype(np.float32)
     t = layer.calibrate(act)
@@ -405,7 +405,7 @@ def test_graded_calibrate_default_relay_follows_r_max():
 def test_lif_calibrate_still_rejects_quiet_inputs():
     """스파이킹 뉴런은 그대로: 0~1 값을 Hz로 넣으면 바로 오류"""
     c = fd.graphs.layered([30, 60, 10], 0.2, seed=0)
-    layer = fd.Connectome(c, "in", "out", t_ms=50, device="cpu")
+    layer = fd.ConnectomeLayer(c, "in", "out", t_ms=50, device="cpu")
     with pytest.raises(ValueError, match="거의 발화하지 않음"):
         layer.calibrate(np.full((2, 30), 0.5, np.float32))
 

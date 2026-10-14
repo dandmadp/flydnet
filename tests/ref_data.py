@@ -63,7 +63,7 @@ ok("flywire 연결의 ID", set(zip(mb.root_ids[mb.pre], mb.root_ids[mb.post])) =
 ok("flywire meta 순서 = 뉴런 순서", np.array_equal(mb.meta.root_id.values, mb.root_ids))
 
 # 3) 사구체 대응: 단일 사구체형 PN마다 사구체 하나, 같은 사구체 PN은 같은 발화율
-enc = fd.Glomeruli(mb, device="cpu")
+enc = fd.GlomerularEncoder(mb, device="cpu")
 P = np.asarray(enc.P)
 pm = mb.meta.iloc[mb.groups["PN"]]
 uni = pm.cell_sub_class.astype(str).eq("uniglomerular").values

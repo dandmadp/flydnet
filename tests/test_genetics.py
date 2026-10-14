@@ -270,7 +270,7 @@ def test_mosaic_applies_during_bio_learning_rules():
     c = _rec(feedback_edges=True)
     c = fd.Circuit(c.root_ids, c.groups, c.pre, c.post, c.weight * 4)
     X = np.random.default_rng(0).uniform(50, 200, (3, 6)).astype(np.float32)
-    layer = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True)
+    layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=30, device="cpu", trainable=True)
     tf, st = fd.ThreeFactor(layer, seed=0), fd.STDP(layer)
     plain_tf, plain_st = tf(X, seed=2).data.copy(), st(X, seed=2).data.copy()
     with fd.genetics.mosaic(layer, p=0.9):

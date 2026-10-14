@@ -56,7 +56,7 @@ def _layer(c, spec, neuron, trainable=False):
     b = _bias(c, spec, spec["bias"] if neuron == "lif" else spec["graded_bias"])
     if b is not None:
         kw["bias"] = b
-    return fd.Connectome(c, spec["inputs"], spec["outputs"], **kw)
+    return fd.ConnectomeLayer(c, spec["inputs"], spec["outputs"], **kw)
 
 
 def _np(a):

@@ -30,7 +30,7 @@ def elementwise(on):
 def run(dev, cfg):
     kw = dict(t_ms=40, device=dev, trainable=True)
     kw.update(cfg["kw"])
-    L = fd.Connectome(c, "IN", "O", **kw)
+    L = fd.ConnectomeLayer(c, "IN", "O", **kw)
     effs = []
     for e in cfg["eff"]:
         if e == "activate":

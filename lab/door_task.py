@@ -1,8 +1,8 @@
 """
 실험 ④: 실제 냄새 데이터 (DoOR 2.0) — 실제 버섯체 배선이 무작위 배선보다 나은가?
 
-  python examples/door_task.py
-  python examples/door_task.py --seeds 2 --shuffles 3   # 빠르게
+  python lab/door_task.py
+  python lab/door_task.py --seeds 2 --shuffles 3   # 빠르게
 
 데이터: data/door/ 에 DoOR.data의 door_response_matrix.csv, door_mappings.csv, odor.csv
         (https://github.com/ropensci/DoOR.data, Münch & Galizia 2016, CC BY-SA 4.0)

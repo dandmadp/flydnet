@@ -66,7 +66,7 @@ class SGDLogistic:
     def __init__(self, n_in, mu, sd, lr=1e-3, seed=0):
         self.mu, self.sd = mu, sd
         self.m = fd.Projection(n_in, 10, seed=seed)
-        self.rule = fd.Adaptive(self.m.named_synapses(), rate=lr)
+        self.rule = fd.AdaptivePlasticity(self.m.named_synapses(), rate=lr)
 
     def f(self, X):
         return ((X - self.mu) / self.sd).astype(np.float32)

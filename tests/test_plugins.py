@@ -172,8 +172,8 @@ def test_shared_model_object_does_not_leak_between_layers(make):
 
     def grads(interleave):
         m = make()
-        a = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, neuron=m, checkpoint_every=20)
-        b = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, neuron=m, checkpoint_every=20,
+        a = fd.ConnectomeLayer(c, "IN", "O", t_ms=30, device="cpu", trainable=True, neuron=m, checkpoint_every=20)
+        b = fd.ConnectomeLayer(c, "IN", "O", t_ms=30, device="cpu", trainable=True, neuron=m, checkpoint_every=20,
                           params={"t_rfc": 0.5})
         loss = a(X, seed=1).sum()
         if interleave:
@@ -190,11 +190,11 @@ def test_izhikevich_gradient_does_not_explode():
     X = np.random.default_rng(0).uniform(50, 200, (3, 6)).astype(np.float32)
     big = []
     for t in (10, 60):
-        layer = fd.Connectome(c, "IN", "O", t_ms=t, device="cpu", trainable=True, neuron=fd.neurons.Izhikevich())
+        layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=t, device="cpu", trainable=True, neuron=fd.neurons.Izhikevich())
         layer(X, seed=1).sum().retrograde()
         big.append(np.abs(_retro(layer)).max())
     assert np.all(np.isfinite(big)) and big[1] < 10 * big[0] and big[1] < 1e5
-    layer = fd.Connectome(c, "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair",
+    layer = fd.ConnectomeLayer(c, "IN", "O", t_ms=30, device="cpu", trainable=True, share="pair",
                           neuron=fd.neurons.Izhikevich())
     r = fd.gradcheck(lambda l, s: l(X, seed=s).sum(), layer, seeds=3)
     assert r.cos > 0.6
