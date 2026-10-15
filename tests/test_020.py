@@ -66,3 +66,52 @@ def test_skip_silent_off_for_nonfinite_weights():
     assert L._skip_silent(M)
     M.data[0] = cp.inf
     assert not L._skip_silent(M)
+
+
+def test_doctor_survives_unreadable_nvidia_smi(monkeypatch):
+    """nvidia-smi 출력을 못 읽어도 (한국어 윈도우에서 GPU 프로세스 경로의 한글 - 예전엔 cp949로 읽다 실패하면 출력이 None이
+    되어 re.search에서 멈췄음) 드라이버 버전을 모름(None)으로 넘어감. 읽을 때 UTF-8로 지정되는지도"""
+    import shutil
+    import subprocess
+    from flydnet import __main__ as M
+    seen = {}
+
+    class R:
+        stdout = None
+
+    def fake_run(*a, **k):
+        seen.update(k)
+        return R()
+    monkeypatch.setattr(shutil, "which", lambda name: "nvidia-smi")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert M._driver_cuda() is None
+    assert seen.get("encoding") == "utf-8" and seen.get("errors") == "replace"
+
+
+def test_old_torch_names_say_where_they_went():
+    """0.1.17까지의 fd.torch.ConnectomeLayer 등은 옮긴 곳을 알려 줌 (예전: 그냥 '속성 없음')"""
+    pytest.importorskip("torch")
+    with pytest.raises(AttributeError, match=r"fd\.ConnectomeLayer"):
+        fd.torch.ConnectomeLayer
+    with pytest.raises(AttributeError, match=r"fd\.RateEncoder"):
+        fd.torch.RateEncoder
+    with pytest.raises(AttributeError, match="bridge"):
+        fd.torch.SpikeFn
+    with pytest.raises(AttributeError, match="no attribute"):
+        fd.torch.nothing_here
+    assert callable(fd.torch.bridge)
+
+
+def test_interpret_flags_ladder_contradiction():
+    """더 많은 구조를 유지한 대조군(shuffled)은 이기고 더 적은 대조군(randomized)은 못 이기면 (사다리와 모순 - 보통 잡음)
+    해석이 그 사실을 먼저 알림. 예전: 모순을 말하지 않고 '중요한 구조: ...'로 단정"""
+    from flydnet import controls as C
+    real = np.array([0.80, 0.82, 0.81, 0.83, 0.80, 0.82])
+    scores = {"real": real, "randomized": real + np.array([0.01, -0.02, 0.0, 0.01, -0.01, 0.0]), "shuffled": real - 0.05}
+    rep = C.CompareReport(scores=scores, seeds=list(range(6)),
+                          controls=[C._as_control("randomized"), C._as_control("shuffled")])
+    lines = rep.interpret()
+    assert "맞지 않음" in lines[0] and "randomized" in lines[0] and "seed" in lines[0]
+    ok = C.CompareReport(scores={"real": real, "randomized": real - 0.05, "shuffled": real - 0.04}, seeds=list(range(6)),
+                         controls=[C._as_control("randomized"), C._as_control("shuffled")])
+    assert not any("맞지 않음" in s for s in ok.interpret())                # 순서대로면 경고 없음

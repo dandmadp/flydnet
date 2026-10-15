@@ -262,6 +262,45 @@ def sample_labels(y, what: str = "라벨") -> np.ndarray:
     return y
 
 
+def content_order(X) -> np.ndarray:
+    """시료(행)를 내용으로 정한 순서 (고정된 무작위 방향으로 사영한 값의 순서, 같으면 들어온 순서). 같은 데이터면 어떤 순서로
+    들어와도 같은 순서 - 처음 데이터로 정하는 보정·표준화를 데이터 순서와 무관하게 하려고 (예전: 들어온 순서대로 더하고
+    256개가 넘으면 위치로 골라, 순서만 섞어도 보정 배율이 달라짐 - MNIST 1만 개에서 시험 시료 9.1%의 예측이 바뀜)"""
+    X = numpy(X) if device_of(X) == "gpu" else np.asarray(X)
+    X = X.reshape(len(X), -1)
+    r = np.random.default_rng(0x5EED).standard_normal(X.shape[1])
+    h = np.empty(len(X))
+    step = _chunk_rows(X.shape[1])
+    for i in range(0, len(X), step):                                      # 잘라서 (예전: 전체를 float64로 복사)
+        h[i:i + step] = X[i:i + step].astype(np.float64) @ r
+    return np.lexsort((np.arange(len(X)), h))
+
+
+CHUNK_ELEMS = 1 << 20                                                    # 한 번에 float64로 바꿀 원소 수 (8 MB)
+
+
+def _chunk_rows(d):
+    return max(1, CHUNK_ELEMS // max(int(d), 1))
+
+
+def ordered_moments(A, order):
+    """열마다 평균·분산과 전체 제곱 평균을 order 순서로, 행을 잘라 float64로 누적 (전체를 float64로 복사하지 않음 - 예전:
+    MNIST 6만 장에서 2.9 GB). 같은 order면 같은 비트. 반환 (평균 (d,), 분산 (d,), 제곱 평균 스칼라) float64"""
+    n, step = len(order), _chunk_rows(A.shape[1])
+    s = np.zeros(A.shape[1]); q = 0.0
+    for i in range(0, n, step):
+        a = A[order[i:i + step]].astype(np.float64)
+        s += a.sum(0)
+        np.multiply(a, a, out=a); q += float(a.sum())
+    mu = s / max(n, 1)
+    v = np.zeros(A.shape[1])
+    for i in range(0, n, step):
+        a = A[order[i:i + step]].astype(np.float64)
+        a -= mu; np.multiply(a, a, out=a)
+        v += a.sum(0)
+    return mu, v / max(n, 1), q / max(n * A.shape[1], 1)
+
+
 def class_mask(classes, n_classes: int, xp, dtype):
     """predict(classes=...)의 마스크: 고를 클래스는 0, 나머지는 -inf. 비었거나 범위 밖(음수 포함)이면 오류 - 예전: 빈 목록은
     모든 점수가 -inf라 0번 클래스로, 음수는 파이썬 음수 인덱스로 뒤쪽 클래스를 조용히 골랐음"""

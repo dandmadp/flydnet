@@ -231,6 +231,12 @@ class CompareReport:
         steps = [k for k in level if k in present]
         lose = lambda k: k != "real" and t.loc[present[k]].p < alpha and t.loc[present[k]]["diff"] > 0
         out = []
+        ctrl_steps = [k for k in steps if k != "real"]                     # 사다리와 모순: 더 많은 구조를 유지한 대조군은
+        for i, lo in enumerate(ctrl_steps):                                # 이기고 더 적게 유지한 대조군은 못 이김 (보통 잡음)
+            for hi in ctrl_steps[i + 1:]:                                  # - 예전엔 말하지 않고 아래 해석을 단정했음
+                if lose(hi) and not lose(lo):
+                    out.append(f"결과가 대조군 사다리와 맞지 않음: {present[hi]}(구조를 더 유지)는 이겼는데 {present[lo]}"
+                               f"(덜 유지)는 이기지 못함 - 잡음일 가능성이 큼, seed를 늘려 다시 확인 (아래 해석은 잠정)")
         for lo, hi in zip(steps, steps[1:]):
             if not lose(lo) or lose(hi):
                 continue

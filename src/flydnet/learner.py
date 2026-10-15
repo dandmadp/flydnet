@@ -3,11 +3,12 @@
   learner = fd.Learner()                          # 오른쪽 버섯체 PN → KC (FlyWire 데이터 필요: fd.download())
   learner.learn(X_odor, y_odor)                   # 처음 데이터로 입력 변환·연결 세기 보정까지 자동
   learner.learn(X_new, y_new)                     # 새 클래스: 이어서 추가, 앞에서 배운 것은 그대로
-  learner.learn(X_img, y_img, source="image")     # 다른 종류(특징 수가 다른) 데이터: 입력 변환만 새로, 커넥톰·기억은 공유
+  # 다른 종류(특징 수가 다른) 데이터를 한 기억에: fd.Learner(input_weight=0) 후 learn(X_img, y_img, source="image")
   learner.predict(X), learner.score(X, y), learner.save("learner.npz"), fd.Learner.load("learner.npz")
   입력은 0 이상 (MinMaxScaler, 이미지는 X / 255) - 음수는 발화율 0으로 잘림 (많으면 경고). 부호가 뜻이 있으면 negative="onoff"
 
-구조: 데이터 → 입력 변환(source마다) → 커넥톰 층 (스파이킹, 학습 안 함) → KC 발화율 → 기억(출력)
+구조: 데이터 → 입력 변환(source마다) → 커넥톰 층 (스파이킹, 학습 안 함) → KC 발화율 (+ 표준화한 원래 입력, input_weight)
+      → 기억(출력). 아래 수치는 0.1.19 (KC만, input_weight=0)
 rule
   "lda"       흐름 선형 판별 (streaming LDA, Hayes & Kanan 2020): 클래스마다 평균 KC 반응 + 모든 클래스가 함께 쓰는 공분산을
               누적 (한 번 훑기, 학습률·에폭 없음, 들어온 순서와 무관하게 같은 결과). 공분산으로 KC끼리 겹치는 반응을 걸러
@@ -45,6 +46,7 @@ from .ganglion.signal import Signal, quiescent
 from .ganglion.tissue import Synapse, Tissue
 
 RULES = ("lda", "assoc", "backprop")
+INPUT_CLIP = 10.0                                                         # 표준화한 원래 입력의 한도 (표준편차 단위)
 
 
 class _StreamingLDA:
@@ -58,13 +60,14 @@ class _StreamingLDA:
         self._W = None
 
     def learn(self, F, yi, n_classes):
-        F = np.asarray(F, np.float64)
+        F = np.asarray(F)                                                 # float64로는 클래스마다 (예전: 전체를 복사 -
+        yi = np.asarray(yi)                                               # MNIST 6만 장이면 1.6 GB 더)
         if len(self.n) < n_classes:
             add = n_classes - len(self.n)
             self.mu = np.concatenate([self.mu, np.zeros((add, self.d))])
             self.n = np.concatenate([self.n, np.zeros(add)])
         for c in np.unique(yi):
-            x = F[yi == c]
+            x = np.asarray(F[yi == c], np.float64)
             nb, mb = len(x), x.mean(0)
             dx = x - mb
             self.S += dx.T @ dx
@@ -100,7 +103,12 @@ class _StreamingLDA:
             b = np.where(seen, -0.5 * (W * self.mu).sum(1), -np.inf)
             self._W = (W, b)
         W, b = self._W
-        return np.asarray(F, np.float64) @ W.T + b
+        F = np.asarray(F)
+        step = B._chunk_rows(F.shape[1])                                  # 잘라서 (예전: 전체를 float64로 복사)
+        out = np.empty((len(F), len(b)))
+        for i in range(0, len(F), step):
+            out[i:i + step] = np.asarray(F[i:i + step], np.float64) @ W.T + b
+        return out
 
 
 def _rows(X):
@@ -164,12 +172,16 @@ class Learner:
                입력 변환의 최대 발화율 (Hz)
     negative:  음수 특징 - "clip" (기본, 0으로 잘림, 많으면 알림) / "onoff" (ON·OFF 두 채널로, 부호 정보 유지).
                입력은 0 이상이 기본: StandardScaler 대신 MinMaxScaler, 이미지는 X / 255
+    input_weight: KC 특징 옆에 원래 입력도 붙여 기억 (특징마다 표준화 x KC 평균 크기 x 이 배수, 기준은 처음 배울 때 고정).
+               0이면 KC만 (0.1.19까지). 기본 4: 냄새·DoOR·MNIST·CIFAR-100 연속 학습에서 lda·assoc·backprop 모두 올랐음
+               (예: CIFAR 연속 lda 45.4 → 63.8%, MNIST 1만 개 82.4 → 86.0%, scripts/ml_bench.py). 0보다 크면 source는 하나만
     나머지 인자는 ConnectomeLayer로 (dt, input_mode 등)
     """
 
     def __init__(self, circuit=None, inputs="PN", outputs="KC", rule: str = "lda", per_class: int = 1, shrink="auto",
                  epochs: int = 5, rate: float = 1e-3, t_ms: float = 50.0, target_hz="auto", max_rate: float = 100.0,
-                 batch: int = 256, seed: int = 0, device: str | None = None, negative: str = "clip", **layer_kw):
+                 batch: int = 256, seed: int = 0, device: str | None = None, negative: str = "clip",
+                 input_weight: float = 4.0, **layer_kw):
         if rule not in RULES:
             raise ValueError(f"rule은 {RULES} 중 하나: {rule!r}")
         _C.integer("per_class", per_class)
@@ -184,7 +196,9 @@ class Learner:
             _C.nonneg("shrink", shrink)
         if negative not in ("clip", "onoff"):
             raise ValueError(f"negative는 'clip'(음수를 0으로) 또는 'onoff'(ON·OFF 두 채널): {negative!r}")
-        self.shrink, self.negative = shrink, negative
+        _C.nonneg("input_weight", input_weight)
+        self.shrink, self.negative, self.input_weight = shrink, negative, float(input_weight)
+        self.inp = {}                         # source 이름 → (평균, 표준편차, 배율) - 원래 입력 표준화 (처음 배울 때 고정)
         self.lda = None                       # lda
         self.circuit, self.inputs, self.outputs = circuit, inputs, outputs
         self.rule, self.per_class, self.epochs, self.rate = rule, per_class, epochs, float(rate)
@@ -224,12 +238,16 @@ class Learner:
         if self.layer is None:
             self._build_layer()
         if source not in self.encoders:
+            if self.input_weight and self.encoders:
+                raise ValueError(f"input_weight > 0이면 데이터 종류(source)는 하나만 (원래 입력의 특징 수가 종류마다 달라 한 기억에 "
+                                 f"붙일 수 없음) - 여러 종류를 함께 배우려면 Learner(..., input_weight=0)")
             self._encoder(source, X.shape[1])
         elif X.shape[1] != self.n_in[source]:
             raise ValueError(f"source {source!r}의 특징 수는 {self.n_in[source]}: 받은 것 {X.shape[1]} "
                              f"(다른 종류의 데이터면 source='이름'을 따로)")
         if not self.calibrated:                                          # 처음 데이터로 연결 세기 보정 (한 번만 -
-            pick = np.unique(np.linspace(0, len(X) - 1, min(len(X), 256)).round().astype(np.int64))   # 나중에 바꾸면
+            order = B.content_order(X)                                    # 데이터 순서와 무관하게 같은 시료·같은 순서로
+            pick = order[np.unique(np.linspace(0, len(X) - 1, min(len(X), 256)).round().astype(np.int64))]   # 나중에 바꾸면
             with quiescent():                                            # 앞에서 배운 기억과 특징이 어긋남)
                 rates = self.encoders[source](X[pick])
             self.layer.calibrate(rates.data if isinstance(rates, Signal) else rates,
@@ -245,6 +263,41 @@ class Learner:
         if X.shape[1] != self.n_in[source]:
             raise ValueError(f"source {source!r}의 특징 수는 {self.n_in[source]}: 받은 것 {X.shape[1]}")
         return extract(self.layer, X, self.encoders[source], batch=self.batch, seed=self.seed).astype(np.float32)
+
+    def _memory_features(self, X, source, fit: bool = False):
+        """기억에 넣는 특징: KC 발화율 (+ input_weight > 0이면 표준화한 원래 입력). 표준화 기준은 처음 배울 때(fit) 정해 고정 -
+        예측 쪽에서는 정하지 않음 (기준이 없으면 시험 데이터로 정해 버리지 않게 오류)"""
+        F = self.features(X, source)
+        if not self.input_weight:
+            return F
+        X = _rows(X)
+        if source not in self.inp:
+            if not fit:
+                raise RuntimeError(f"source {source!r}의 원래 입력 기준이 없음 - learn()부터 (예측 데이터로 정하지 않음)")
+            self.inp[source] = self._input_stats(X, F)
+        mu, sd, scale = self.inp[source]
+        z = np.clip((X - mu) / sd, -INPUT_CLIP, INPUT_CLIP)                 # 학습 때 거의 안 변한 특징이 커져도 한도 안에서
+        return np.hstack([F, (z * scale).astype(np.float32)])
+
+    def _input_stats(self, X, F):
+        """원래 입력 표준화 기준 (처음 배울 때 한 번): 평균, 표준편차 (하한: 평균 표준편차의 10% - 예전엔 0이면 1e-6으로 나눠
+        학습 때 늘 0이던 특징이 시험 때 수십만 배), 배율 = KC 묶음의 크기 x input_weight (시료가 1개면 분산 대신 RMS)"""
+        n = len(X)
+        if n < 10:
+            import warnings
+            warnings.warn(f"처음 learn()의 시료가 {n}개 - 원래 입력의 표준화 기준(input_weight)을 정하기엔 적음 (이 기준은 고정됨). "
+                          "처음엔 수십 개 이상으로, 아니면 Learner(..., input_weight=0)", stacklevel=4)
+        order = B.content_order(X)                                         # 데이터 순서와 무관한 같은 덧셈 순서
+        mu, var, msq = B.ordered_moments(X, order)                        # 잘라서 누적 (큰 데이터도 메모리 적게)
+        sd = np.sqrt(var)
+        rms = float(np.sqrt(msq))
+        floor = max(0.1 * float(sd.mean()), 1e-3 * rms, 1e-6) if n > 1 else max(rms, 1e-6)   # 1개면 모두 같은 크기로
+        sd = np.maximum(sd, floor)
+        _, fvar, fmsq = B.ordered_moments(F, order)
+        v = float(fvar.mean()) if n > 1 else 0.0
+        base = np.sqrt(v) if v > 0 else float(np.sqrt(fmsq))
+        scale = max(base, 1e-6) * self.input_weight
+        return mu.astype(np.float32), sd.astype(np.float32), np.float32(scale)
 
     def _labels(self, y, grow: bool):
         out = np.empty(len(y), np.int64)
@@ -270,7 +323,8 @@ class Learner:
         if len(X) != len(y):
             raise ValueError(f"X와 y의 개수가 다름: {len(X)} 대 {len(y)}")
         self._ready(X, source)
-        F = self.features(X, source)
+        had_inp = source in self.inp
+        F = self._memory_features(X, source, fit=True)
         n0 = len(self.classes)
         yi = self._labels(y, grow=True)
         try:
@@ -279,6 +333,8 @@ class Learner:
             for v in self.classes[n0:]:                                   # 남아, 나중에 그중 일부만 배우면 backprop의 빈 클래스
                 del self._index[v]                                        # 가중치가 빈 평균 = NaN)
             del self.classes[n0:]
+            if not had_inp:                                               # 이 데이터로 정한 원래 입력 기준도
+                self.inp.pop(source, None)
             raise
         return self
 
@@ -286,8 +342,8 @@ class Learner:
         if self.lda is None:
             d = F.shape[1]
             if d > 12000:                                                 # 공분산 d x d (float64): 12,000이면 1.2 GB
-                raise ValueError(f"rule='lda'는 출력 뉴런 수의 제곱만큼 메모리를 씀 ({d:,}개 → {d * d * 8 / 1e9:.1f} GB) - "
-                                 f"출력 그룹을 줄이거나 rule='assoc'")
+                raise ValueError(f"rule='lda'는 기억 특징 수의 제곱만큼 메모리를 씀 ({d:,}개 → {d * d * 8 / 1e9:.1f} GB) - "
+                                 f"출력 그룹을 줄이거나 rule='assoc'" + (", 원래 입력이 크면 input_weight=0" if self.input_weight else ""))
             self.lda = _StreamingLDA(d, self.shrink)
         self.lda.learn(F, yi, len(self.classes))
 
@@ -341,7 +397,7 @@ class Learner:
         """(n, 클래스 수) 점수 numpy (열 순서 = self.classes)"""
         if not self.classes:
             raise RuntimeError("아직 아무것도 배우지 않음: learn(X, y)부터")
-        F = self.features(X, source)
+        F = self._memory_features(X, source)
         if self.rule == "lda":
             return self.lda.scores(F)
         if self.rule == "assoc":
@@ -384,7 +440,8 @@ class Learner:
     def _config(self):
         return dict(inputs=self.inputs, outputs=self.outputs, rule=self.rule, per_class=self.per_class, shrink=self.shrink,
                     epochs=self.epochs, rate=self.rate, t_ms=self.t_ms, target_hz=self.target_hz,
-                    max_rate=self.max_rate, batch=self.batch, seed=self.seed, negative=self.negative, layer_kw=self.layer_kw)
+                    max_rate=self.max_rate, batch=self.batch, seed=self.seed, negative=self.negative,
+                    input_weight=self.input_weight, layer_kw=self.layer_kw)
 
     def save(self, path):
         """파일 하나에 (설정, 라벨, 입력 변환·커넥톰 보정, 기억). 회로 자체는 저장하지 않음 - 불러올 때 같은 회로로"""
@@ -396,6 +453,8 @@ class Learner:
         arr.update({f"layer.{k}": v for k, v in self.layer.state().items()})
         for i, (name, enc) in enumerate(self.encoders.items()):
             arr.update({f"enc{i}.{k}": v for k, v in enc.state().items()})
+            if name in self.inp:
+                arr[f"inp{i}.mu"], arr[f"inp{i}.sd"], arr[f"inp{i}.scale"] = self.inp[name]
         if self.rule == "lda":
             arr["lda_mu"], arr["lda_n"], arr["lda_S"] = self.lda.mu, self.lda.n, self.lda.S
         elif self.rule == "assoc":
@@ -415,6 +474,7 @@ class Learner:
         d, _ = read(path, "Learner")
         cfg = json.loads(str(d["config"]))
         kw = cfg.pop("layer_kw")
+        cfg.setdefault("input_weight", 0.0)                               # 0.1.19까지의 파일: KC만 (예전 동작 그대로)
         obj = cls(circuit=circuit, device=device, **cfg, **kw)
         obj._build_layer()
         obj.target_hz = cfg["target_hz"]
@@ -424,6 +484,9 @@ class Learner:
             enc = obj._encoder(name, int(n_in))
             p = f"enc{i}."
             enc.load_state({k[len(p):]: d[k] for k in d if k.startswith(p)})
+            if f"inp{i}.mu" in d:
+                obj.inp[name] = (np.asarray(d[f"inp{i}.mu"], np.float32), np.asarray(d[f"inp{i}.sd"], np.float32),
+                                 np.float32(d[f"inp{i}.scale"]))
         obj.classes = json.loads(str(d["classes"]))
         obj._index = {v: i for i, v in enumerate(obj.classes)}
         if obj.rule == "lda":

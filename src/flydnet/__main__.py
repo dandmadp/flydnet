@@ -22,10 +22,11 @@ def _driver_cuda() -> str | None:
     if not exe:
         return None
     try:
-        out = subprocess.run([exe], capture_output=True, text=True, timeout=20).stdout
+        out = subprocess.run([exe], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20).stdout
     except Exception:
         return None
-    m = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", out)
+    # 인코딩을 지정 (예전: 한국어 윈도우 기본 cp949로 읽다가 GPU 프로세스 경로의 한글에서 실패하면 출력이 None → 여기서 멈춤)
+    m = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", out or "")
     return m.group(1) if m else None
 
 

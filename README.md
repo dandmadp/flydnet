@@ -80,7 +80,7 @@ import flydnet as fd
 Xtr, ytr, Xte, yte = fd.door_task(n_odors=12)              # DoOR 실제 냄새 (사구체 반응)
 model = fd.MushroomBody(n_in=Xtr.shape[1], n_classes=12)   # 오른쪽 버섯체 PN → KC 2,597개
 model.fit(Xtr, ytr, val=(Xte, yte))                        # 처음 데이터로 보정한 뒤 학습 (fd.train)
-model.score(Xte, yte)                                      # 0.976 (찍기 0.083), GPU 약 25초
+model.score(Xte, yte)                                      # 약 0.96 (seed 10개 평균 0.962, 찍기 0.083), GPU 약 7초
 ```
 
 어떤 회로·그래프든 `fd.ConnectomeModel(circuit, "in", "out", n_in, n_classes)`. 세부는 `model.encoder`·`model.layer`·
@@ -145,10 +145,23 @@ MBON은 48개뿐이라 병목. 자동 보정의 정확도 이득은 잡음 안 (
 learner = fd.Learner()                              # 오른쪽 버섯체 PN → KC (fd.Learner(circuit, "in", "out")도)
 learner.learn(X_a, y_a)                             # 처음: 입력 변환·보정 자동, 한 번 훑기
 learner.learn(X_b, y_b)                             # 새 클래스 이어서 - 앞의 클래스 평균은 그대로
-learner.learn(X_img, y_img, source="image")         # 다른 종류(특징 수가 다른) 데이터: 입력 변환만 새로, 기억은 공유
+# 다른 종류(특징 수가 다른) 데이터를 한 기억에: fd.Learner(input_weight=0)로 만들고 learn(X_img, y_img, source="image")
 learner.predict(X), learner.score(X, y)             # 라벨은 문자열 등 아무 값이나
 learner.save("me.npz"); fd.Learner.load("me.npz")   # 불러온 뒤에도 계속 배움
 ```
+
+**원래 입력도 함께 기억** (`input_weight=4`, 0.1.20부터 기본): KC 특징 옆에 원래 입력을 붙여 기억한다 (특징마다
+표준화 x KC 평균 크기 x 4, 기준은 처음 `learn()`에서 정해 고정 - 처음엔 시료 수십 개 이상). KC 특징만으로는 원래 입력보다
+낮은 과제가 많았다 (확장 과정에서 정보 일부를 잃음). `scripts/ml_bench.py`, seed 2개 평균 (%):
+
+| 과제 | lda: KC만 → 함께 | 비교: 로지스틱 회귀 / MLP |
+|---|---|---|
+| 합성 냄새 20클래스 | 68.5 → 77.3 | 91.0 / 95.6 |
+| DoOR 냄새 12개 | 97.2 → 98.4 | 95.5 / 97.9 |
+| MNIST 1만 개 | 82.4 → 86.0 | 86.7 / 93.1 |
+| CIFAR-100 연속 학습 (10과제) | 45.4 → 63.8 | 이어서 학습 9.5 / 한꺼번에 66.3 |
+
+`input_weight=0`이면 KC만 (0.1.19까지, 데이터 종류 `source`를 여럿 쓸 때 필요). 아래 표들은 0.1.19 (KC만)에서 잰 값.
 
 **입력은 0 이상으로.** 특징은 입력 뉴런의 발화율(0 이상)로 바뀌므로 음수는 0으로 잘린다 (음수가 5% 이상이면 경고).
 StandardScaler 대신 MinMaxScaler, 이미지는 `X / 255`. 부호에 뜻이 있으면 `fd.Learner(negative="onoff")` - 양수·음수를

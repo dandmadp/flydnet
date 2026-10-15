@@ -159,9 +159,12 @@ class ConnectomeModel(Pathway):
         if nd == 1:                                                         # 시료 하나 (n_in,) - 특징을 시료로 세지 않게
             X = X[None] if hasattr(X, "shape") else [X]
         n = len(X)
-        if n > self.calibrate_samples:                                     # 앞에서 자르면 클래스 순으로 정렬된 데이터
-            pick = np.unique(np.linspace(0, n - 1, self.calibrate_samples).round().astype(np.int64))   # (door_task 등)의
-            X = X.iloc[pick] if hasattr(X, "iloc") else X[pick] if hasattr(X, "shape") else [X[i] for i in pick]   # 뒤 클래스가 빠짐
+        rows = X.numpy() if isinstance(X, Signal) else X.to_numpy() if hasattr(X, "iloc") else             X.detach().cpu().numpy() if hasattr(X, "detach") else X if hasattr(X, "shape") else np.asarray(X, np.float64)
+        # Signal을 먼저 (torch처럼 detach가 있어 torch로 잘못 봤음 - 커밋 전에 찾음)
+        pick = B.content_order(rows)                                       # 내용으로 정한 순서: 데이터 순서와 무관하게 같은
+        if n > self.calibrate_samples:                                     # 시료·같은 순서로 보정 (앞에서 자르면 클래스 순으로
+            pick = pick[np.unique(np.linspace(0, n - 1, self.calibrate_samples).round().astype(np.int64))]   # 정렬된 데이터의
+        X = X.iloc[pick] if hasattr(X, "iloc") else X[B.to(pick, B.device_of(X))] if B.device_of(X) == "gpu" else             X[pick] if hasattr(X, "shape") or isinstance(X, Signal) else [X[i] for i in pick]   # 뒤 클래스가 빠짐)
         with quiescent():
             rates = self.encoder(X) if self.encoder is not None else X
         rates = rates.data if isinstance(rates, Signal) else rates

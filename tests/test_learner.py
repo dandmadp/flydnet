@@ -45,7 +45,7 @@ def test_learns_and_keeps_old_classes(rule):
 def test_assoc_matches_assoc_readout():
     """Learner(assoc)의 기억 = 같은 특징에 AssocReadout을 쓴 것 (같은 규칙, 같은 묶음)"""
     X, y = _data()
-    L = _L(rule="assoc", per_class=2).learn(X, y)
+    L = _L(rule="assoc", per_class=2, input_weight=0).learn(X, y)       # KC 경로만 (원래 입력 없이)
     F = L.features(X)
     r = fd.AssocReadout(F.shape[1], 4, per_class=2, device="cpu")
     for i in range(0, len(F), 32):
@@ -55,7 +55,7 @@ def test_assoc_matches_assoc_readout():
 
 def test_backprop_new_class_starts_at_its_mean():
     X, y = _data()
-    L = _L(rule="backprop", epochs=1, rate=1e-12)                         # 학습률 ~0: 초기화만 보임
+    L = _L(rule="backprop", epochs=1, rate=1e-12, input_weight=0)        # 학습률 ~0: 초기화만 보임 (KC 경로만)
     L.learn(X, y)
     x = L._center(L.features(X))
     for c in range(4):
@@ -80,7 +80,9 @@ def test_labels_any_type_and_single_sample():
 def test_sources_separate_encoders_shared_memory():
     X, y = _data()
     Z = np.concatenate([X, X], 1)                                         # 다른 모양의 데이터 (특징 12개)
-    L = _L().learn(X[y < 2], y[y < 2])
+    with pytest.raises(ValueError, match="input_weight=0"):               # 원래 입력을 붙이면 종류는 하나만
+        _L().learn(X[y < 2], y[y < 2]).learn(Z[y >= 2], y[y >= 2], source="wide")
+    L = _L(input_weight=0).learn(X[y < 2], y[y < 2])
     with pytest.raises(ValueError, match="source"):
         L.learn(Z[y >= 2], y[y >= 2])
     L.learn(Z[y >= 2], y[y >= 2], source="wide")
@@ -94,7 +96,7 @@ def test_sources_separate_encoders_shared_memory():
 def test_save_load_roundtrip(tmp_path, rule):
     X, y = _data()
     c = _c()
-    L = fd.Learner(c, "IN", "O", rule=rule, t_ms=30, device="cpu", epochs=2).learn(X, ["p", "q", "r", "s"] * 15)
+    L = fd.Learner(c, "IN", "O", rule=rule, t_ms=30, device="cpu", epochs=2, input_weight=0).learn(X, ["p", "q", "r", "s"] * 15)
     L.learn(np.concatenate([X, X], 1)[:8], ["t"] * 8, source="wide")
     p = L.save(tmp_path / "l")
     M = fd.Learner.load(p, circuit=c, device="cpu")
@@ -183,3 +185,128 @@ def test_failed_learn_rolls_back_new_labels():
     assert L.classes == [0, 1]
     L.learn(X[y == 2], y[y == 2])                                         # 3만 배우고 4는 아직
     assert L.classes == [0, 1, 2] and np.isfinite(L.head.W.numpy()).all()
+
+
+@pytest.mark.parametrize("rule", ["lda", "assoc", "backprop"])
+def test_input_weight_memory_and_roundtrip(tmp_path, rule):
+    """input_weight > 0: 기억 = KC 특징 + 표준화한 원래 입력 (기준은 처음 배울 때 고정, 저장·불러오기에 같이).
+    0이면 KC만 (0.1.19까지와 같음), 0.1.19까지 저장한 파일(input_weight 없음)은 KC만으로 불러옴"""
+    X, y = _data()
+    c = _c()
+    L = fd.Learner(c, "IN", "O", rule=rule, t_ms=30, device="cpu", epochs=2).learn(X[:40], y[:40])
+    F = L._memory_features(X, "default")
+    assert F.shape[1] == L.layer.n_out + X.shape[1]
+    saved = L.inp.pop("default")                                         # 기준이 없으면 예측 데이터로 정하지 않고 오류
+    with pytest.raises(RuntimeError, match="learn"):
+        L.scores(X)
+    L.inp["default"] = saved
+    mu = L.inp["default"][0].copy()
+    L.learn(X[40:] * 1.5, y[40:])                                        # 이어 배워도 기준은 그대로
+    np.testing.assert_array_equal(L.inp["default"][0], mu)
+    M = fd.Learner.load(L.save(tmp_path / "w"), circuit=c, device="cpu")
+    np.testing.assert_array_equal(M.scores(X), L.scores(X))
+    K = fd.Learner(c, "IN", "O", rule=rule, t_ms=30, device="cpu", epochs=2, input_weight=0).learn(X, y)
+    assert K._memory_features(X, "default").shape[1] == K.layer.n_out
+    import json
+    from flydnet._archive import read, write
+    d, _ = read(K.save(tmp_path / "k"), "Learner")                      # 0.1.19식 파일: 설정에 input_weight 없음
+    cfg = json.loads(str(d["config"])); cfg.pop("input_weight")
+    old = write(tmp_path / "old", "Learner", dict(d, config=np.array(json.dumps(cfg))))
+    O = fd.Learner.load(old, circuit=c, device="cpu")
+    assert O.input_weight == 0 and np.array_equal(O.scores(X), K.scores(X))
+    with pytest.raises(ValueError, match="input_weight"):
+        fd.Learner(input_weight=-1)
+
+
+def test_input_standardization_is_bounded():
+    """학습 때 늘 0이던 특징이 시험 때 켜져도 원래 입력 부분이 폭발하지 않음 (예전: 표준편차 0 → 1e-6으로 나눠 수십만 배 -
+    MNIST 가장자리 픽셀, 시험 2,000장 중 2장). 첫 학습이 시료 1개여도 크기 기준이 섬 (예전: KC 분산 0 → 원래 입력이 사실상 꺼짐)"""
+    X, y = _data()
+    X[:, 0] = 0.0                                                        # 학습에선 늘 0
+    L = _L().learn(X, y)
+    probe = X[:3].copy()
+    probe[:, 0] = 1.0
+    mu, sd, scale = L.inp["default"]
+    raw = L._memory_features(probe, "default")[:, L.layer.n_out:]
+    assert np.isfinite(raw).all() and np.abs(raw).max() <= 10 * scale * 1.0001
+    import warnings
+    with warnings.catch_warnings(record=True) as rec:                    # 처음 1개: 기준을 정하기엔 적다고 알림 (보정 경고도 같이 남)
+        warnings.simplefilter("always")
+        one = _L().learn(X[:1], y[:1])
+    assert any("시료가 1개" in str(w.message) for w in rec)
+    assert one.inp["default"][2] > 1e-3 and np.isfinite(one._memory_features(X, "default")).all()
+
+
+def test_failed_learn_does_not_keep_input_stats():
+    """학습이 실패하면 그 데이터로 정한 원래 입력 기준도 남기지 않음 (새 라벨처럼)"""
+    X, y = _data()
+    L = _L()
+    wide = np.random.default_rng(0).random((12, 12001)).astype(np.float32)    # 기억 특징이 12,000개를 넘어 lda가 거부
+    with pytest.raises(ValueError, match="메모리"):
+        L.learn(wide, [0, 1] * 6)
+    assert "default" not in L.inp and L.classes == []
+
+
+@pytest.mark.parametrize("w", [0, 4])
+def test_lda_same_result_for_any_data_order(w):
+    """같은 데이터를 순서만 섞어 한 번에 배워도 같은 결과 (lda는 순서와 무관하다고 문서에 적힘). 예전: 처음 보정의 평균을
+    시료 순서대로 더해 배율의 마지막 자리가 달라지고 (스파이크 몇 개가 바뀜), 시료가 256개를 넘으면 보정용 시료를 위치로 골라
+    순서가 바뀌면 다른 시료로 보정 - MNIST 1만 개에서 시험 시료 9.1%의 예측이 바뀌었음"""
+    X, y = _data(n=300)                                                  # 256개 넘게 (보정용 시료를 고르는 경우)
+    p = np.random.default_rng(1).permutation(len(X))
+    a = _L(input_weight=w).learn(X, y)
+    b = _L(input_weight=w).learn(X[p], y[p])
+    assert a.layer.gains == b.layer.gains
+    col = [b.classes.index(c) for c in a.classes]                        # 점수 열 = 라벨을 처음 본 순서 (섞으면 바뀜)
+    np.testing.assert_allclose(a.scores(X), b.scores(X)[:, col], rtol=1e-9, atol=1e-9)
+    assert (a.predict(X) == b.predict(X)).all()
+
+
+def test_connectome_model_calibration_same_for_any_data_order():
+    """ConnectomeModel.prepare (fd.train의 자동 보정)도 데이터 순서와 무관 (예전: 256개 넘으면 위치로 골라 다른 시료로 보정 -
+    순서만 섞어도 배율 11.07 대 10.72). pandas·리스트·torch 입력도 같은 결과"""
+    import pandas as pd
+    X, y = _data(n=600)
+    p = np.random.default_rng(1).permutation(len(X))
+    c = _c()
+    gains = []
+    for data in (X, X[p], pd.DataFrame(X[p]), X[p].tolist(), fd.Signal(X[p])):
+        m = fd.ConnectomeModel(c, "IN", "O", 6, 4, device="cpu")
+        m.prepare(data)
+        gains.append(m.layer.gains)
+    assert all(g == gains[0] for g in gains)
+
+
+def test_input_stats_memory_stays_small():
+    """원래 입력 기준·내용 순서를 잘라서 계산 (예전: 전체를 float64로 몇 번 복사 - MNIST 6만 장에서 2.9 GB 더 씀)"""
+    import tracemalloc
+    from flydnet.ganglion import backend as B
+    from flydnet.learner import Learner
+    X = np.random.default_rng(0).random((20000, 300)).astype(np.float32)
+    F = np.random.default_rng(1).random((20000, 500)).astype(np.float32)
+    L = Learner.__new__(Learner)
+    L.input_weight = 4.0
+    tracemalloc.start()
+    B.content_order(X)
+    L._input_stats(X, F)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < 0.5 * (X.nbytes + F.nbytes), peak
+    mu, var, msq = B.ordered_moments(X, B.content_order(X))              # 값은 numpy와 같음
+    np.testing.assert_allclose(mu, X.astype(np.float64).mean(0), rtol=1e-12)
+    np.testing.assert_allclose(var, X.astype(np.float64).var(0), rtol=1e-10)
+
+
+def test_streaming_lda_memory_stays_small():
+    """흐름 LDA의 학습·점수가 특징 전체를 float64로 복사하지 않음 (예전: 3만 x 2,000에서 학습 627 MB·점수 547 MB 더)"""
+    import tracemalloc
+    from flydnet.learner import _StreamingLDA
+    F = np.random.default_rng(0).random((20000, 1000)).astype(np.float32)
+    y = np.random.default_rng(1).integers(0, 10, 20000)
+    L = _StreamingLDA(1000)
+    tracemalloc.start()
+    L.learn(F, y, 10)
+    L.scores(F)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < 0.6 * F.nbytes + 3 * 1000 * 1000 * 8, peak          # 공분산 몇 개 + 클래스 하나 정도
